@@ -99,18 +99,30 @@ rewritten to point back at the gateway.
 When the gateway denies a request, it answers `403` with an `x-gateway-denied: true` header and a
 reason. Expired, revoked or unknown keys get `401`.
 
-## Members: self-serve session keys
+## Members: their own accounts and self-serve session keys
 
-A **member key** (`gwm_…`) lets a script, agent or CI job request its own session keys, so no
-admin has to issue each one. Create members in **Members → New member**:
+Members get session keys without an admin issuing each one. Create them in **Members → New member**:
 
-- choose the **templates** it may request keys from, and the **accounts** those keys may use;
-  everything else is denied
-- optionally make the member key expire (30 days, 90 days, 1 year)
-- the member key is shown once; **Rotate key** replaces it and revokes the session keys it issued,
-  **Delete** does the same and removes the member
+- **Google email** (optional): the member signs in at the gateway with this Google account and
+  lands in their **member portal**. Admin emails (`GATEWAY_ADMIN_EMAILS`) sign in as admin;
+  member emails sign in to their portal; any other Google account is refused.
+- **Templates** the member may request keys from; everything else is denied.
+- **Shared accounts** (optional): accounts you connected yourself that the member may also use.
+- Optional expiry of the member (30 days, 90 days, 1 year).
 
-A member key cannot call tools or the admin API: it can only obtain session keys.
+In the member portal a member can:
+
+- **connect their own accounts** (Sign in with GitHub, once you've set up the GitHub OAuth app, or a
+  pasted token). Those accounts are private to that member: only their keys can use them. As
+  admin you see them (with the owner's name) and can re-verify or remove them, but not change them
+  or issue your own keys with them.
+- issue, list and revoke their session keys (their templates × their accounts + granted shared ones)
+- see and rotate their **member key** (`gwm_…`), which lets scripts, agents and CI jobs do the
+  same through the API below.
+
+Rotating a member key revokes the session keys that member issued. Deleting a member also deletes
+the accounts it connected and revokes every key that could use them. A member key cannot call
+tools or the admin API: it can only obtain session keys.
 
 | Endpoint (with `Authorization: Bearer gwm_…`) | Purpose                                                                |
 | --------------------------------------------- | ---------------------------------------------------------------------- |

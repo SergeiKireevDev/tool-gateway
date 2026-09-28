@@ -28,7 +28,14 @@ const STATUS_TONE: Record<SessionStatus, 'green' | 'slate' | 'red'> = {
   revoked: 'red',
 };
 
-export function SessionsPanel({ api, data, refresh }: PanelProps) {
+const SESSION_DESCRIPTIONS: Record<PanelProps['viewer']['role'], string> = {
+  admin:
+    "Short-lived keys that grant a template's permissions on one account. Hand them to scripts or agents; they stop working when the TTL expires or when revoked. Keys issued by members are listed too.",
+  member:
+    "Short-lived keys that grant one of your templates' permissions on one of your accounts. Hand them to scripts or agents; they stop working when the TTL expires or when revoked.",
+};
+
+export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
   const now = useNow();
   const [issuing, setIssuing] = useState(false);
   const [issued, setIssued] = useState<{ key: string; session: Session } | null>(null);
@@ -59,7 +66,7 @@ export function SessionsPanel({ api, data, refresh }: PanelProps) {
     <section>
       <SectionHeader
         title="Session keys"
-        description="Short-lived keys that grant a template's permissions on one connected account. Hand them to scripts or agents; they stop working when the TTL expires or when revoked."
+        description={SESSION_DESCRIPTIONS[viewer.role]}
         action={
           <Button
             disabled={!canIssue}
@@ -118,7 +125,7 @@ export function SessionsPanel({ api, data, refresh }: PanelProps) {
                     <td className="px-4 py-3">
                       <div className="font-medium">{s.templateName}</div>
                       <div className="text-xs text-slate-500">{accountLabel(s.accountId)}</div>
-                      <IssuedBy issuer={s.issuedBy} />
+                      {viewer.role === 'admin' && <IssuedBy issuer={s.issuedBy} />}
                     </td>
                     <td className="px-4 py-3">
                       <Badge tone={STATUS_TONE[status]}>{status}</Badge>

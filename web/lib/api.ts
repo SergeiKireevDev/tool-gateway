@@ -37,9 +37,17 @@ export type Api = <T>(method: string, path: string, body?: unknown) => Promise<T
  * Admin API client. With an admin token it authenticates with a bearer header; without one it
  * relies on the Google sign-in session cookie. The CSRF header is required for cookie sessions.
  */
-export function createApi(token: string | null, onUnauthorized: () => void): Api {
+/** Admin API, or the member portal API when a member is signed in: same paths, other base. */
+export const ADMIN_API = '/api/admin';
+export const MEMBER_API = '/api/me';
+
+export function createApi(
+  token: string | null,
+  onUnauthorized: () => void,
+  base: string = ADMIN_API,
+): Api {
   return async <T>(method: string, path: string, body?: unknown): Promise<T> => {
-    const res = await fetch(`/api/admin${path}`, {
+    const res = await fetch(`${base}${path}`, {
       method,
       headers: {
         'x-gateway-request': '1',
@@ -63,17 +71,16 @@ function errorMessage(data: unknown, status: number): string {
     : `Request failed (HTTP ${status})`;
 }
 
-export interface GoogleAdmin {
-  email: string;
-  expiresAt: string;
-}
+/** Who is signed in with Google (session cookie): the admin or a member. */
+export type WebUser =
+  | { role: 'admin'; email: string; expiresAt: string }
+  | { role: 'member'; email: string; expiresAt: string; memberId: string; memberName: string };
 
-/** The admin signed in with Google (session cookie), or null. */
-export async function fetchGoogleAdmin(): Promise<GoogleAdmin | null> {
+export async function fetchWebUser(): Promise<WebUser | null> {
   const res = await fetch('/api/auth/me', { cache: 'no-store' });
   if (res.status === HTTP_UNAUTHORIZED) return null;
   if (!res.ok) throw new ApiError(res.status, `Request failed (HTTP ${res.status})`);
-  return (await res.json()) as GoogleAdmin;
+  return (await res.json()) as WebUser;
 }
 
 export async function fetchAuthConfig(): Promise<{ google: boolean }> {

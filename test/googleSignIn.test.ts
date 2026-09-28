@@ -1,100 +1,8 @@
-import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import * as oidc from 'openid-client';
 import request from 'supertest';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { GoogleSignIn } from '../src/server/auth/google.js';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/server/http/app.js';
-import { createHarness, type Harness } from './helpers.js';
-
-const ISSUER = 'https://accounts.fake-google.test';
-const CLIENT_ID = 'client-123.apps.googleusercontent.com';
-const HOST = 'gateway.test';
-
-let keys: Awaited<ReturnType<typeof generateKeyPair>>;
-let jwk: Awaited<ReturnType<typeof exportJWK>>;
-
-beforeAll(async () => {
-  keys = await generateKeyPair('RS256');
-  jwk = { ...(await exportJWK(keys.publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
-});
-
-/** Fake Google: serves JWKS and a token endpoint that issues a signed ID token. */
-function fakeProvider(claims: () => Record<string, unknown>) {
-  const tokenRequests: URLSearchParams[] = [];
-  const config = new oidc.Configuration(
-    {
-      issuer: ISSUER,
-      authorization_endpoint: `${ISSUER}/o/oauth2/v2/auth`,
-      token_endpoint: `${ISSUER}/token`,
-      jwks_uri: `${ISSUER}/certs`,
-      id_token_signing_alg_values_supported: ['RS256'],
-    },
-    CLIENT_ID,
-    'client-secret',
-  );
-  config[oidc.customFetch] = async (url, options) => {
-    if (url === `${ISSUER}/certs`) return Response.json({ keys: [jwk] });
-    if (url === `${ISSUER}/token`) {
-      tokenRequests.push(new URLSearchParams(options.body as URLSearchParams | string));
-      const idToken = await new SignJWT(claims())
-        .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
-        .setIssuer(ISSUER)
-        .setAudience(CLIENT_ID)
-        .setSubject('google-user-1')
-        .setIssuedAt()
-        .setExpirationTime('5m')
-        .sign(keys.privateKey);
-      return Response.json({ access_token: 'at', token_type: 'Bearer', id_token: idToken });
-    }
-    return new Response('not found', { status: 404 });
-  };
-  return { config, tokenRequests };
-}
-
-interface Ctx {
-  h: Harness;
-  app: ReturnType<typeof createApp>;
-  claims: Record<string, unknown>;
-  tokenRequests: URLSearchParams[];
-}
-
-async function setup(adminEmails = ['admin@example.com']): Promise<Ctx> {
-  const h = await createHarness();
-  const ctx = { h, claims: {} } as Ctx;
-  const provider = fakeProvider(() => ctx.claims);
-  ctx.tokenRequests = provider.tokenRequests;
-  const google = new GoogleSignIn(
-    { clientId: CLIENT_ID, clientSecret: 'client-secret', adminEmails },
-    `${h.config.publicUrl}/auth/google/callback`,
-    () => Promise.resolve(provider.config),
-  );
-  ctx.app = createApp(h.gateway, h.config, { fetch: h.fetch, googleSignIn: google });
-  return ctx;
-}
-
-const cookieValue = (res: request.Response, name: string): string | undefined => {
-  const raw = res.headers['set-cookie'] as unknown as string[] | undefined;
-  const line = raw?.find((c) => c.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).split(';')[0];
-};
-
-/** Runs login → (user approves at Google) → callback. Returns the callback response. */
-async function signIn(ctx: Ctx, claims: Record<string, unknown>, tamper?: (u: URL) => void) {
-  const login = await request(ctx.app).get('/auth/google/login').set('host', HOST).expect(302);
-  const authUrl = new URL(login.headers.location ?? '');
-  const loginCookie = cookieValue(login, 'gw_login');
-  expect(login.headers['set-cookie']?.[0]).toMatch(/HttpOnly; SameSite=Lax/);
-
-  ctx.claims = { nonce: authUrl.searchParams.get('nonce'), ...claims };
-  const callback = new URL('/auth/google/callback', 'http://x');
-  callback.searchParams.set('code', 'auth-code');
-  callback.searchParams.set('state', authUrl.searchParams.get('state') ?? '');
-  tamper?.(callback);
-  return request(ctx.app)
-    .get(callback.pathname + callback.search)
-    .set('host', HOST)
-    .set('cookie', loginCookie ? `gw_login=${loginCookie}` : '');
-}
+import { CLIENT_ID, cookieValue, type Ctx, HOST, ISSUER, setup, signIn } from './googleFake.js';
+import { createHarness } from './helpers.js';
 
 describe('Google admin sign-in', () => {
   let ctx: Ctx;
@@ -131,15 +39,15 @@ describe('Google admin sign-in', () => {
     const res = await signIn(ctx, { email: 'Admin@Example.com', email_verified: true });
     expect(res.status).toBe(303);
     expect(res.headers.location).toBe('/');
-    const session = cookieValue(res, 'gw_admin');
+    const session = cookieValue(res, 'gw_session');
     expect(session).toMatch(/^gwc_/);
     expect((res.headers['set-cookie'] as unknown as string[]).join()).toMatch(
-      /gw_admin=[^;]+; Path=\/; Expires=[^;]+; HttpOnly; SameSite=Strict/,
+      /gw_session=[^;]+; Path=\/; Expires=[^;]+; HttpOnly; SameSite=Strict/,
     );
     // PKCE verifier was sent with the code exchange.
     expect(ctx.tokenRequests[0]?.get('code_verifier')).toBeTruthy();
 
-    const cookie = `gw_admin=${session ?? ''}`;
+    const cookie = `gw_session=${session ?? ''}`;
     await request(ctx.app)
       .get('/api/auth/me')
       .set('cookie', cookie)
@@ -173,7 +81,7 @@ describe('Google admin sign-in', () => {
     const location = new URL(res.headers.location ?? '', 'http://x');
     expect(location.pathname).toBe('/');
     expect(location.searchParams.get('login_error')).toMatch(message);
-    expect(cookieValue(res, 'gw_admin')).toBeUndefined();
+    expect(cookieValue(res, 'gw_session')).toBeUndefined();
   };
 
   it('rejects accounts that are not on the allowlist', async () => {

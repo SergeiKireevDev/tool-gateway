@@ -29,7 +29,7 @@ export function MembersPanel({ api, data, refresh }: PanelProps) {
   const [editing, setEditing] = useState<Editing>(null);
   const [revealed, setRevealed] = useState<Revealed>(null);
   const [error, setError] = useState<string | null>(null);
-  const canCreate = data.templates.length > 0 && data.accounts.length > 0;
+  const canCreate = data.templates.length > 0;
 
   const run = async (action: () => Promise<unknown>): Promise<void> => {
     setError(null);
@@ -65,11 +65,11 @@ export function MembersPanel({ api, data, refresh }: PanelProps) {
     <section>
       <SectionHeader
         title="Members"
-        description="A member key lets a script or agent request its own session keys, but only from the templates and accounts you allow here. The member key itself cannot call tools or the admin API."
+        description="Members get short-lived session keys for the templates you choose, on accounts they connect themselves (they sign in with Google using the email you set) or shared accounts you grant. Their member key lets scripts do the same, but cannot call tools or the admin API."
         action={
           <Button
             disabled={!canCreate}
-            title={canCreate ? undefined : 'Create a template and connect an account first'}
+            title={canCreate ? undefined : 'Create a template first'}
             onClick={() => {
               setEditing({ mode: 'create' });
             }}
@@ -84,7 +84,7 @@ export function MembersPanel({ api, data, refresh }: PanelProps) {
 
       {data.members.length === 0 ? (
         <EmptyState title="No members yet">
-          Create one to let an agent or CI job request its own short-lived session keys.
+          Add a teammate by their Google email, or create a key-only member for an agent or CI job.
         </EmptyState>
       ) : (
         <div className="space-y-4">
@@ -152,6 +152,9 @@ function MemberCard({
 }) {
   const templates = data.templates.filter((t) => m.templateIds.includes(t.id));
   const accounts = data.accounts.filter((a) => m.accountIds.includes(a.id));
+  const ownAccounts = data.accounts.filter(
+    (a) => a.owner.kind === 'member' && a.owner.memberId === m.id,
+  );
   const expired = m.expired || (m.expiresAt !== null && Date.parse(m.expiresAt) <= now);
 
   return (
@@ -162,7 +165,10 @@ function MemberCard({
             <h3 className="font-semibold">{m.name}</h3>
             <Badge tone={expired ? 'red' : 'green'}>{expired ? 'expired' : 'active'}</Badge>
           </div>
-          <p className="mt-0.5 font-mono text-xs text-slate-500">{m.keyHint}…</p>
+          <p className="mt-0.5 text-sm text-slate-500">
+            {m.email ?? 'No sign-in (key only)'}
+            <span className="ml-2 font-mono text-xs">{m.keyHint}…</span>
+          </p>
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" size="sm" onClick={onEdit}>
@@ -177,14 +183,27 @@ function MemberCard({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-4 text-sm md:grid-cols-2">
-        <ChipList title="Templates" items={templates.map((t) => ({ id: t.id, label: t.name }))} />
+      <div className="mt-4 grid gap-4 text-sm md:grid-cols-3">
         <ChipList
-          title="Accounts"
+          title="Templates"
+          items={templates.map((t) => ({ id: t.id, label: t.name }))}
+          empty="None: this member cannot request keys"
+        />
+        <ChipList
+          title="Own accounts"
+          items={ownAccounts.map((a) => ({
+            id: a.id,
+            label: `${a.label} (${a.identity.login ?? a.tool})`,
+          }))}
+          empty={m.email ? 'None connected yet' : 'Key-only member'}
+        />
+        <ChipList
+          title="Shared accounts granted"
           items={accounts.map((a) => ({
             id: a.id,
             label: `${a.label} (${a.identity.login ?? a.tool})`,
           }))}
+          empty="None"
         />
       </div>
       <p className="mt-4 text-xs text-slate-500">
@@ -196,12 +215,20 @@ function MemberCard({
   );
 }
 
-function ChipList({ title, items }: { title: string; items: { id: string; label: string }[] }) {
+function ChipList({
+  title,
+  items,
+  empty,
+}: {
+  title: string;
+  items: { id: string; label: string }[];
+  empty: string;
+}) {
   return (
     <div>
       <p className="mb-1.5 text-xs font-medium tracking-wide text-slate-500 uppercase">{title}</p>
       {items.length === 0 ? (
-        <span className="text-amber-700">None: this member cannot request keys</span>
+        <span className="text-slate-500">{empty}</span>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {items.map((i) => (
@@ -240,6 +267,7 @@ function MemberModal({
   onSaved: (created: { key: string; member: Member } | null) => Promise<void>;
 }) {
   const [name, setName] = useState(existing?.name ?? '');
+  const [email, setEmail] = useState(existing?.email ?? '');
   const [templateIds, setTemplateIds] = useState<string[]>(existing?.templateIds ?? []);
   const [accountIds, setAccountIds] = useState<string[]>(existing?.accountIds ?? []);
   const [expiry, setExpiry] = useState<string>(existing ? KEEP_EXPIRY : 'never');
@@ -251,6 +279,7 @@ function MemberModal({
     setError(null);
     const body: MemberInput = {
       name,
+      email: email.trim() ? email.trim() : null,
       templateIds,
       accountIds,
       expiresAt: expiryFromChoice(expiry, existing),
@@ -278,12 +307,26 @@ function MemberModal({
           void submit();
         }}
       >
-        <Field label="Name" hint="Who or what will use this key, e.g. “release-agent” or “ci”.">
+        <Field label="Name" hint="Who or what this member is, e.g. “Alice” or “release-agent”.">
           <Input
             required
             value={name}
             onChange={(e) => {
               setName(e.target.value);
+            }}
+          />
+        </Field>
+        <Field
+          label="Google email (optional)"
+          hint="The member signs in with this Google account to connect their own accounts and get keys. Leave empty for a key-only member (scripts, CI)."
+        >
+          <Input
+            type="email"
+            autoComplete="off"
+            placeholder="alice@example.com"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value);
             }}
           />
         </Field>
@@ -298,12 +341,15 @@ function MemberModal({
           onChange={setTemplateIds}
         />
         <CheckList
-          legend="Accounts those keys may use"
-          items={data.accounts.map((a) => ({
-            id: a.id,
-            label: a.label,
-            hint: `${a.tool} · ${a.identity.login ?? 'unknown'}`,
-          }))}
+          legend="Shared accounts it may also use (optional)"
+          empty="No shared accounts: connect one in Accounts to grant it."
+          items={data.accounts
+            .filter((a) => a.owner.kind === 'shared')
+            .map((a) => ({
+              id: a.id,
+              label: a.label,
+              hint: `${a.tool} · ${a.identity.login ?? 'unknown'}`,
+            }))}
           selected={accountIds}
           onChange={setAccountIds}
         />
@@ -331,7 +377,7 @@ function MemberModal({
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={busy || !templateIds.length || !accountIds.length}>
+          <Button type="submit" disabled={busy || !templateIds.length}>
             {existing ? 'Save changes' : 'Create member'}
           </Button>
         </div>
@@ -345,8 +391,10 @@ function CheckList({
   items,
   selected,
   onChange,
+  empty,
 }: {
   legend: string;
+  empty?: string;
   items: { id: string; label: string; hint: string }[];
   selected: string[];
   onChange: (ids: string[]) => void;
@@ -357,6 +405,7 @@ function CheckList({
   return (
     <fieldset>
       <legend className="text-sm font-medium text-slate-700">{legend}</legend>
+      {items.length === 0 && empty && <p className="mt-1 text-xs text-slate-500">{empty}</p>}
       <div className="mt-2 grid max-h-56 gap-2 overflow-y-auto p-1 sm:grid-cols-2">
         {items.map((item) => {
           const checked = selected.includes(item.id);
@@ -387,11 +436,11 @@ function CheckList({
   );
 }
 
-function MemberKeyReveal({
+export function MemberKeyReveal({
   revealed,
   onClose,
 }: {
-  revealed: NonNullable<Revealed>;
+  revealed: { key: string; member: Pick<Member, 'templateIds' | 'email'>; rotated: boolean };
   onClose: () => void;
 }) {
   const origin = window.location.origin;
@@ -417,6 +466,12 @@ function MemberKeyReveal({
           </code>
           <CopyButton value={key} />
         </div>
+        {!rotated && member.email && (
+          <p className="text-sm text-slate-600">
+            {member.email} can also sign in at <strong>{origin}</strong> with Google to connect
+            their own accounts and manage keys.
+          </p>
+        )}
         <Snippet title="Environment" value={`export GATEWAY_MEMBER_KEY=${key}`} />
         <Snippet title="See allowed templates and accounts" value={discover} />
         <Snippet title="Request a session key" value={request} />

@@ -43,7 +43,7 @@ export function LoginScreen({ onTokenLogin }: { onTokenLogin: (token: string) =>
           </div>
           <div>
             <h1 className="text-lg font-semibold">Local Gateway</h1>
-            <p className="text-sm text-slate-500">Administrator sign-in</p>
+            <p className="text-sm text-slate-500">Sign in to manage your access</p>
           </div>
         </div>
 
@@ -60,7 +60,7 @@ export function LoginScreen({ onTokenLogin }: { onTokenLogin: (token: string) =>
               </a>
               <details className="group">
                 <summary className="cursor-pointer list-none text-center text-xs text-slate-500 hover:text-slate-800">
-                  Use the admin token instead
+                  Admin? Use the admin token instead
                 </summary>
                 <div className="mt-4">
                   <TokenForm onLogin={onTokenLogin} onError={setError} />

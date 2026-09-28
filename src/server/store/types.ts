@@ -8,6 +8,11 @@ export interface Account {
   identity: Record<string, string>;
   createdAt: string;
   lastVerifiedAt: string;
+  /**
+   * The member who connected (and owns) this account. Absent/null = a shared account connected
+   * by the admin, which the admin can grant to members.
+   */
+  ownerMemberId?: string | null;
 }
 
 export interface Template {
@@ -31,9 +36,12 @@ export interface Template {
 export interface Member {
   id: string;
   name: string;
+  /** Google account email the member signs in to the member portal with (lower-cased). */
+  email?: string | null;
   keyHash: string;
   keyHint: string;
   templateIds: string[];
+  /** Shared (admin) accounts granted to this member. Its own accounts are always usable. */
   accountIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -69,12 +77,17 @@ export interface Session {
   issuedBy?: SessionIssuer;
 }
 
-/** Browser session of a signed-in admin (cookie-based). */
-export interface AdminWebSession {
+/** Browser session after signing in with Google (cookie-based), for the admin or a member. */
+export type WebSessionRole = 'admin' | 'member';
+
+export interface WebSession {
   id: string;
   /** Keyed hash of the cookie value. */
   tokenHash: string;
+  role: WebSessionRole;
   email: string;
+  /** Set for member sessions. */
+  memberId: string | null;
   createdAt: string;
   expiresAt: string;
 }
@@ -82,7 +95,7 @@ export interface AdminWebSession {
 export interface StoreState {
   version: 1;
   adminTokenHash: string | null;
-  adminSessions: AdminWebSession[];
+  webSessions: WebSession[];
   accounts: Account[];
   templates: Template[];
   sessions: Session[];
@@ -99,7 +112,7 @@ export function emptyState(): StoreState {
   return {
     version: 1,
     adminTokenHash: null,
-    adminSessions: [],
+    webSessions: [],
     accounts: [],
     templates: [],
     sessions: [],

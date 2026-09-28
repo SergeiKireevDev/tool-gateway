@@ -10,5 +10,7 @@ export async function openGateway(config: GatewayConfig): Promise<Gateway> {
   const crypto = await CryptoBox.fromKeyFile(config.keyFile);
   const store = await EncryptedStore.open(config.storeFile, crypto);
   const tools = new ToolRegistry([createGitHubProvider()]);
-  return new Gateway(store, crypto, tools, new ActivityLog());
+  const gateway = new Gateway(store, crypto, tools, new ActivityLog());
+  gateway.setAdminEmails(config.google?.adminEmails ?? []);
+  return gateway;
 }

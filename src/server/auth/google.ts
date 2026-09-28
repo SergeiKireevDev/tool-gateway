@@ -1,7 +1,8 @@
 /**
  * Admin sign-in with Google (OpenID Connect, authorization code flow + PKCE).
  * All protocol work — discovery, PKCE, state/nonce checks, ID token validation — is done by
- * `openid-client`; this module only tracks pending logins and applies the admin allowlist.
+ * `openid-client`; this module only tracks pending logins and returns the verified email.
+ * Deciding what that email may do (admin, member, or nothing) is up to the caller.
  */
 import * as oidc from 'openid-client';
 import type { GoogleSignInConfig } from '../config.js';
@@ -74,7 +75,7 @@ export class GoogleSignIn {
     return { loginId, authorizationUrl };
   }
 
-  /** Completes a login from Google's redirect and returns the verified, allowed admin email. */
+  /** Completes a login from Google's redirect and returns the verified (lower-cased) email. */
   async complete(loginId: string | undefined, callbackUrl: URL): Promise<string> {
     const login = loginId ? this.pending.get(loginId) : undefined;
     if (loginId) this.pending.delete(loginId);
@@ -105,9 +106,6 @@ export class GoogleSignIn {
     const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : null;
     if (!email || claims?.email_verified !== true) {
       throw new SignInError('Your Google account has no verified email address');
-    }
-    if (!this.config.adminEmails.includes(email)) {
-      throw new SignInError(`${email} is not allowed to administer this gateway`);
     }
     return email;
   }

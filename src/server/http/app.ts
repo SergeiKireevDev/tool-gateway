@@ -10,9 +10,10 @@ import { forbidden, HttpError, notFound, unauthorized } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { HTTP, isClientError } from '../httpStatus.js';
 import { GoogleSignIn } from '../auth/google.js';
-import { adminAuthRoutes, cookieAdmin, CSRF_HEADER } from './adminAuth.js';
+import { adminAuthRoutes, cookieIdentity, CSRF_HEADER } from './adminAuth.js';
 import { bearerToken } from './auth.js';
 import { created, h, param } from './handlers.js';
+import { memberPortalRoutes } from './memberPortalRoutes.js';
 import { memberRoutes } from './memberRoutes.js';
 import { proxyHandler } from './proxy.js';
 
@@ -74,7 +75,7 @@ export function createApp(
       next(gateway.verifyAdminToken(token) ? undefined : unauthorized('Invalid admin token'));
       return;
     }
-    if (cookieAdmin(gateway, req)) {
+    if (cookieIdentity(gateway, req)?.role === 'admin') {
       next(req.get(CSRF_HEADER) === '1' ? undefined : forbidden(`Missing ${CSRF_HEADER} header`));
       return;
     }
@@ -88,22 +89,7 @@ export function createApp(
   );
   admin.get(
     '/tools',
-    h(() =>
-      gateway.tools.list().map((t) => ({
-        id: t.id,
-        name: t.name,
-        credentialHelp: t.credentialHelp,
-        resourceHelp: t.resourceHelp,
-        permissions: t.permissions,
-        signIn: t.deviceFlow
-          ? {
-              setupHelp: t.deviceFlow.setupHelp,
-              defaultScopes: t.deviceFlow.defaultScopes,
-              ...gateway.toolSettings(t.id),
-            }
-          : null,
-      })),
-    ),
+    h(() => gateway.toolCatalog()),
   );
 
   admin.put(
@@ -203,6 +189,7 @@ export function createApp(
   );
 
   app.use('/api/admin', admin);
+  app.use('/api/me', memberPortalRoutes(gateway));
   app.use('/api', memberRoutes(gateway));
   app.use('/api', (_req, _res, next) => {
     next(notFound('Not found'));

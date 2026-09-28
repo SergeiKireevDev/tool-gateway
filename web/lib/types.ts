@@ -35,6 +35,9 @@ export type DeviceFlowStatus =
   | { status: 'complete'; account: Account }
   | { status: 'failed'; message: string };
 
+export type AccountOwner =
+  { kind: 'shared' } | { kind: 'member'; memberId: string; memberName: string };
+
 export interface Account {
   id: string;
   tool: string;
@@ -43,9 +46,11 @@ export interface Account {
   secretHint: string;
   createdAt: string;
   lastVerifiedAt: string;
+  owner: AccountOwner;
 }
 
-export interface Template {
+/** What every viewer sees of a template (members get only this). */
+export interface TemplateSummary {
   id: string;
   tool: string;
   name: string;
@@ -54,6 +59,9 @@ export interface Template {
   resources: string[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
+}
+
+export interface Template extends TemplateSummary {
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +84,7 @@ export type SessionIssuer =
 export interface Member {
   id: string;
   name: string;
+  email: string | null;
   keyHint: string;
   templateIds: string[];
   accountIds: string[];
@@ -84,11 +93,13 @@ export interface Member {
   expiresAt: string | null;
   lastUsedAt: string | null;
   activeSessions: number;
+  ownAccounts: number;
   expired: boolean;
 }
 
 export interface MemberInput {
   name: string;
+  email: string | null;
   templateIds: string[];
   accountIds: string[];
   expiresAt: string | null;
@@ -124,4 +135,14 @@ export interface ActivityEntry {
   status?: number;
   decision?: 'allowed' | 'denied';
   detail: string;
+}
+
+/** The signed-in member's own view (member portal). */
+export interface MemberSelf {
+  id: string;
+  name: string;
+  email: string | null;
+  keyHint: string;
+  expiresAt: string | null;
+  templates: TemplateSummary[];
 }
