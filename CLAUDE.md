@@ -12,7 +12,9 @@
   disabling these rules.
 - All cryptography goes through libsodium (`src/server/store/crypto.ts`). Never use `node:crypto`
   primitives directly or hand-roll constructions.
-- Secrets (tool credentials) must never be returned by the API or logged. Session keys and admin
-  tokens are stored only as keyed hashes.
+- Secrets (tool credentials) must never be returned by the API or logged. Admin tokens (`gwa_`),
+  member keys (`gwm_`), session keys (`gws_`) and admin session cookies (`gwc_`) are stored only
+  as keyed hashes. Member endpoints must only ever narrow what a member can reach (templates ∩
+  accounts allowlists), and never expose other members' data.
 - Proxy authorization is deny-by-default: new GitHub endpoints need an explicit rule in
   `src/server/tools/github.ts` plus a test in `test/github.test.ts`.

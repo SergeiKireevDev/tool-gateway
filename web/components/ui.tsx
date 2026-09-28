@@ -285,3 +285,18 @@ export function useNow(intervalMs = 1000): number {
   }, [intervalMs]);
   return now;
 }
+
+/** Titled, copyable code block (e.g. usage examples next to a freshly issued key). */
+export function Snippet({ title, value }: { title: string; value: string }) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs font-medium tracking-wide text-slate-500 uppercase">{title}</span>
+        <CopyButton value={value} />
+      </div>
+      <pre className="overflow-x-auto rounded-md bg-slate-100 px-3 py-2 font-mono text-xs text-slate-800">
+        {value}
+      </pre>
+    </div>
+  );
+}

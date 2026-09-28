@@ -1,6 +1,6 @@
 export interface ActivityEntry {
   at: string;
-  kind: 'proxy' | 'admin';
+  kind: 'proxy' | 'admin' | 'member';
   sessionId?: string;
   sessionLabel?: string;
   tool?: string;

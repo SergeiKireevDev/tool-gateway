@@ -266,7 +266,7 @@ function TemplateModal({
 
         <fieldset>
           <legend className="text-sm font-medium text-slate-700">Permissions</legend>
-          <div className="mt-2 grid max-h-72 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+          <div className="mt-2 grid max-h-72 gap-2 overflow-y-auto p-1 sm:grid-cols-2">
             {tool?.permissions.map((p) => {
               const checked = form.permissions.includes(p.id);
               return (

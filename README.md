@@ -99,6 +99,38 @@ rewritten to point back at the gateway.
 When the gateway denies a request, it answers `403` with an `x-gateway-denied: true` header and a
 reason. Expired, revoked or unknown keys get `401`.
 
+## Members: self-serve session keys
+
+A **member key** (`gwm_…`) lets a script, agent or CI job request its own session keys, so no
+admin has to issue each one. Create members in **Members → New member**:
+
+- choose the **templates** it may request keys from, and the **accounts** those keys may use;
+  everything else is denied
+- optionally make the member key expire (30 days, 90 days, 1 year)
+- the member key is shown once; **Rotate key** replaces it and revokes the session keys it issued,
+  **Delete** does the same and removes the member
+
+A member key cannot call tools or the admin API: it can only obtain session keys.
+
+| Endpoint (with `Authorization: Bearer gwm_…`) | Purpose                                                                |
+| --------------------------------------------- | ---------------------------------------------------------------------- |
+| `GET /api/member`                             | The templates and accounts this member may use                         |
+| `POST /api/sessions`                          | Issue a session key: `{ templateId, accountId?, ttlSeconds?, label? }` |
+| `GET /api/sessions`                           | Session keys this member issued                                        |
+| `POST /api/sessions/:id/revoke`               | Revoke one of them                                                     |
+
+```bash
+curl -X POST https://gateway.example/api/sessions \
+  -H "Authorization: Bearer $GATEWAY_MEMBER_KEY" -H 'Content-Type: application/json' \
+  -d '{"templateId":"<template id>","ttlSeconds":1800,"label":"nightly triage"}'
+# → 201 { "key": "gws_…", "session": { …, "issuedBy": { "kind": "member", … } } }
+```
+
+`accountId` can be omitted when the member is allowed exactly one account for the template's tool.
+TTLs follow the template's default and maximum. Templates or accounts outside the member's
+allowlists get `403` (whether or not they exist). The admin UI shows which member issued each
+session key, and the Activity tab logs member actions.
+
 ## Security model
 
 - **Cryptography** is done entirely with [libsodium](https://doc.libsodium.org/)
@@ -117,6 +149,9 @@ reason. Expired, revoked or unknown keys get `401`.
   sign-in session cookie. Cookie-authenticated calls must also send `x-gateway-request: 1`.
   Cross-site pages can't add that header without a CORS preflight, which the gateway never grants.
   On top of `SameSite=Strict`, this blocks CSRF. Session cookies are stored as keyed hashes only.
+- **Keys**: admin tokens (`gwa_`), member keys (`gwm_`), session keys (`gws_`) and admin session
+  cookies (`gwc_`) all have distinct prefixes, are only accepted where they belong, and are stored
+  as keyed hashes only.
 - **Network**: the gateway binds to `127.0.0.1` by default. UI responses set
   `X-Frame-Options: DENY`.
 - **Proxy hardening**:
@@ -129,7 +164,6 @@ Limitations for now:
 
 - Anyone who can read both the key file and the store as your OS user can decrypt them. Moving the
   master key to the OS keychain is a natural next step.
-- Session keys are issued by the admin only, from the UI or the admin API.
 - The activity log is kept in memory.
 
 ## Configuration

@@ -9,10 +9,11 @@ import {
   type Api,
   type GoogleAdmin,
 } from '@/lib/api';
-import type { Account, Session, Template, Tool } from '@/lib/types';
+import type { Account, Member, Session, Template, Tool } from '@/lib/types';
 import { AccountsPanel } from './AccountsPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { LoginScreen } from './LoginScreen';
+import { MembersPanel } from './MembersPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { TemplatesPanel } from './TemplatesPanel';
 import { ErrorBanner } from './ui';
@@ -22,6 +23,7 @@ export interface GatewayData {
   accounts: Account[];
   templates: Template[];
   sessions: Session[];
+  members: Member[];
 }
 
 export interface PanelProps {
@@ -31,19 +33,21 @@ export interface PanelProps {
 }
 
 async function fetchAll(api: Api): Promise<GatewayData> {
-  const [tools, accounts, templates, sessions] = await Promise.all([
+  const [tools, accounts, templates, sessions, members] = await Promise.all([
     api<Tool[]>('GET', '/tools'),
     api<Account[]>('GET', '/accounts'),
     api<Template[]>('GET', '/templates'),
     api<Session[]>('GET', '/sessions'),
+    api<Member[]>('GET', '/members'),
   ]);
-  return { tools, accounts, templates, sessions };
+  return { tools, accounts, templates, sessions, members };
 }
 
 const TABS = [
   { id: 'accounts', label: 'Accounts' },
   { id: 'templates', label: 'Templates' },
   { id: 'sessions', label: 'Session keys' },
+  { id: 'members', label: 'Members' },
   { id: 'activity', label: 'Activity' },
 ] as const;
 
@@ -151,6 +155,7 @@ function Dashboard({
         accounts: data.accounts.length,
         templates: data.templates.length,
         sessions: activeSessions,
+        members: data.members.length,
       }
     : {};
 
@@ -218,6 +223,8 @@ function Dashboard({
                 return <TemplatesPanel {...props} />;
               case 'sessions':
                 return <SessionsPanel {...props} />;
+              case 'members':
+                return <MembersPanel {...props} />;
               case 'activity':
                 return <ActivityPanel api={api} />;
             }

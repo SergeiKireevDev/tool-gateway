@@ -2,40 +2,19 @@ import express, {
   type ErrorRequestHandler,
   type NextFunction,
   type Request,
-  type RequestHandler,
   type Response,
 } from 'express';
 import { ZodError } from 'zod';
 import type { GatewayConfig } from '../config.js';
-import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../errors.js';
+import { forbidden, HttpError, notFound, unauthorized } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { HTTP, isClientError } from '../httpStatus.js';
 import { GoogleSignIn } from '../auth/google.js';
 import { adminAuthRoutes, cookieAdmin, CSRF_HEADER } from './adminAuth.js';
 import { bearerToken } from './auth.js';
+import { created, h, param } from './handlers.js';
+import { memberRoutes } from './memberRoutes.js';
 import { proxyHandler } from './proxy.js';
-
-type AsyncHandler = (req: Request, res: Response) => Promise<unknown>;
-
-/** Wraps an async handler: resolved values are sent as JSON, rejections go to the error handler. */
-const h =
-  (fn: AsyncHandler | ((req: Request, res: Response) => unknown)): RequestHandler =>
-  (req, res, next) => {
-    Promise.resolve(fn(req, res))
-      .then((body) => {
-        if (!res.headersSent) {
-          if (body === undefined) res.status(HTTP.NO_CONTENT).end();
-          else res.json(body);
-        }
-      })
-      .catch(next);
-  };
-
-const param = (req: Request, name: string): string => {
-  const value = req.params[name];
-  if (typeof value !== 'string') throw badRequest(`Missing ${name}`);
-  return value;
-};
 
 export interface AppOptions {
   /** Used for upstream calls; injectable for tests. */
@@ -133,10 +112,7 @@ export function createApp(
   );
   admin.post(
     '/device-flows',
-    h(async (req, res) => {
-      res.status(HTTP.CREATED);
-      return gateway.startDeviceFlow(req.body);
-    }),
+    created((req) => gateway.startDeviceFlow(req.body)),
   );
   admin.post(
     '/device-flows/:id/poll',
@@ -155,10 +131,7 @@ export function createApp(
   );
   admin.post(
     '/accounts',
-    h(async (req, res) => {
-      res.status(HTTP.CREATED);
-      return gateway.createAccount(req.body);
-    }),
+    created((req) => gateway.createAccount(req.body)),
   );
   admin.patch(
     '/accounts/:id',
@@ -179,10 +152,7 @@ export function createApp(
   );
   admin.post(
     '/templates',
-    h(async (req, res) => {
-      res.status(HTTP.CREATED);
-      return gateway.createTemplate(req.body);
-    }),
+    created((req) => gateway.createTemplate(req.body)),
   );
   admin.put(
     '/templates/:id',
@@ -199,14 +169,32 @@ export function createApp(
   );
   admin.post(
     '/sessions',
-    h(async (req, res) => {
-      res.status(HTTP.CREATED);
-      return gateway.issueSession(req.body);
-    }),
+    created((req) => gateway.issueSession(req.body)),
   );
   admin.post(
     '/sessions/:id/revoke',
     h((req) => gateway.revokeSession(param(req, 'id'))),
+  );
+
+  admin.get(
+    '/members',
+    h(() => gateway.listMembers()),
+  );
+  admin.post(
+    '/members',
+    created((req) => gateway.createMember(req.body)),
+  );
+  admin.put(
+    '/members/:id',
+    h((req) => gateway.updateMember(param(req, 'id'), req.body)),
+  );
+  admin.post(
+    '/members/:id/rotate',
+    h((req) => gateway.rotateMemberKey(param(req, 'id'))),
+  );
+  admin.delete(
+    '/members/:id',
+    h((req) => gateway.deleteMember(param(req, 'id'))),
   );
 
   admin.get(
@@ -215,6 +203,7 @@ export function createApp(
   );
 
   app.use('/api/admin', admin);
+  app.use('/api', memberRoutes(gateway));
   app.use('/api', (_req, _res, next) => {
     next(notFound('Not found'));
   });
