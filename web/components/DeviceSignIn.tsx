@@ -3,6 +3,7 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
+import { MS_PER_SECOND } from '@/lib/units';
 import type { DeviceFlowStart, DeviceFlowStatus, Tool } from '@/lib/types';
 import { Button, CopyButton, ErrorBanner, Field, Input, useNow } from './ui';
 
@@ -247,7 +248,8 @@ function PendingApproval({
       api<DeviceFlowStatus>('POST', `/device-flows/${flow.flowId}/poll`).then(
         (result) => {
           if (stopped) return;
-          if (result.status === 'pending') timer = setTimeout(tick, flow.intervalSeconds * 1000);
+          if (result.status === 'pending')
+            timer = setTimeout(tick, flow.intervalSeconds * MS_PER_SECOND);
           else handle(result);
         },
         (err: unknown) => {
@@ -255,7 +257,7 @@ function PendingApproval({
         },
       );
     };
-    timer = setTimeout(tick, flow.intervalSeconds * 1000);
+    timer = setTimeout(tick, flow.intervalSeconds * MS_PER_SECOND);
     return () => {
       stopped = true;
       clearTimeout(timer);

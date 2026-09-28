@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from '../units.js';
 import type { CryptoBox } from './crypto.js';
 import { emptyState, type StoreState } from './types.js';
 
@@ -61,9 +62,11 @@ export class EncryptedStore {
   }
 
   private async persist(snapshot: string): Promise<void> {
-    await mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
+    await mkdir(path.dirname(this.file), { recursive: true, mode: PRIVATE_DIR_MODE });
     const tmp = `${this.file}.${String(process.pid)}.tmp`;
-    await writeFile(tmp, JSON.stringify(this.crypto.seal(snapshot, AAD)), { mode: 0o600 });
+    await writeFile(tmp, JSON.stringify(this.crypto.seal(snapshot, AAD)), {
+      mode: PRIVATE_FILE_MODE,
+    });
     await rename(tmp, this.file);
   }
 }

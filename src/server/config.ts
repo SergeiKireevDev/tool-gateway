@@ -2,6 +2,9 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+const DEFAULT_PORT = 7420;
+const MAX_PORT = 65535;
+
 export interface GoogleSignInConfig {
   clientId: string;
   clientSecret: string;
@@ -37,8 +40,8 @@ const read = (env: Env, key: string): string | undefined => {
 
 export function loadConfig(env: Env = process.env): GatewayConfig {
   const host = read(env, 'GATEWAY_HOST') ?? '127.0.0.1';
-  const port = Number(read(env, 'GATEWAY_PORT') ?? 7420);
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+  const port = Number(read(env, 'GATEWAY_PORT') ?? DEFAULT_PORT);
+  if (!Number.isInteger(port) || port <= 0 || port > MAX_PORT) {
     throw new Error(`Invalid GATEWAY_PORT: ${env.GATEWAY_PORT ?? ''}`);
   }
   const dataDir = path.resolve(read(env, 'GATEWAY_DATA_DIR') ?? 'data');

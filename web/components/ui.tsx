@@ -10,6 +10,9 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
+import { SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '@/lib/units';
+
+const COPIED_FEEDBACK_MS = 1500;
 
 const cx = (...classes: (string | false | null | undefined)[]): string =>
   classes.filter(Boolean).join(' ');
@@ -209,7 +212,7 @@ export function CopyButton({ value, label = 'Copy' }: { value: string; label?: s
           setCopied(true);
           setTimeout(() => {
             setCopied(false);
-          }, 1500);
+          }, COPIED_FEEDBACK_MS);
         });
       }}
     >
@@ -219,16 +222,16 @@ export function CopyButton({ value, label = 'Copy' }: { value: string; label?: s
 }
 
 const DURATION_UNITS = [
-  { label: 'minutes', seconds: 60 },
-  { label: 'hours', seconds: 3600 },
-  { label: 'days', seconds: 86400 },
+  { label: 'minutes', seconds: SECONDS_PER_MINUTE },
+  { label: 'hours', seconds: SECONDS_PER_HOUR },
+  { label: 'days', seconds: SECONDS_PER_DAY },
 ];
 
 function bestUnit(seconds: number): number {
   for (const u of [...DURATION_UNITS].reverse()) {
     if (seconds % u.seconds === 0) return u.seconds;
   }
-  return 60;
+  return SECONDS_PER_MINUTE;
 }
 
 /** Number + unit picker, value in seconds. */

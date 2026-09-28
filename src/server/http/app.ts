@@ -7,8 +7,9 @@ import express, {
 } from 'express';
 import { ZodError } from 'zod';
 import type { GatewayConfig } from '../config.js';
-import { HttpError } from '../errors.js';
+import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../errors.js';
 import type { Gateway } from '../gateway.js';
+import { HTTP, isClientError } from '../httpStatus.js';
 import { GoogleSignIn } from '../auth/google.js';
 import { adminAuthRoutes, cookieAdmin, CSRF_HEADER } from './adminAuth.js';
 import { bearerToken } from './auth.js';
@@ -23,7 +24,7 @@ const h =
     Promise.resolve(fn(req, res))
       .then((body) => {
         if (!res.headersSent) {
-          if (body === undefined) res.status(204).end();
+          if (body === undefined) res.status(HTTP.NO_CONTENT).end();
           else res.json(body);
         }
       })
@@ -32,7 +33,7 @@ const h =
 
 const param = (req: Request, name: string): string => {
   const value = req.params[name];
-  if (typeof value !== 'string') throw new HttpError(400, `Missing ${name}`);
+  if (typeof value !== 'string') throw badRequest(`Missing ${name}`);
   return value;
 };
 
@@ -59,7 +60,7 @@ export function createApp(
     '/api/session',
     h((req) => {
       const key = bearerToken(req);
-      if (!key) throw new HttpError(401, 'Missing session key');
+      if (!key) throw unauthorized('Missing session key');
       const { session, account } = gateway.resolveSession(key);
       return {
         id: session.id,
@@ -91,18 +92,14 @@ export function createApp(
   admin.use((req: Request, _res: Response, next: NextFunction) => {
     const token = bearerToken(req);
     if (token) {
-      next(gateway.verifyAdminToken(token) ? undefined : new HttpError(401, 'Invalid admin token'));
+      next(gateway.verifyAdminToken(token) ? undefined : unauthorized('Invalid admin token'));
       return;
     }
     if (cookieAdmin(gateway, req)) {
-      next(
-        req.get(CSRF_HEADER) === '1'
-          ? undefined
-          : new HttpError(403, `Missing ${CSRF_HEADER} header`),
-      );
+      next(req.get(CSRF_HEADER) === '1' ? undefined : forbidden(`Missing ${CSRF_HEADER} header`));
       return;
     }
-    next(new HttpError(401, 'Sign in required'));
+    next(unauthorized('Sign in required'));
   });
   admin.use(express.json({ limit: '256kb' }));
 
@@ -137,7 +134,7 @@ export function createApp(
   admin.post(
     '/device-flows',
     h(async (req, res) => {
-      res.status(201);
+      res.status(HTTP.CREATED);
       return gateway.startDeviceFlow(req.body);
     }),
   );
@@ -159,7 +156,7 @@ export function createApp(
   admin.post(
     '/accounts',
     h(async (req, res) => {
-      res.status(201);
+      res.status(HTTP.CREATED);
       return gateway.createAccount(req.body);
     }),
   );
@@ -183,7 +180,7 @@ export function createApp(
   admin.post(
     '/templates',
     h(async (req, res) => {
-      res.status(201);
+      res.status(HTTP.CREATED);
       return gateway.createTemplate(req.body);
     }),
   );
@@ -203,7 +200,7 @@ export function createApp(
   admin.post(
     '/sessions',
     h(async (req, res) => {
-      res.status(201);
+      res.status(HTTP.CREATED);
       return gateway.issueSession(req.body);
     }),
   );
@@ -219,7 +216,7 @@ export function createApp(
 
   app.use('/api/admin', admin);
   app.use('/api', (_req, _res, next) => {
-    next(new HttpError(404, 'Not found'));
+    next(notFound('Not found'));
   });
 
   app.use(errorHandler);
@@ -232,7 +229,7 @@ export const errorHandler: ErrorRequestHandler = (err: unknown, _req, res, next)
     return;
   }
   if (err instanceof ZodError) {
-    res.status(400).json({
+    res.status(HTTP.BAD_REQUEST).json({
       error: 'validation_error',
       message: err.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; '),
     });
@@ -243,11 +240,13 @@ export const errorHandler: ErrorRequestHandler = (err: unknown, _req, res, next)
     return;
   }
   const status = (err as { status?: number }).status;
-  if (typeof status === 'number' && status >= 400 && status < 500) {
+  if (typeof status === 'number' && isClientError(status)) {
     // body-parser errors (malformed JSON, payload too large, …)
     res.status(status).json({ error: 'bad_request', message: (err as Error).message });
     return;
   }
   console.error(err);
-  res.status(500).json({ error: 'internal_error', message: 'Internal gateway error' });
+  res
+    .status(HTTP.INTERNAL_SERVER_ERROR)
+    .json({ error: 'internal_error', message: 'Internal gateway error' });
 };

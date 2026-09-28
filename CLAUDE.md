@@ -5,6 +5,11 @@
 - **After every change run `npm run check`** (typecheck, ESLint strict-type-checked, Prettier check,
   Vitest). Fix everything before considering an iteration done. `npm run lint:fix` and
   `npm run format` autofix most issues.
+- Application code (`src/server`, `web`) also follows the rules carried over from oyster: no magic
+  numbers (use named constants, e.g. `src/server/units.ts`, `src/server/httpStatus.ts`,
+  `web/lib/units.ts`), SonarJS duplication/complexity limits (cognitive ≤ 25, cyclomatic ≤ 15,
+  nesting ≤ 4, no string literal repeated 3+ times). Split components/functions rather than
+  disabling these rules.
 - All cryptography goes through libsodium (`src/server/store/crypto.ts`). Never use `node:crypto`
   primitives directly or hand-roll constructions.
 - Secrets (tool credentials) must never be returned by the API or logged. Session keys and admin

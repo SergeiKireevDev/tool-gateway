@@ -3,6 +3,7 @@ import eslint from '@eslint/js';
 import nextPlugin from '@next/eslint-plugin-next';
 import prettier from 'eslint-config-prettier';
 import reactHooks from 'eslint-plugin-react-hooks';
+import sonarjs from 'eslint-plugin-sonarjs';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
@@ -23,7 +24,10 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
       '@typescript-eslint/consistent-type-imports': 'error',
-      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { varsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
       eqeqeq: ['error', 'always'],
       'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
     },
@@ -31,6 +35,38 @@ export default tseslint.config(
   {
     files: ['src/server/**/*.ts', 'test/**/*.ts'],
     languageOptions: { globals: globals.node },
+  },
+  {
+    // Rules carried over from ../../oyster/eslint.config.mjs (applied to application code, like
+    // oyster, not to tests). TypeScript-aware variants replace the core rules where one exists.
+    files: ['src/server/**/*.ts', 'web/**/*.{ts,tsx}'],
+    plugins: { sonarjs },
+    rules: {
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      'no-magic-numbers': 'off',
+      '@typescript-eslint/no-magic-numbers': [
+        'error',
+        {
+          ignore: [-1, 0, 1, 2],
+          ignoreDefaultValues: true,
+          enforceConst: true,
+          // TypeScript-only constructs the JS rule never sees
+          ignoreEnums: true,
+          ignoreNumericLiteralTypes: true,
+          ignoreReadonlyClassProperties: true,
+          ignoreTypeIndexes: true,
+        },
+      ],
+      'sonarjs/no-collapsible-if': 'error',
+      'sonarjs/no-duplicate-string': ['error', { threshold: 3 }],
+      'sonarjs/no-duplicated-branches': 'error',
+      'sonarjs/no-identical-functions': 'error',
+      'sonarjs/no-nested-template-literals': 'error',
+      'sonarjs/no-redundant-optional': 'error',
+      'sonarjs/cognitive-complexity': ['error', 25],
+      'sonarjs/cyclomatic-complexity': ['error', { threshold: 15 }],
+      'sonarjs/nested-control-flow': ['error', { maximumNestingLevel: 4 }],
+    },
   },
   {
     // supertest types response bodies as `any`

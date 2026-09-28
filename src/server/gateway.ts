@@ -1,39 +1,67 @@
 import { z } from 'zod';
 import type { ActivityLog } from './activity.js';
-import { badRequest, HttpError, notFound } from './errors.js';
+import {
+  badGateway,
+  badRequest,
+  conflict,
+  HttpError,
+  notFound,
+  unauthorized,
+  unprocessable,
+} from './errors.js';
 import { CryptoBox, randomId, randomToken } from './store/crypto.js';
 import type { EncryptedStore } from './store/store.js';
 import type { Account, Session, Template } from './store/types.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { ToolProvider } from './tools/types.js';
+import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_HOUR } from './units.js';
 
 export const SESSION_KEY_PREFIX = 'gws_';
 export const ADMIN_TOKEN_PREFIX = 'gwa_';
 export const ADMIN_WEB_SESSION_PREFIX = 'gwc_';
-export const ADMIN_WEB_SESSION_TTL_SECONDS = 12 * 3600;
+const ADMIN_WEB_SESSION_TTL_HOURS = 12;
+export const ADMIN_WEB_SESSION_TTL_SECONDS = ADMIN_WEB_SESSION_TTL_HOURS * SECONDS_PER_HOUR;
 const MIN_TTL = 60;
-const MAX_TTL = 7 * 24 * 3600;
+const MAX_TTL_DAYS = 7;
+const MAX_TTL = MAX_TTL_DAYS * SECONDS_PER_DAY;
 /** Expired/revoked sessions are kept this long for the UI, then pruned. */
-const SESSION_RETENTION_MS = 7 * 24 * 3600 * 1000;
+const SESSION_RETENTION_DAYS = 7;
+const SESSION_RETENTION_MS = SESSION_RETENTION_DAYS * MS_PER_DAY;
+
+// Input limits
+const MAX_LABEL_LENGTH = 100;
+const MAX_SECRET_LENGTH = 4096;
+const MAX_DESCRIPTION_LENGTH = 500;
+const MAX_CLIENT_ID_LENGTH = 100;
+const MAX_SCOPES_LENGTH = 300;
+
+/** Non-secret key prefix shown in the UI to tell keys apart. */
+const KEY_HINT_CHARS = 6;
+/** Trailing characters of a stored credential shown in the UI. */
+const SECRET_HINT_CHARS = 4;
+const DEVICE_FLOW_ID_BYTES = 16;
+
+const ACCOUNT_NOT_FOUND = 'Account not found';
+const TEMPLATE_NOT_FOUND = 'Template not found';
 
 const ttl = z.number().int().min(MIN_TTL).max(MAX_TTL);
 
 export const accountCreateSchema = z.object({
   tool: z.string().min(1),
-  label: z.string().trim().min(1).max(100),
-  secret: z.string().trim().min(1).max(4096),
+  label: z.string().trim().min(1).max(MAX_LABEL_LENGTH),
+  secret: z.string().trim().min(1).max(MAX_SECRET_LENGTH),
 });
 
 export const accountUpdateSchema = z.object({
-  label: z.string().trim().min(1).max(100).optional(),
-  secret: z.string().trim().min(1).max(4096).optional(),
+  label: z.string().trim().min(1).max(MAX_LABEL_LENGTH).optional(),
+  secret: z.string().trim().min(1).max(MAX_SECRET_LENGTH).optional(),
 });
 
 export const templateSchema = z
   .object({
     tool: z.string().min(1),
-    name: z.string().trim().min(1).max(100),
-    description: z.string().trim().max(500).default(''),
+    name: z.string().trim().min(1).max(MAX_LABEL_LENGTH),
+    description: z.string().trim().max(MAX_DESCRIPTION_LENGTH).default(''),
     permissions: z.array(z.string()).min(1, 'Select at least one permission'),
     resources: z.array(z.string().trim()).default([]),
     defaultTtlSeconds: ttl,
@@ -48,24 +76,24 @@ export const sessionRequestSchema = z.object({
   templateId: z.string().min(1),
   accountId: z.string().min(1).optional(),
   ttlSeconds: ttl.optional(),
-  label: z.string().trim().max(100).optional(),
+  label: z.string().trim().max(MAX_LABEL_LENGTH).optional(),
 });
 
 export const toolSettingsSchema = z.object({
   oauthClientId: z
     .string()
     .trim()
-    .max(100)
+    .max(MAX_CLIENT_ID_LENGTH)
     .regex(/^[A-Za-z0-9._-]*$/, 'Invalid client ID'),
 });
 
 export const deviceFlowStartSchema = z.object({
   tool: z.string().min(1),
-  label: z.string().trim().min(1).max(100),
+  label: z.string().trim().min(1).max(MAX_LABEL_LENGTH),
   scopes: z
     .string()
     .trim()
-    .max(300)
+    .max(MAX_SCOPES_LENGTH)
     .regex(/^[A-Za-z0-9:_ -]*$/, 'Invalid scopes')
     .optional(),
 });
@@ -135,7 +163,7 @@ export class Gateway {
   async createAdminWebSession(email: string): Promise<{ token: string; expiresAt: Date }> {
     const token = randomToken(ADMIN_WEB_SESSION_PREFIX);
     const now = this.now();
-    const expiresAt = new Date(now.getTime() + ADMIN_WEB_SESSION_TTL_SECONDS * 1000);
+    const expiresAt = new Date(now.getTime() + ADMIN_WEB_SESSION_TTL_SECONDS * MS_PER_SECOND);
     await this.store.update((s) => {
       s.adminSessions = s.adminSessions.filter((x) => Date.parse(x.expiresAt) > now.getTime());
       s.adminSessions.push({
@@ -242,26 +270,26 @@ export class Gateway {
     try {
       auth = await tool.deviceFlow.start(clientId, data.scopes ?? tool.deviceFlow.defaultScopes);
     } catch (err) {
-      throw new HttpError(502, `Could not start sign-in: ${(err as Error).message}`);
+      throw badGateway(`Could not start sign-in: ${(err as Error).message}`);
     }
     this.pruneDeviceFlows();
     const now = this.now().getTime();
-    const flowId = randomToken('', 16);
+    const flowId = randomToken('', DEVICE_FLOW_ID_BYTES);
     this.deviceFlows.set(flowId, {
       tool: tool.id,
       label: data.label,
       clientId,
       deviceCode: auth.deviceCode,
-      intervalMs: auth.interval * 1000,
-      nextPollAt: now + auth.interval * 1000,
-      expiresAt: now + auth.expiresIn * 1000,
+      intervalMs: auth.interval * MS_PER_SECOND,
+      nextPollAt: now + auth.interval * MS_PER_SECOND,
+      expiresAt: now + auth.expiresIn * MS_PER_SECOND,
       polling: false,
     });
     return {
       flowId,
       userCode: auth.userCode,
       verificationUri: auth.verificationUri,
-      expiresAt: new Date(now + auth.expiresIn * 1000).toISOString(),
+      expiresAt: new Date(now + auth.expiresIn * MS_PER_SECOND).toISOString(),
       intervalSeconds: auth.interval,
     };
   }
@@ -290,7 +318,7 @@ export class Gateway {
           flow.nextPollAt = this.now().getTime() + flow.intervalMs;
           return { status: 'pending' };
         case 'slow_down':
-          flow.intervalMs = result.interval * 1000;
+          flow.intervalMs = result.interval * MS_PER_SECOND;
           flow.nextPollAt = this.now().getTime() + flow.intervalMs;
           return { status: 'pending' };
         case 'failed':
@@ -338,7 +366,7 @@ export class Gateway {
     }
     const updated = await this.store.update((s) => {
       const acc = s.accounts.find((a) => a.id === id);
-      if (!acc) throw notFound('Account not found');
+      if (!acc) throw notFound(ACCOUNT_NOT_FOUND);
       Object.assign(acc, patch);
       return acc;
     });
@@ -355,7 +383,7 @@ export class Gateway {
     const identity = await this.verify(this.tool(acc.tool), acc.secret);
     const updated = await this.store.update((s) => {
       const a = s.accounts.find((x) => x.id === id);
-      if (!a) throw notFound('Account not found');
+      if (!a) throw notFound(ACCOUNT_NOT_FOUND);
       a.identity = identity;
       a.lastVerifiedAt = this.now().toISOString();
       return a;
@@ -378,7 +406,7 @@ export class Gateway {
 
   private findAccount(id: string): Account {
     const acc = this.store.read().accounts.find((a) => a.id === id);
-    if (!acc) throw notFound('Account not found');
+    if (!acc) throw notFound(ACCOUNT_NOT_FOUND);
     return acc;
   }
 
@@ -386,7 +414,7 @@ export class Gateway {
     try {
       return await tool.verifyCredential(secret);
     } catch (err) {
-      throw new HttpError(422, `Could not verify credential: ${(err as Error).message}`);
+      throw unprocessable(`Could not verify credential: ${(err as Error).message}`);
     }
   }
 
@@ -417,7 +445,7 @@ export class Gateway {
     const template: Template = { id: randomId(), ...data, createdAt: ts, updatedAt: ts };
     await this.store.update((s) => {
       if (s.templates.some((t) => t.name.toLowerCase() === data.name.toLowerCase())) {
-        throw new HttpError(409, `A template named "${data.name}" already exists`);
+        throw conflict(`A template named "${data.name}" already exists`);
       }
       s.templates.push(template);
     });
@@ -433,11 +461,11 @@ export class Gateway {
     const data = this.validateTemplate(input);
     const updated = await this.store.update((s) => {
       const t = s.templates.find((x) => x.id === id);
-      if (!t) throw notFound('Template not found');
+      if (!t) throw notFound(TEMPLATE_NOT_FOUND);
       const clash = s.templates.some(
         (x) => x.id !== id && x.name.toLowerCase() === data.name.toLowerCase(),
       );
-      if (clash) throw new HttpError(409, `A template named "${data.name}" already exists`);
+      if (clash) throw conflict(`A template named "${data.name}" already exists`);
       Object.assign(t, data, { updatedAt: this.now().toISOString() });
       return t;
     });
@@ -451,7 +479,7 @@ export class Gateway {
 
   async deleteTemplate(id: string): Promise<void> {
     const tpl = this.store.read().templates.find((t) => t.id === id);
-    if (!tpl) throw notFound('Template not found');
+    if (!tpl) throw notFound(TEMPLATE_NOT_FOUND);
     const revoked = await this.store.update((s) => {
       s.templates = s.templates.filter((t) => t.id !== id);
       return this.revokeWhere(s.sessions, (x) => x.templateId === id);
@@ -477,12 +505,12 @@ export class Gateway {
     const req = sessionRequestSchema.parse(input);
     const state = this.store.read();
     const template = state.templates.find((t) => t.id === req.templateId);
-    if (!template) throw notFound('Template not found');
+    if (!template) throw notFound(TEMPLATE_NOT_FOUND);
 
     let account: Account | undefined;
     if (req.accountId) {
       account = state.accounts.find((a) => a.id === req.accountId);
-      if (!account) throw notFound('Account not found');
+      if (!account) throw notFound(ACCOUNT_NOT_FOUND);
     } else {
       const candidates = state.accounts.filter((a) => a.tool === template.tool);
       if (candidates.length !== 1) {
@@ -494,7 +522,7 @@ export class Gateway {
       }
       account = candidates[0];
     }
-    if (!account) throw notFound('Account not found');
+    if (!account) throw notFound(ACCOUNT_NOT_FOUND);
     if (account.tool !== template.tool) {
       throw badRequest(
         `Account is a ${account.tool} account but template targets ${template.tool}`,
@@ -511,7 +539,7 @@ export class Gateway {
     const session: Session = {
       id: randomId(),
       keyHash: this.crypto.hashToken(key),
-      keyHint: key.slice(0, SESSION_KEY_PREFIX.length + 6),
+      keyHint: key.slice(0, SESSION_KEY_PREFIX.length + KEY_HINT_CHARS),
       label: req.label ?? '',
       tool: template.tool,
       accountId: account.id,
@@ -520,7 +548,7 @@ export class Gateway {
       permissions: [...template.permissions],
       resources: [...template.resources],
       createdAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+      expiresAt: new Date(now.getTime() + ttlSeconds * MS_PER_SECOND).toISOString(),
       revokedAt: null,
       lastUsedAt: null,
       requestCount: 0,
@@ -557,17 +585,17 @@ export class Gateway {
 
   /** Resolves a presented session key; throws 401/403 with a useful message otherwise. */
   resolveSession(key: string): ResolvedSession {
-    if (!key.startsWith(SESSION_KEY_PREFIX)) throw new HttpError(401, 'Invalid session key');
+    if (!key.startsWith(SESSION_KEY_PREFIX)) throw unauthorized('Invalid session key');
     const hash = this.crypto.hashToken(key);
     const state = this.store.read();
     const session = state.sessions.find((s) => CryptoBox.equalHex(s.keyHash, hash));
-    if (!session) throw new HttpError(401, 'Invalid session key');
+    if (!session) throw unauthorized('Invalid session key');
     const status = this.statusOf(session);
-    if (status !== 'active') throw new HttpError(401, `Session key is ${status}`);
+    if (status !== 'active') throw unauthorized(`Session key is ${status}`);
     const account = state.accounts.find((a) => a.id === session.accountId);
-    if (!account) throw new HttpError(401, 'Account behind this session was removed');
+    if (!account) throw unauthorized('Account behind this session was removed');
     const tool = this.tools.get(session.tool);
-    if (!tool) throw new HttpError(401, 'Tool is no longer available');
+    if (!tool) throw unauthorized('Tool is no longer available');
     return { session, account, tool };
   }
 
@@ -633,5 +661,5 @@ function endOf(s: Session): number {
 
 function toPublicAccount(a: Account): PublicAccount {
   const { secret, ...rest } = a;
-  return { ...rest, secretHint: `…${secret.slice(-4)}` };
+  return { ...rest, secretHint: `…${secret.slice(-SECRET_HINT_CHARS)}` };
 }

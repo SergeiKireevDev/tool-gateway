@@ -1,3 +1,5 @@
+import { HTTP_NO_CONTENT, HTTP_UNAUTHORIZED } from './http';
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -47,8 +49,8 @@ export function createApi(token: string | null, onUnauthorized: () => void): Api
       body: body === undefined ? undefined : JSON.stringify(body),
       cache: 'no-store',
     });
-    if (res.status === 401) onUnauthorized();
-    if (res.status === 204) return undefined as T;
+    if (res.status === HTTP_UNAUTHORIZED) onUnauthorized();
+    if (res.status === HTTP_NO_CONTENT) return undefined as T;
     const data: unknown = await res.json().catch(() => null);
     if (!res.ok) throw new ApiError(res.status, errorMessage(data, res.status));
     return data as T;
@@ -69,7 +71,7 @@ export interface GoogleAdmin {
 /** The admin signed in with Google (session cookie), or null. */
 export async function fetchGoogleAdmin(): Promise<GoogleAdmin | null> {
   const res = await fetch('/api/auth/me', { cache: 'no-store' });
-  if (res.status === 401) return null;
+  if (res.status === HTTP_UNAUTHORIZED) return null;
   if (!res.ok) throw new ApiError(res.status, `Request failed (HTTP ${res.status})`);
   return (await res.json()) as GoogleAdmin;
 }

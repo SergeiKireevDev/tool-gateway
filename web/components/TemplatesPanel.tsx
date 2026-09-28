@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { formatDuration } from '@/lib/format';
+import { DEFAULT_MAX_TTL_SECONDS, DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { Template, TemplateInput } from '@/lib/types';
 import type { PanelProps } from './AdminApp';
 import {
@@ -171,8 +172,8 @@ function TemplateModal({
     description: existing?.description ?? '',
     permissions: existing?.permissions ?? [],
     resources: existing?.resources ?? [],
-    defaultTtlSeconds: existing?.defaultTtlSeconds ?? 3600,
-    maxTtlSeconds: existing?.maxTtlSeconds ?? 8 * 3600,
+    defaultTtlSeconds: existing?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS,
+    maxTtlSeconds: existing?.maxTtlSeconds ?? DEFAULT_MAX_TTL_SECONDS,
   }));
   const [resourcesText, setResourcesText] = useState(form.resources.join('\n'));
   const [error, setError] = useState<string | null>(null);

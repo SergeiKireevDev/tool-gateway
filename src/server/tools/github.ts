@@ -1,3 +1,4 @@
+import { HTTP } from '../httpStatus.js';
 import { matchPath } from './pathMatch.js';
 import type {
   AuthzDecision,
@@ -11,58 +12,78 @@ import type {
 const API = 'https://api.github.com';
 const WEB = 'https://github.com';
 const API_VERSION = '2022-11-28';
+const USER_AGENT = 'local-gateway';
+// RFC 8628 defaults when GitHub omits them
+const DEFAULT_DEVICE_CODE_TTL_SECONDS = 900;
+const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+const DEFAULT_SLOW_DOWN_INTERVAL_SECONDS = 10;
+
+/** GitHub permission ids, as stored in templates and session keys. */
+const PERM = {
+  METADATA_READ: 'metadata:read',
+  CONTENTS_READ: 'contents:read',
+  CONTENTS_WRITE: 'contents:write',
+  ISSUES_READ: 'issues:read',
+  ISSUES_WRITE: 'issues:write',
+  PULLS_READ: 'pulls:read',
+  PULLS_WRITE: 'pulls:write',
+  ACTIONS_READ: 'actions:read',
+  ACTIONS_WRITE: 'actions:write',
+  USER_READ: 'user:read',
+  SEARCH_READ: 'search:read',
+} as const;
 
 const PERMISSIONS: readonly PermissionDef[] = [
   {
-    id: 'metadata:read',
+    id: PERM.METADATA_READ,
     label: 'Repository metadata (read)',
     description: 'Repository info, branches, tags, languages, topics, contributors.',
   },
   {
-    id: 'contents:read',
+    id: PERM.CONTENTS_READ,
     label: 'Contents (read)',
     description:
       'Files, commits, git objects, compares, releases, archives, check runs on commits.',
   },
   {
-    id: 'contents:write',
+    id: PERM.CONTENTS_WRITE,
     label: 'Contents (write)',
     description: 'Create/update/delete files, create git objects, update refs, merge branches.',
   },
   {
-    id: 'issues:read',
+    id: PERM.ISSUES_READ,
     label: 'Issues (read)',
     description: 'Issues, issue comments, labels, milestones.',
   },
   {
-    id: 'issues:write',
+    id: PERM.ISSUES_WRITE,
     label: 'Issues (write)',
     description: 'Open/edit issues, comment, manage labels and milestones.',
   },
   {
-    id: 'pulls:read',
+    id: PERM.PULLS_READ,
     label: 'Pull requests (read)',
     description: 'Pull requests, reviews, diffs.',
   },
   {
-    id: 'pulls:write',
+    id: PERM.PULLS_WRITE,
     label: 'Pull requests (write)',
     description: 'Open/edit pull requests, review, comment, merge.',
   },
-  { id: 'actions:read', label: 'Actions (read)', description: 'Workflows, runs, jobs, logs.' },
+  { id: PERM.ACTIONS_READ, label: 'Actions (read)', description: 'Workflows, runs, jobs, logs.' },
   {
-    id: 'actions:write',
+    id: PERM.ACTIONS_WRITE,
     label: 'Actions (trigger)',
     description: 'Dispatch workflows, re-run or cancel runs. Does not grant access to secrets.',
   },
   {
-    id: 'user:read',
+    id: PERM.USER_READ,
     label: 'User profile (read)',
     description:
       'Authenticated user, their repo/org lists, public user profiles. Not limited by the repository allowlist.',
   },
   {
-    id: 'search:read',
+    id: PERM.SEARCH_READ,
     label: 'Search (read)',
     description:
       'Search API. Not limited by the repository allowlist: only enable for unrestricted templates.',
@@ -80,9 +101,9 @@ const W = ['POST', 'PUT', 'PATCH', 'DELETE'] as const;
 const REPO = '/repos/:owner/:repo';
 
 const RULES: readonly Rule[] = [
-  { permission: 'metadata:read', methods: R, pattern: REPO },
+  { permission: PERM.METADATA_READ, methods: R, pattern: REPO },
   ...['branches/**', 'tags', 'languages', 'topics', 'contributors'].map((p) => ({
-    permission: 'metadata:read',
+    permission: PERM.METADATA_READ,
     methods: R,
     pattern: `${REPO}/${p}`,
   })),
@@ -95,43 +116,43 @@ const RULES: readonly Rule[] = [
     'tarball/**',
     'zipball/**',
     'releases/**',
-  ].map((p) => ({ permission: 'contents:read', methods: R, pattern: `${REPO}/${p}` })),
-  { permission: 'contents:write', methods: ['PUT', 'DELETE'], pattern: `${REPO}/contents/**` },
-  { permission: 'contents:write', methods: ['POST'], pattern: `${REPO}/git/**` },
-  { permission: 'contents:write', methods: ['PATCH', 'DELETE'], pattern: `${REPO}/git/refs/**` },
-  { permission: 'contents:write', methods: ['POST'], pattern: `${REPO}/merges` },
+  ].map((p) => ({ permission: PERM.CONTENTS_READ, methods: R, pattern: `${REPO}/${p}` })),
+  { permission: PERM.CONTENTS_WRITE, methods: ['PUT', 'DELETE'], pattern: `${REPO}/contents/**` },
+  { permission: PERM.CONTENTS_WRITE, methods: ['POST'], pattern: `${REPO}/git/**` },
+  { permission: PERM.CONTENTS_WRITE, methods: ['PATCH', 'DELETE'], pattern: `${REPO}/git/refs/**` },
+  { permission: PERM.CONTENTS_WRITE, methods: ['POST'], pattern: `${REPO}/merges` },
   ...['issues/**', 'labels/**', 'milestones/**'].map((p) => ({
-    permission: 'issues:read',
+    permission: PERM.ISSUES_READ,
     methods: R,
     pattern: `${REPO}/${p}`,
   })),
   ...['issues/**', 'labels/**', 'milestones/**'].map((p) => ({
-    permission: 'issues:write',
+    permission: PERM.ISSUES_WRITE,
     methods: W,
     pattern: `${REPO}/${p}`,
   })),
-  { permission: 'pulls:read', methods: R, pattern: `${REPO}/pulls/**` },
-  { permission: 'pulls:write', methods: W, pattern: `${REPO}/pulls/**` },
-  { permission: 'actions:read', methods: R, pattern: `${REPO}/actions/workflows/**` },
-  { permission: 'actions:read', methods: R, pattern: `${REPO}/actions/runs/**` },
-  { permission: 'actions:read', methods: R, pattern: `${REPO}/actions/jobs/**` },
-  { permission: 'actions:read', methods: R, pattern: `${REPO}/actions/artifacts/**` },
+  { permission: PERM.PULLS_READ, methods: R, pattern: `${REPO}/pulls/**` },
+  { permission: PERM.PULLS_WRITE, methods: W, pattern: `${REPO}/pulls/**` },
+  { permission: PERM.ACTIONS_READ, methods: R, pattern: `${REPO}/actions/workflows/**` },
+  { permission: PERM.ACTIONS_READ, methods: R, pattern: `${REPO}/actions/runs/**` },
+  { permission: PERM.ACTIONS_READ, methods: R, pattern: `${REPO}/actions/jobs/**` },
+  { permission: PERM.ACTIONS_READ, methods: R, pattern: `${REPO}/actions/artifacts/**` },
   {
-    permission: 'actions:write',
+    permission: PERM.ACTIONS_WRITE,
     methods: ['POST'],
     pattern: `${REPO}/actions/workflows/*/dispatches`,
   },
   ...['rerun', 'rerun-failed-jobs', 'cancel'].map((p) => ({
-    permission: 'actions:write',
+    permission: PERM.ACTIONS_WRITE,
     methods: ['POST'],
     pattern: `${REPO}/actions/runs/*/${p}`,
   })),
-  { permission: 'actions:write', methods: ['POST'], pattern: `${REPO}/actions/jobs/*/rerun` },
-  { permission: 'user:read', methods: R, pattern: '/user' },
-  { permission: 'user:read', methods: R, pattern: '/user/repos' },
-  { permission: 'user:read', methods: R, pattern: '/user/orgs' },
-  { permission: 'user:read', methods: R, pattern: '/users/**' },
-  { permission: 'search:read', methods: R, pattern: '/search/**' },
+  { permission: PERM.ACTIONS_WRITE, methods: ['POST'], pattern: `${REPO}/actions/jobs/*/rerun` },
+  { permission: PERM.USER_READ, methods: R, pattern: '/user' },
+  { permission: PERM.USER_READ, methods: R, pattern: '/user/repos' },
+  { permission: PERM.USER_READ, methods: R, pattern: '/user/orgs' },
+  { permission: PERM.USER_READ, methods: R, pattern: '/users/**' },
+  { permission: PERM.SEARCH_READ, methods: R, pattern: '/search/**' },
 ];
 
 /** Always allowed for any valid session: harmless and useful for clients. */
@@ -184,11 +205,11 @@ function createDeviceFlow(fetchImpl: typeof fetch): DeviceFlow {
       headers: {
         accept: 'application/json',
         'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': 'local-gateway',
+        'user-agent': USER_AGENT,
       },
       body: new URLSearchParams(params).toString(),
     });
-    if (res.status === 404) {
+    if (res.status === HTTP.NOT_FOUND) {
       throw new Error('Unknown OAuth client ID (GitHub answered 404)');
     }
     if (!res.ok) throw new Error(`GitHub answered HTTP ${res.status}`);
@@ -216,8 +237,8 @@ function createDeviceFlow(fetchImpl: typeof fetch): DeviceFlow {
         deviceCode: data.device_code,
         userCode: data.user_code,
         verificationUri: data.verification_uri,
-        expiresIn: data.expires_in ?? 900,
-        interval: data.interval ?? 5,
+        expiresIn: data.expires_in ?? DEFAULT_DEVICE_CODE_TTL_SECONDS,
+        interval: data.interval ?? DEFAULT_POLL_INTERVAL_SECONDS,
       };
     },
 
@@ -232,7 +253,10 @@ function createDeviceFlow(fetchImpl: typeof fetch): DeviceFlow {
         case 'authorization_pending':
           return { status: 'pending' };
         case 'slow_down':
-          return { status: 'slow_down', interval: data.interval ?? 10 };
+          return {
+            status: 'slow_down',
+            interval: data.interval ?? DEFAULT_SLOW_DOWN_INTERVAL_SECONDS,
+          };
         case 'expired_token':
           return { status: 'failed', message: 'The code expired before it was approved' };
         case 'access_denied':
@@ -269,7 +293,7 @@ export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvi
           authorization: `Bearer ${secret}`,
           accept: 'application/vnd.github+json',
           'x-github-api-version': API_VERSION,
-          'user-agent': 'local-gateway',
+          'user-agent': USER_AGENT,
         },
       });
       if (!res.ok) {
@@ -304,11 +328,14 @@ export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvi
         if (!params) continue;
         matchedPermission ??= rule.permission;
         if (!grant.permissions.includes(rule.permission)) continue;
-        if (params.owner !== undefined && params.repo !== undefined) {
-          if (!repoMatches(grant.resources, params.owner, params.repo)) {
-            repoDenied = true;
-            continue;
-          }
+        const { owner, repo } = params;
+        if (
+          owner !== undefined &&
+          repo !== undefined &&
+          !repoMatches(grant.resources, owner, repo)
+        ) {
+          repoDenied = true;
+          continue;
         }
         return { allowed: true, permission: rule.permission };
       }
@@ -327,7 +354,7 @@ export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvi
       }
       if (!out.has('accept')) out.set('accept', 'application/vnd.github+json');
       out.set('x-github-api-version', incoming.get('x-github-api-version') ?? API_VERSION);
-      out.set('user-agent', 'local-gateway');
+      out.set('user-agent', USER_AGENT);
       out.set('authorization', `Bearer ${secret}`);
       return out;
     },

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { formatDateTime, formatDuration, formatRelative } from '@/lib/format';
 import type { Session, SessionStatus } from '@/lib/types';
+import { DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { PanelProps } from './AdminApp';
 import {
   Badge,
@@ -42,7 +43,8 @@ export function SessionsPanel({ api, data, refresh }: PanelProps) {
   const canIssue = data.templates.length > 0 && data.accounts.length > 0;
 
   const revoke = async (s: Session): Promise<void> => {
-    if (!confirm(`Revoke session key ${s.keyHint}…${s.label ? ` (${s.label})` : ''}?`)) return;
+    const labelSuffix = s.label ? ` (${s.label})` : '';
+    if (!confirm(`Revoke session key ${s.keyHint}…${labelSuffix}?`)) return;
     setError(null);
     try {
       await api('POST', `/sessions/${s.id}/revoke`);
@@ -187,7 +189,7 @@ function IssueModal({
   const template = data.templates.find((t) => t.id === templateId);
   const accounts = data.accounts.filter((a) => a.tool === template?.tool);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '');
-  const [ttl, setTtl] = useState(first?.defaultTtlSeconds ?? 3600);
+  const [ttl, setTtl] = useState(first?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS);
   const [label, setLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -195,7 +197,7 @@ function IssueModal({
   const selectTemplate = (id: string): void => {
     const tpl = data.templates.find((t) => t.id === id);
     setTemplateId(id);
-    setTtl(tpl?.defaultTtlSeconds ?? 3600);
+    setTtl(tpl?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS);
     setAccountId(data.accounts.find((a) => a.tool === tpl?.tool)?.id ?? '');
   };
 
