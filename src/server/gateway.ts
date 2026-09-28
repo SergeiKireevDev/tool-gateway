@@ -1,0 +1,637 @@
+import { z } from 'zod';
+import type { ActivityLog } from './activity.js';
+import { badRequest, HttpError, notFound } from './errors.js';
+import { CryptoBox, randomId, randomToken } from './store/crypto.js';
+import type { EncryptedStore } from './store/store.js';
+import type { Account, Session, Template } from './store/types.js';
+import type { ToolRegistry } from './tools/registry.js';
+import type { ToolProvider } from './tools/types.js';
+
+export const SESSION_KEY_PREFIX = 'gws_';
+export const ADMIN_TOKEN_PREFIX = 'gwa_';
+export const ADMIN_WEB_SESSION_PREFIX = 'gwc_';
+export const ADMIN_WEB_SESSION_TTL_SECONDS = 12 * 3600;
+const MIN_TTL = 60;
+const MAX_TTL = 7 * 24 * 3600;
+/** Expired/revoked sessions are kept this long for the UI, then pruned. */
+const SESSION_RETENTION_MS = 7 * 24 * 3600 * 1000;
+
+const ttl = z.number().int().min(MIN_TTL).max(MAX_TTL);
+
+export const accountCreateSchema = z.object({
+  tool: z.string().min(1),
+  label: z.string().trim().min(1).max(100),
+  secret: z.string().trim().min(1).max(4096),
+});
+
+export const accountUpdateSchema = z.object({
+  label: z.string().trim().min(1).max(100).optional(),
+  secret: z.string().trim().min(1).max(4096).optional(),
+});
+
+export const templateSchema = z
+  .object({
+    tool: z.string().min(1),
+    name: z.string().trim().min(1).max(100),
+    description: z.string().trim().max(500).default(''),
+    permissions: z.array(z.string()).min(1, 'Select at least one permission'),
+    resources: z.array(z.string().trim()).default([]),
+    defaultTtlSeconds: ttl,
+    maxTtlSeconds: ttl,
+  })
+  .refine((t) => t.defaultTtlSeconds <= t.maxTtlSeconds, {
+    message: 'Default TTL must not exceed max TTL',
+    path: ['defaultTtlSeconds'],
+  });
+
+export const sessionRequestSchema = z.object({
+  templateId: z.string().min(1),
+  accountId: z.string().min(1).optional(),
+  ttlSeconds: ttl.optional(),
+  label: z.string().trim().max(100).optional(),
+});
+
+export const toolSettingsSchema = z.object({
+  oauthClientId: z
+    .string()
+    .trim()
+    .max(100)
+    .regex(/^[A-Za-z0-9._-]*$/, 'Invalid client ID'),
+});
+
+export const deviceFlowStartSchema = z.object({
+  tool: z.string().min(1),
+  label: z.string().trim().min(1).max(100),
+  scopes: z
+    .string()
+    .trim()
+    .max(300)
+    .regex(/^[A-Za-z0-9:_ -]*$/, 'Invalid scopes')
+    .optional(),
+});
+
+/** Device flows in progress. The device code stays server-side; the browser only gets a flow id. */
+interface PendingDeviceFlow {
+  tool: string;
+  label: string;
+  clientId: string;
+  deviceCode: string;
+  intervalMs: number;
+  nextPollAt: number;
+  expiresAt: number;
+  polling: boolean;
+}
+
+export type DeviceFlowStatus =
+  | { status: 'pending' }
+  | { status: 'complete'; account: PublicAccount }
+  | { status: 'failed'; message: string };
+
+export type PublicAccount = Omit<Account, 'secret'> & { secretHint: string };
+export type SessionStatus = 'active' | 'expired' | 'revoked';
+export type PublicSession = Omit<Session, 'keyHash'> & { status: SessionStatus };
+
+export interface ResolvedSession {
+  session: Session;
+  account: Account;
+  tool: ToolProvider;
+}
+
+export class Gateway {
+  private readonly usage = new Map<string, { lastUsedAt: string; count: number }>();
+  private readonly deviceFlows = new Map<string, PendingDeviceFlow>();
+
+  constructor(
+    private readonly store: EncryptedStore,
+    private readonly crypto: CryptoBox,
+    readonly tools: ToolRegistry,
+    readonly activity: ActivityLog,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+
+  // ---------------------------------------------------------------- admin token
+
+  hasAdminToken(): boolean {
+    return this.store.read().adminTokenHash !== null;
+  }
+
+  /** Generates a new admin token, replacing any previous one. Returns the plaintext once. */
+  async rotateAdminToken(): Promise<string> {
+    const token = randomToken(ADMIN_TOKEN_PREFIX);
+    await this.store.update((s) => {
+      s.adminTokenHash = this.crypto.hashToken(token);
+    });
+    return token;
+  }
+
+  verifyAdminToken(token: string): boolean {
+    const hash = this.store.read().adminTokenHash;
+    return hash !== null && CryptoBox.equalHex(this.crypto.hashToken(token), hash);
+  }
+
+  // ---------------------------------------------------------------- admin web sessions
+
+  /** Starts a browser session for an admin who signed in (e.g. with Google). Returns the cookie value. */
+  async createAdminWebSession(email: string): Promise<{ token: string; expiresAt: Date }> {
+    const token = randomToken(ADMIN_WEB_SESSION_PREFIX);
+    const now = this.now();
+    const expiresAt = new Date(now.getTime() + ADMIN_WEB_SESSION_TTL_SECONDS * 1000);
+    await this.store.update((s) => {
+      s.adminSessions = s.adminSessions.filter((x) => Date.parse(x.expiresAt) > now.getTime());
+      s.adminSessions.push({
+        id: randomId(),
+        tokenHash: this.crypto.hashToken(token),
+        email,
+        createdAt: now.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      });
+    });
+    this.activity.add({ kind: 'admin', detail: `Admin signed in: ${email}` });
+    return { token, expiresAt };
+  }
+
+  resolveAdminWebSession(token: string): { email: string; expiresAt: string } | null {
+    if (!token.startsWith(ADMIN_WEB_SESSION_PREFIX)) return null;
+    const hash = this.crypto.hashToken(token);
+    const session = this.store
+      .read()
+      .adminSessions.find((s) => CryptoBox.equalHex(s.tokenHash, hash));
+    if (!session || Date.parse(session.expiresAt) <= this.now().getTime()) return null;
+    return { email: session.email, expiresAt: session.expiresAt };
+  }
+
+  async endAdminWebSession(token: string): Promise<void> {
+    const hash = this.crypto.hashToken(token);
+    await this.store.update((s) => {
+      s.adminSessions = s.adminSessions.filter((x) => !CryptoBox.equalHex(x.tokenHash, hash));
+    });
+  }
+
+  // ---------------------------------------------------------------- accounts
+
+  private tool(id: string): ToolProvider {
+    const tool = this.tools.get(id);
+    if (!tool) throw badRequest(`Unknown tool "${id}"`);
+    return tool;
+  }
+
+  listAccounts(): PublicAccount[] {
+    return this.store.read().accounts.map(toPublicAccount);
+  }
+
+  async createAccount(input: unknown): Promise<PublicAccount> {
+    const data = accountCreateSchema.parse(input);
+    return this.addAccount(this.tool(data.tool), data.label, data.secret, 'token');
+  }
+
+  private async addAccount(
+    tool: ToolProvider,
+    label: string,
+    secret: string,
+    method: 'token' | 'device-flow',
+  ): Promise<PublicAccount> {
+    const identity = await this.verify(tool, secret);
+    identity.connectedVia = method === 'token' ? 'pasted token' : `${tool.name} sign-in`;
+    const ts = this.now().toISOString();
+    const account: Account = {
+      id: randomId(),
+      tool: tool.id,
+      label,
+      secret,
+      identity,
+      createdAt: ts,
+      lastVerifiedAt: ts,
+    };
+    await this.store.update((s) => {
+      s.accounts.push(account);
+    });
+    this.activity.add({ kind: 'admin', tool: tool.id, detail: `Connected account "${label}"` });
+    return toPublicAccount(account);
+  }
+
+  // ---------------------------------------------------------------- tool settings & sign-in
+
+  toolSettings(toolId: string): { oauthClientId: string } {
+    return { oauthClientId: this.store.read().toolSettings[toolId]?.oauthClientId ?? '' };
+  }
+
+  async updateToolSettings(toolId: string, input: unknown): Promise<{ oauthClientId: string }> {
+    const tool = this.tool(toolId);
+    const data = toolSettingsSchema.parse(input);
+    await this.store.update((s) => {
+      s.toolSettings[tool.id] = { ...s.toolSettings[tool.id], oauthClientId: data.oauthClientId };
+    });
+    this.activity.add({ kind: 'admin', tool: tool.id, detail: 'Updated OAuth client settings' });
+    return this.toolSettings(tool.id);
+  }
+
+  async startDeviceFlow(input: unknown): Promise<{
+    flowId: string;
+    userCode: string;
+    verificationUri: string;
+    expiresAt: string;
+    intervalSeconds: number;
+  }> {
+    const data = deviceFlowStartSchema.parse(input);
+    const tool = this.tool(data.tool);
+    if (!tool.deviceFlow) throw badRequest(`${tool.name} does not support sign-in`);
+    const clientId = this.toolSettings(tool.id).oauthClientId;
+    if (!clientId) throw badRequest(`Configure a ${tool.name} OAuth client ID first`);
+
+    let auth;
+    try {
+      auth = await tool.deviceFlow.start(clientId, data.scopes ?? tool.deviceFlow.defaultScopes);
+    } catch (err) {
+      throw new HttpError(502, `Could not start sign-in: ${(err as Error).message}`);
+    }
+    this.pruneDeviceFlows();
+    const now = this.now().getTime();
+    const flowId = randomToken('', 16);
+    this.deviceFlows.set(flowId, {
+      tool: tool.id,
+      label: data.label,
+      clientId,
+      deviceCode: auth.deviceCode,
+      intervalMs: auth.interval * 1000,
+      nextPollAt: now + auth.interval * 1000,
+      expiresAt: now + auth.expiresIn * 1000,
+      polling: false,
+    });
+    return {
+      flowId,
+      userCode: auth.userCode,
+      verificationUri: auth.verificationUri,
+      expiresAt: new Date(now + auth.expiresIn * 1000).toISOString(),
+      intervalSeconds: auth.interval,
+    };
+  }
+
+  /**
+   * Called repeatedly by the UI. Hits the tool at most once per the interval it mandates,
+   * and connects the account once the user has approved the sign-in.
+   */
+  async pollDeviceFlow(flowId: string): Promise<DeviceFlowStatus> {
+    const flow = this.deviceFlows.get(flowId);
+    if (!flow) return { status: 'failed', message: 'Unknown or finished sign-in, start again' };
+    const now = this.now().getTime();
+    if (now >= flow.expiresAt) {
+      this.deviceFlows.delete(flowId);
+      return { status: 'failed', message: 'The code expired before it was approved' };
+    }
+    if (flow.polling || now < flow.nextPollAt) return { status: 'pending' };
+
+    const tool = this.tool(flow.tool);
+    if (!tool.deviceFlow) throw badRequest(`${tool.name} does not support sign-in`);
+    flow.polling = true;
+    try {
+      const result = await tool.deviceFlow.poll(flow.clientId, flow.deviceCode);
+      switch (result.status) {
+        case 'pending':
+          flow.nextPollAt = this.now().getTime() + flow.intervalMs;
+          return { status: 'pending' };
+        case 'slow_down':
+          flow.intervalMs = result.interval * 1000;
+          flow.nextPollAt = this.now().getTime() + flow.intervalMs;
+          return { status: 'pending' };
+        case 'failed':
+          this.deviceFlows.delete(flowId);
+          return result;
+        case 'complete': {
+          this.deviceFlows.delete(flowId);
+          const account = await this.addAccount(tool, flow.label, result.secret, 'device-flow');
+          return { status: 'complete', account };
+        }
+      }
+    } catch (err) {
+      if (err instanceof HttpError) {
+        this.deviceFlows.delete(flowId);
+        return { status: 'failed', message: err.message };
+      }
+      // Transient network error: keep the flow alive and retry on the next poll.
+      flow.nextPollAt = this.now().getTime() + flow.intervalMs;
+      return { status: 'pending' };
+    } finally {
+      flow.polling = false;
+    }
+  }
+
+  cancelDeviceFlow(flowId: string): void {
+    this.deviceFlows.delete(flowId);
+  }
+
+  private pruneDeviceFlows(): void {
+    const now = this.now().getTime();
+    for (const [id, flow] of this.deviceFlows) {
+      if (now >= flow.expiresAt) this.deviceFlows.delete(id);
+    }
+  }
+
+  async updateAccount(id: string, input: unknown): Promise<PublicAccount> {
+    const data = accountUpdateSchema.parse(input);
+    const existing = this.findAccount(id);
+    const patch: Partial<Account> = {};
+    if (data.label) patch.label = data.label;
+    if (data.secret) {
+      patch.secret = data.secret;
+      patch.identity = await this.verify(this.tool(existing.tool), data.secret);
+      patch.lastVerifiedAt = this.now().toISOString();
+    }
+    const updated = await this.store.update((s) => {
+      const acc = s.accounts.find((a) => a.id === id);
+      if (!acc) throw notFound('Account not found');
+      Object.assign(acc, patch);
+      return acc;
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: updated.tool,
+      detail: `Updated account "${updated.label}"`,
+    });
+    return toPublicAccount(updated);
+  }
+
+  async reverifyAccount(id: string): Promise<PublicAccount> {
+    const acc = this.findAccount(id);
+    const identity = await this.verify(this.tool(acc.tool), acc.secret);
+    const updated = await this.store.update((s) => {
+      const a = s.accounts.find((x) => x.id === id);
+      if (!a) throw notFound('Account not found');
+      a.identity = identity;
+      a.lastVerifiedAt = this.now().toISOString();
+      return a;
+    });
+    return toPublicAccount(updated);
+  }
+
+  async deleteAccount(id: string): Promise<void> {
+    const acc = this.findAccount(id);
+    const revoked = await this.store.update((s) => {
+      s.accounts = s.accounts.filter((a) => a.id !== id);
+      return this.revokeWhere(s.sessions, (x) => x.accountId === id);
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: acc.tool,
+      detail: `Removed account "${acc.label}" (revoked ${revoked} session(s))`,
+    });
+  }
+
+  private findAccount(id: string): Account {
+    const acc = this.store.read().accounts.find((a) => a.id === id);
+    if (!acc) throw notFound('Account not found');
+    return acc;
+  }
+
+  private async verify(tool: ToolProvider, secret: string): Promise<Record<string, string>> {
+    try {
+      return await tool.verifyCredential(secret);
+    } catch (err) {
+      throw new HttpError(422, `Could not verify credential: ${(err as Error).message}`);
+    }
+  }
+
+  // ---------------------------------------------------------------- templates
+
+  listTemplates(): Template[] {
+    return [...this.store.read().templates];
+  }
+
+  private validateTemplate(input: unknown): z.infer<typeof templateSchema> {
+    const data = templateSchema.parse(input);
+    const tool = this.tool(data.tool);
+    const known = new Set(tool.permissions.map((p) => p.id));
+    const unknown = data.permissions.filter((p) => !known.has(p));
+    if (unknown.length) throw badRequest(`Unknown permission(s): ${unknown.join(', ')}`);
+    data.permissions = [...new Set(data.permissions)];
+    data.resources = [...new Set(data.resources.filter(Boolean))];
+    for (const r of data.resources) {
+      const err = tool.validateResource(r);
+      if (err) throw badRequest(err);
+    }
+    return data;
+  }
+
+  async createTemplate(input: unknown): Promise<Template> {
+    const data = this.validateTemplate(input);
+    const ts = this.now().toISOString();
+    const template: Template = { id: randomId(), ...data, createdAt: ts, updatedAt: ts };
+    await this.store.update((s) => {
+      if (s.templates.some((t) => t.name.toLowerCase() === data.name.toLowerCase())) {
+        throw new HttpError(409, `A template named "${data.name}" already exists`);
+      }
+      s.templates.push(template);
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: data.tool,
+      detail: `Created template "${data.name}"`,
+    });
+    return template;
+  }
+
+  async updateTemplate(id: string, input: unknown): Promise<Template> {
+    const data = this.validateTemplate(input);
+    const updated = await this.store.update((s) => {
+      const t = s.templates.find((x) => x.id === id);
+      if (!t) throw notFound('Template not found');
+      const clash = s.templates.some(
+        (x) => x.id !== id && x.name.toLowerCase() === data.name.toLowerCase(),
+      );
+      if (clash) throw new HttpError(409, `A template named "${data.name}" already exists`);
+      Object.assign(t, data, { updatedAt: this.now().toISOString() });
+      return t;
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: data.tool,
+      detail: `Updated template "${data.name}"`,
+    });
+    return updated;
+  }
+
+  async deleteTemplate(id: string): Promise<void> {
+    const tpl = this.store.read().templates.find((t) => t.id === id);
+    if (!tpl) throw notFound('Template not found');
+    const revoked = await this.store.update((s) => {
+      s.templates = s.templates.filter((t) => t.id !== id);
+      return this.revokeWhere(s.sessions, (x) => x.templateId === id);
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: tpl.tool,
+      detail: `Deleted template "${tpl.name}" (revoked ${revoked} session(s))`,
+    });
+  }
+
+  // ---------------------------------------------------------------- sessions
+
+  listSessions(): PublicSession[] {
+    return this.store
+      .read()
+      .sessions.map((s) => this.toPublicSession(s))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  /** Issues a session key. The plaintext key is returned exactly once. */
+  async issueSession(input: unknown): Promise<{ key: string; session: PublicSession }> {
+    const req = sessionRequestSchema.parse(input);
+    const state = this.store.read();
+    const template = state.templates.find((t) => t.id === req.templateId);
+    if (!template) throw notFound('Template not found');
+
+    let account: Account | undefined;
+    if (req.accountId) {
+      account = state.accounts.find((a) => a.id === req.accountId);
+      if (!account) throw notFound('Account not found');
+    } else {
+      const candidates = state.accounts.filter((a) => a.tool === template.tool);
+      if (candidates.length !== 1) {
+        throw badRequest(
+          candidates.length === 0
+            ? `No ${template.tool} account connected`
+            : 'Several accounts match this template: specify accountId',
+        );
+      }
+      account = candidates[0];
+    }
+    if (!account) throw notFound('Account not found');
+    if (account.tool !== template.tool) {
+      throw badRequest(
+        `Account is a ${account.tool} account but template targets ${template.tool}`,
+      );
+    }
+
+    const ttlSeconds = req.ttlSeconds ?? template.defaultTtlSeconds;
+    if (ttlSeconds > template.maxTtlSeconds) {
+      throw badRequest(`Requested TTL exceeds template maximum (${template.maxTtlSeconds}s)`);
+    }
+
+    const key = randomToken(SESSION_KEY_PREFIX);
+    const now = this.now();
+    const session: Session = {
+      id: randomId(),
+      keyHash: this.crypto.hashToken(key),
+      keyHint: key.slice(0, SESSION_KEY_PREFIX.length + 6),
+      label: req.label ?? '',
+      tool: template.tool,
+      accountId: account.id,
+      templateId: template.id,
+      templateName: template.name,
+      permissions: [...template.permissions],
+      resources: [...template.resources],
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+      revokedAt: null,
+      lastUsedAt: null,
+      requestCount: 0,
+    };
+    await this.store.update((s) => {
+      s.sessions.push(session);
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: template.tool,
+      sessionId: session.id,
+      sessionLabel: session.label,
+      detail: `Issued session from template "${template.name}" on account "${account.label}" (TTL ${ttlSeconds}s)`,
+    });
+    return { key, session: this.toPublicSession(session) };
+  }
+
+  async revokeSession(id: string): Promise<PublicSession> {
+    const revoked = await this.store.update((s) => {
+      const session = s.sessions.find((x) => x.id === id);
+      if (!session) throw notFound('Session not found');
+      session.revokedAt ??= this.now().toISOString();
+      return session;
+    });
+    this.activity.add({
+      kind: 'admin',
+      tool: revoked.tool,
+      sessionId: id,
+      sessionLabel: revoked.label,
+      detail: 'Revoked session',
+    });
+    return this.toPublicSession(revoked);
+  }
+
+  /** Resolves a presented session key; throws 401/403 with a useful message otherwise. */
+  resolveSession(key: string): ResolvedSession {
+    if (!key.startsWith(SESSION_KEY_PREFIX)) throw new HttpError(401, 'Invalid session key');
+    const hash = this.crypto.hashToken(key);
+    const state = this.store.read();
+    const session = state.sessions.find((s) => CryptoBox.equalHex(s.keyHash, hash));
+    if (!session) throw new HttpError(401, 'Invalid session key');
+    const status = this.statusOf(session);
+    if (status !== 'active') throw new HttpError(401, `Session key is ${status}`);
+    const account = state.accounts.find((a) => a.id === session.accountId);
+    if (!account) throw new HttpError(401, 'Account behind this session was removed');
+    const tool = this.tools.get(session.tool);
+    if (!tool) throw new HttpError(401, 'Tool is no longer available');
+    return { session, account, tool };
+  }
+
+  recordUsage(sessionId: string): void {
+    const entry = this.usage.get(sessionId) ?? { lastUsedAt: '', count: 0 };
+    entry.count += 1;
+    entry.lastUsedAt = this.now().toISOString();
+    this.usage.set(sessionId, entry);
+  }
+
+  /** Persists buffered usage counters and prunes long-dead sessions. */
+  async flush(): Promise<void> {
+    const cutoff = this.now().getTime() - SESSION_RETENTION_MS;
+    const usage = new Map(this.usage);
+    const needsPrune = this.store
+      .read()
+      .sessions.some((s) => this.statusOf(s) !== 'active' && endOf(s) < cutoff);
+    if (usage.size === 0 && !needsPrune) return;
+    this.usage.clear();
+    await this.store.update((s) => {
+      for (const session of s.sessions) {
+        const u = usage.get(session.id);
+        if (!u) continue;
+        session.requestCount += u.count;
+        session.lastUsedAt = u.lastUsedAt;
+      }
+      s.sessions = s.sessions.filter((x) => this.statusOf(x) === 'active' || endOf(x) >= cutoff);
+    });
+  }
+
+  private statusOf(s: Session): SessionStatus {
+    if (s.revokedAt) return 'revoked';
+    return Date.parse(s.expiresAt) <= this.now().getTime() ? 'expired' : 'active';
+  }
+
+  private toPublicSession(s: Session): PublicSession {
+    const { keyHash: _omit, ...rest } = s;
+    const pending = this.usage.get(s.id);
+    return {
+      ...rest,
+      requestCount: s.requestCount + (pending?.count ?? 0),
+      lastUsedAt: pending?.lastUsedAt ?? s.lastUsedAt,
+      status: this.statusOf(s),
+    };
+  }
+
+  private revokeWhere(sessions: Session[], pred: (s: Session) => boolean): number {
+    let n = 0;
+    const ts = this.now().toISOString();
+    for (const s of sessions) {
+      if (pred(s) && this.statusOf(s) === 'active') {
+        s.revokedAt = ts;
+        n++;
+      }
+    }
+    return n;
+  }
+}
+
+function endOf(s: Session): number {
+  return s.revokedAt ? Date.parse(s.revokedAt) : Date.parse(s.expiresAt);
+}
+
+function toPublicAccount(a: Account): PublicAccount {
+  const { secret, ...rest } = a;
+  return { ...rest, secretHint: `…${secret.slice(-4)}` };
+}

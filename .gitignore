@@ -1,0 +1,21 @@
+# --- Secrets: never commit ---------------------------------------------------
+# Environment (Google OAuth client secret, admin allowlist, …)
+.env
+.env.*
+!.env.example
+# Encrypted store (tool credentials, session/admin token hashes) and its atomic-write temp files
+data/
+*.enc
+*.tmp
+# Master key (default location is ~/.local-gateway/master.key, outside the repo)
+*.key
+*.pem
+# Server logs: the first-start log contains the one-time admin token
+*.log
+
+# --- Build output & tooling -----------------------------------------------------
+node_modules/
+dist/
+web/.next/
+*.tsbuildinfo
+coverage/
