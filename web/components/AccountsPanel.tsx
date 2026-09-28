@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatDateTime } from '@/lib/format';
-import type { Account } from '@/lib/types';
+import type { Account, Tool } from '@/lib/types';
 import type { PanelProps } from './AdminApp';
 import { DeviceSignIn } from './DeviceSignIn';
 import {
@@ -188,29 +188,167 @@ function AccountModal({
   onSaved: () => Promise<void>;
 } & Pick<PanelProps, 'api' | 'data' | 'refresh'>) {
   const existing = editing?.mode === 'edit' ? editing.account : null;
-  const [tool, setTool] = useState(existing?.tool ?? data.tools[0]?.id ?? '');
-  const toolDef = data.tools.find((t) => t.id === tool);
-  const [method, setMethod] = useState<'sign-in' | 'token'>(
-    !existing && toolDef?.signIn ? 'sign-in' : 'token',
+  return (
+    <Modal
+      open={editing !== null}
+      title={existing ? `Edit “${existing.label}”` : 'Connect a tool account'}
+      onClose={onClose}
+    >
+      {existing ? (
+        <TokenAccountForm
+          api={api}
+          tool={data.tools.find((t) => t.id === existing.tool)}
+          existing={existing}
+          onSaved={onSaved}
+          onCancel={onClose}
+        />
+      ) : (
+        <ConnectAccount
+          api={api}
+          tools={data.tools}
+          onSaved={onSaved}
+          onCancel={onClose}
+          refresh={refresh}
+        />
+      )}
+    </Modal>
   );
+}
+
+type ConnectMethod = 'sign-in' | 'token';
+
+const defaultMethod = (tool: Tool | undefined): ConnectMethod =>
+  tool?.signIn ? 'sign-in' : 'token';
+
+/** New account: pick the tool and how to connect it (interactive sign-in or pasted token). */
+function ConnectAccount({
+  api,
+  tools,
+  onSaved,
+  onCancel,
+  refresh,
+}: {
+  api: PanelProps['api'];
+  tools: Tool[];
+  onSaved: () => Promise<void>;
+  onCancel: () => void;
+  refresh: () => Promise<void>;
+}) {
+  const [toolId, setToolId] = useState(tools[0]?.id ?? '');
+  const tool = tools.find((t) => t.id === toolId);
+  const [method, setMethod] = useState<ConnectMethod>(defaultMethod(tool));
+  const signInTool = tool?.signIn ? { ...tool, signIn: tool.signIn } : null;
+
+  return (
+    <>
+      <div className="mb-4 space-y-4">
+        {tools.length > 1 && (
+          <Field label="Tool">
+            <Select
+              value={toolId}
+              onChange={(e) => {
+                setToolId(e.target.value);
+                setMethod(defaultMethod(tools.find((t) => t.id === e.target.value)));
+              }}
+            >
+              {tools.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        {signInTool && (
+          <MethodTabs toolName={signInTool.name} method={method} onChange={setMethod} />
+        )}
+      </div>
+      {method === 'sign-in' && signInTool ? (
+        <DeviceSignIn
+          api={api}
+          tool={signInTool}
+          onConnected={onSaved}
+          onSettingsChanged={refresh}
+          onCancel={onCancel}
+        />
+      ) : (
+        <TokenAccountForm
+          key={toolId}
+          api={api}
+          tool={tool}
+          existing={null}
+          onSaved={onSaved}
+          onCancel={onCancel}
+        />
+      )}
+    </>
+  );
+}
+
+function MethodTabs({
+  toolName,
+  method,
+  onChange,
+}: {
+  toolName: string;
+  method: ConnectMethod;
+  onChange: (method: ConnectMethod) => void;
+}) {
+  const tabs: [ConnectMethod, string][] = [
+    ['sign-in', `Sign in with ${toolName}`],
+    ['token', 'Paste a token'],
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1 text-sm font-medium">
+      {tabs.map(([id, text]) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => {
+            onChange(id);
+          }}
+          className={`rounded-md px-3 py-1.5 transition ${
+            method === id
+              ? 'bg-white text-slate-900 shadow-sm'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Connect an account with a pasted token, or edit an existing one (label / token rotation). */
+function TokenAccountForm({
+  api,
+  tool,
+  existing,
+  onSaved,
+  onCancel,
+}: {
+  api: PanelProps['api'];
+  tool: Tool | undefined;
+  existing: Account | null;
+  onSaved: () => Promise<void>;
+  onCancel: () => void;
+}) {
   const [label, setLabel] = useState(existing?.label ?? '');
   const [secret, setSecret] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const signInTool = toolDef?.signIn ? { ...toolDef, signIn: toolDef.signIn } : null;
+
+  const save = (): Promise<unknown> =>
+    existing
+      ? api('PATCH', `/accounts/${existing.id}`, { label, ...(secret ? { secret } : {}) })
+      : api('POST', '/accounts', { tool: tool?.id, label, secret });
 
   const submit = async (): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
-      if (existing) {
-        await api('PATCH', `/accounts/${existing.id}`, {
-          label,
-          ...(secret ? { secret } : {}),
-        });
-      } else {
-        await api('POST', '/accounts', { tool, label, secret });
-      }
+      await save();
       await onSaved();
     } catch (err) {
       setError((err as Error).message);
@@ -219,114 +357,49 @@ function AccountModal({
     }
   };
 
-  return (
-    <Modal
-      open={editing !== null}
-      title={existing ? `Edit “${existing.label}”` : 'Connect a tool account'}
-      onClose={onClose}
-    >
-      {!existing && (
-        <div className="mb-4 space-y-4">
-          {data.tools.length > 1 && (
-            <Field label="Tool">
-              <Select
-                value={tool}
-                onChange={(e) => {
-                  const next = data.tools.find((t) => t.id === e.target.value);
-                  setTool(e.target.value);
-                  setMethod(next?.signIn ? 'sign-in' : 'token');
-                }}
-              >
-                {data.tools.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          )}
-          {signInTool && (
-            <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1 text-sm font-medium">
-              {(
-                [
-                  ['sign-in', `Sign in with ${signInTool.name}`],
-                  ['token', 'Paste a token'],
-                ] as const
-              ).map(([id, text]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => {
-                    setMethod(id);
-                  }}
-                  className={`rounded-md px-3 py-1.5 transition ${
-                    method === id
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  {text}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+  const idleLabel = existing ? 'Save' : 'Verify & connect';
 
-      {!existing && method === 'sign-in' && signInTool ? (
-        <DeviceSignIn
-          api={api}
-          tool={signInTool}
-          onConnected={onSaved}
-          onSettingsChanged={refresh}
-          onCancel={onClose}
-        />
-      ) : (
-        <form
-          className="space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <Field label="Label" hint="A name to recognise this account, e.g. “Personal” or “Work bot”.">
+        <Input
+          required
+          value={label}
+          onChange={(e) => {
+            setLabel(e.target.value);
           }}
-        >
-          <Field
-            label="Label"
-            hint="A name to recognise this account, e.g. “Personal” or “Work bot”."
-          >
-            <Input
-              required
-              value={label}
-              onChange={(e) => {
-                setLabel(e.target.value);
-              }}
-            />
-          </Field>
-          <Field
-            label={existing ? 'New token (leave empty to keep the current one)' : 'Access token'}
-            hint={toolDef?.credentialHelp}
-          >
-            <Input
-              type="password"
-              autoComplete="off"
-              required={!existing}
-              value={secret}
-              placeholder={existing ? existing.secretHint : 'github_pat_…'}
-              onChange={(e) => {
-                setSecret(e.target.value);
-              }}
-            />
-          </Field>
-          <ErrorBanner message={error} />
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="secondary" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={busy}>
-              {busy ? 'Verifying…' : existing ? 'Save' : 'Verify & connect'}
-            </Button>
-          </div>
-        </form>
-      )}
-    </Modal>
+        />
+      </Field>
+      <Field
+        label={existing ? 'New token (leave empty to keep the current one)' : 'Access token'}
+        hint={tool?.credentialHelp}
+      >
+        <Input
+          type="password"
+          autoComplete="off"
+          required={!existing}
+          value={secret}
+          placeholder={existing ? existing.secretHint : 'github_pat_…'}
+          onChange={(e) => {
+            setSecret(e.target.value);
+          }}
+        />
+      </Field>
+      <ErrorBanner message={error} />
+      <div className="flex justify-end gap-2 pt-2">
+        <Button variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Verifying…' : idleLabel}
+        </Button>
+      </div>
+    </form>
   );
 }

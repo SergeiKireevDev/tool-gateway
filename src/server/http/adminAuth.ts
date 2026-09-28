@@ -1,8 +1,9 @@
 import { parseCookie } from 'cookie';
 import express, { type CookieOptions, type Request, type Response, type Router } from 'express';
-import { SignInError, type GoogleSignIn } from '../auth/google.js';
+import { LOGIN_TTL_MS, SignInError, type GoogleSignIn } from '../auth/google.js';
 import type { GatewayConfig } from '../config.js';
 import type { Gateway } from '../gateway.js';
+import { HTTP } from '../httpStatus.js';
 
 export const ADMIN_COOKIE = 'gw_admin';
 const LOGIN_COOKIE = 'gw_login';
@@ -48,7 +49,7 @@ export function adminAuthRoutes(
   router.get('/api/auth/me', (req, res) => {
     const admin = cookieAdmin(gateway, req);
     if (!admin) {
-      res.status(401).json({ error: 'gateway_error', message: 'Not signed in' });
+      res.status(HTTP.UNAUTHORIZED).json({ error: 'gateway_error', message: 'Not signed in' });
       return;
     }
     res.json({ method: 'google', ...admin });
@@ -56,19 +57,21 @@ export function adminAuthRoutes(
 
   router.post('/api/auth/logout', (req, res, next) => {
     if (req.get(CSRF_HEADER) !== '1') {
-      res.status(403).json({ error: 'forbidden', message: `Missing ${CSRF_HEADER} header` });
+      res
+        .status(HTTP.FORBIDDEN)
+        .json({ error: 'forbidden', message: `Missing ${CSRF_HEADER} header` });
       return;
     }
     const token = readCookie(req, ADMIN_COOKIE);
     res.clearCookie(ADMIN_COOKIE, { ...base, sameSite: 'strict', path: '/' });
     (token ? gateway.endAdminWebSession(token) : Promise.resolve())
-      .then(() => res.status(204).end())
+      .then(() => res.status(HTTP.NO_CONTENT).end())
       .catch(next);
   });
 
   // ---- Browser navigations for the OIDC redirect dance
   const failed = (res: Response, message: string): void => {
-    res.redirect(303, `/?login_error=${encodeURIComponent(message)}`);
+    res.redirect(HTTP.SEE_OTHER, `/?login_error=${encodeURIComponent(message)}`);
   };
 
   router.get(`${LOGIN_COOKIE_PATH}/login`, (req, res, next) => {
@@ -78,7 +81,7 @@ export function adminAuthRoutes(
     }
     // Cookies are per host: run the whole flow on the host Google redirects back to.
     if (req.get('host') !== publicUrl.host) {
-      res.redirect(302, `${config.publicUrl}${LOGIN_COOKIE_PATH}/login`);
+      res.redirect(HTTP.FOUND, `${config.publicUrl}${LOGIN_COOKIE_PATH}/login`);
       return;
     }
     google
@@ -89,9 +92,9 @@ export function adminAuthRoutes(
           // Lax: the cookie must come back on Google's top-level redirect to the callback.
           sameSite: 'lax',
           path: LOGIN_COOKIE_PATH,
-          maxAge: 10 * 60 * 1000,
+          maxAge: LOGIN_TTL_MS,
         });
-        res.redirect(302, authorizationUrl.href);
+        res.redirect(HTTP.FOUND, authorizationUrl.href);
       })
       .catch((err: unknown) => {
         if (err instanceof SignInError) failed(res, err.message);
@@ -116,7 +119,7 @@ export function adminAuthRoutes(
           path: '/',
           expires: expiresAt,
         });
-        res.redirect(303, '/');
+        res.redirect(HTTP.SEE_OTHER, '/');
       })
       .catch((err: unknown) => {
         if (err instanceof SignInError) failed(res, err.message);

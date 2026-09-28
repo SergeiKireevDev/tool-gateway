@@ -6,9 +6,13 @@
 import * as oidc from 'openid-client';
 import type { GoogleSignInConfig } from '../config.js';
 import { randomToken } from '../store/crypto.js';
+import { MS_PER_MINUTE } from '../units.js';
 
 const GOOGLE_ISSUER = new URL('https://accounts.google.com');
-const LOGIN_TTL_MS = 10 * 60 * 1000;
+const LOGIN_TTL_MINUTES = 10;
+/** How long a started Google sign-in stays valid (also the login cookie lifetime). */
+export const LOGIN_TTL_MS = LOGIN_TTL_MINUTES * MS_PER_MINUTE;
+const LOGIN_ID_BYTES = 24;
 /** The login endpoint is unauthenticated: bound the number of pending logins kept in memory. */
 const MAX_PENDING_LOGINS = 100;
 
@@ -65,7 +69,7 @@ export class GoogleSignIn {
       nonce,
       prompt: 'select_account',
     });
-    const loginId = randomToken('', 24);
+    const loginId = randomToken('', LOGIN_ID_BYTES);
     this.pending.set(loginId, { state, nonce, codeVerifier, expiresAt: this.now() + LOGIN_TTL_MS });
     return { loginId, authorizationUrl };
   }

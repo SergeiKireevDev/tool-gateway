@@ -2,8 +2,9 @@ import { Readable } from 'node:stream';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import type { GatewayConfig } from '../config.js';
-import { HttpError } from '../errors.js';
+import { badGateway, unauthorized } from '../errors.js';
 import type { Gateway } from '../gateway.js';
+import { HTTP } from '../httpStatus.js';
 import { parseSafePath } from '../tools/pathMatch.js';
 import { bearerToken } from './auth.js';
 
@@ -51,7 +52,7 @@ async function forward(
   const search = match?.[2] ?? '';
 
   const key = bearerToken(req);
-  if (!key) throw new HttpError(401, 'Missing session key (Authorization: Bearer gws_…)');
+  if (!key) throw unauthorized('Missing session key (Authorization: Bearer gws_…)');
   const { session, account, tool } = gateway.resolveSession(key);
 
   const log = (decision: 'allowed' | 'denied', status: number, detail: string): void => {
@@ -74,17 +75,17 @@ async function forward(
   };
 
   if (session.tool !== toolId) {
-    deny(403, `This session key is for "${session.tool}", not "${toolId}"`);
+    deny(HTTP.FORBIDDEN, `This session key is for "${session.tool}", not "${toolId}"`);
     return;
   }
   const segments = match ? parseSafePath(rawPath) : null;
   if (!segments) {
-    deny(400, 'Malformed request path');
+    deny(HTTP.BAD_REQUEST, 'Malformed request path');
     return;
   }
   const decision = tool.authorize(req.method, segments, session);
   if (!decision.allowed) {
-    deny(403, decision.reason);
+    deny(HTTP.FORBIDDEN, decision.reason);
     return;
   }
 
@@ -109,8 +110,8 @@ async function forward(
       signal: controller.signal,
     });
   } catch (err) {
-    log('allowed', 502, `Upstream error: ${(err as Error).message}`);
-    throw new HttpError(502, `Upstream request failed: ${(err as Error).message}`);
+    log('allowed', HTTP.BAD_GATEWAY, `Upstream error: ${(err as Error).message}`);
+    throw badGateway(`Upstream request failed: ${(err as Error).message}`);
   }
 
   log('allowed', upstream.status, decision.permission);

@@ -8,6 +8,7 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sodium from 'libsodium-wrappers';
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from '../units.js';
 
 await sodium.ready;
 
@@ -16,6 +17,9 @@ const ALG = 'xchacha20poly1305-ietf';
 const KDF_CONTEXT = 'lgateway'; // must be exactly crypto_kdf_CONTEXTBYTES (8) bytes
 const SUBKEY_STORE = 1;
 const SUBKEY_TOKENS = 2;
+/** Random ids are short and non-secret: 72 bits is plenty to avoid collisions. */
+const ID_BYTES = 9;
+const TOKEN_BYTES = 32;
 
 export interface EncryptedEnvelope {
   v: 2;
@@ -66,9 +70,12 @@ export class CryptoBox {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       master = sodium.crypto_kdf_keygen();
-      await mkdir(path.dirname(keyFile), { recursive: true, mode: 0o700 });
-      await writeFile(keyFile, sodium.to_hex(master) + '\n', { mode: 0o600, flag: 'wx' });
-      await chmod(keyFile, 0o600);
+      await mkdir(path.dirname(keyFile), { recursive: true, mode: PRIVATE_DIR_MODE });
+      await writeFile(keyFile, sodium.to_hex(master) + '\n', {
+        mode: PRIVATE_FILE_MODE,
+        flag: 'wx',
+      });
+      await chmod(keyFile, PRIVATE_FILE_MODE);
     }
     try {
       return CryptoBox.fromMasterKey(master);
@@ -131,10 +138,10 @@ function isEnvelope(value: unknown): value is EncryptedEnvelope {
   return v.v === 2 && v.alg === ALG && typeof v.nonce === 'string' && typeof v.data === 'string';
 }
 
-export function randomToken(prefix: string, bytes = 32): string {
+export function randomToken(prefix: string, bytes = TOKEN_BYTES): string {
   return prefix + sodium.to_base64(sodium.randombytes_buf(bytes), B64);
 }
 
 export function randomId(): string {
-  return sodium.to_base64(sodium.randombytes_buf(9), B64);
+  return sodium.to_base64(sodium.randombytes_buf(ID_BYTES), B64);
 }

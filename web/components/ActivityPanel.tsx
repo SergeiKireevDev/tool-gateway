@@ -9,7 +9,7 @@ import { Badge, Card, EmptyState, ErrorBanner, SectionHeader, useNow } from './u
 const POLL_MS = 5000;
 
 export function ActivityPanel({ api }: { api: Api }) {
-  const now = useNow(5000);
+  const now = useNow(POLL_MS);
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
