@@ -110,7 +110,7 @@ describe('member keys (self-serve)', () => {
     expect(res.body.name).toBe('ci-bot');
     expect((res.body.templates as { id: string }[]).map((t) => t.id)).toEqual([ids.tplRead]);
     expect(res.body.accounts).toEqual([
-      { id: ids.acc1, tool: 'github', label: 'one', login: 'octocat' },
+      { id: ids.acc1, tool: 'github', label: 'one', login: 'octocat', owned: false },
     ]);
   });
 

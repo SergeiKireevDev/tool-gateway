@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { formatDateTime } from '@/lib/format';
 import type { Account, Tool } from '@/lib/types';
-import type { PanelProps } from './AdminApp';
+import type { PanelProps, Viewer } from './AdminApp';
 import { DeviceSignIn } from './DeviceSignIn';
 import {
   Badge,
@@ -20,7 +20,35 @@ import {
 
 type Editing = { mode: 'create' } | { mode: 'edit'; account: Account } | null;
 
-export function AccountsPanel({ api, data, refresh }: PanelProps) {
+interface AccountActions {
+  edit: boolean;
+  verify: boolean;
+  remove: boolean;
+}
+
+const NO_ACTIONS: AccountActions = { edit: false, verify: false, remove: false };
+const ALL_ACTIONS: AccountActions = { edit: true, verify: true, remove: true };
+
+/**
+ * What the viewer may do with an account (mirrors the server rules): members manage only their
+ * own accounts; the admin manages shared accounts and can re-verify or remove member ones.
+ */
+function accountActions(viewer: Viewer, acc: Account): AccountActions {
+  if (viewer.role === 'member') {
+    const own = acc.owner.kind === 'member' && acc.owner.memberId === viewer.memberId;
+    return own ? ALL_ACTIONS : NO_ACTIONS;
+  }
+  return { edit: acc.owner.kind === 'shared', verify: true, remove: true };
+}
+
+const DESCRIPTIONS: Record<Viewer['role'], string> = {
+  admin:
+    'Shared accounts you connect can be granted to members. Members also connect their own accounts, which only they can use: you can re-verify or remove those, not change them. Credentials are stored encrypted and never leave the gateway.',
+  member:
+    'Accounts you connect are private to you: only your session keys can use them. Shared accounts granted by the admin are listed too. Credentials are stored encrypted and never leave the gateway.',
+};
+
+export function AccountsPanel({ api, data, refresh, viewer }: PanelProps) {
   const [editing, setEditing] = useState<Editing>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -38,15 +66,11 @@ export function AccountsPanel({ api, data, refresh }: PanelProps) {
     }
   };
 
-  const toolName = (id: string): string => data.tools.find((t) => t.id === id)?.name ?? id;
-  const activeSessions = (accountId: string): number =>
-    data.sessions.filter((s) => s.accountId === accountId && s.status === 'active').length;
-
   return (
     <section>
       <SectionHeader
-        title="Tool accounts"
-        description="Credentials for third-party tools. They are verified on connect and stored encrypted on disk; they never leave the gateway."
+        title={viewer.role === 'member' ? 'My accounts' : 'Tool accounts'}
+        description={DESCRIPTIONS[viewer.role]}
         action={
           <Button
             onClick={() => {
@@ -63,99 +87,24 @@ export function AccountsPanel({ api, data, refresh }: PanelProps) {
 
       {data.accounts.length === 0 ? (
         <EmptyState title="No accounts connected yet">
-          Connect a GitHub account with a personal access token to get started.
+          Connect a GitHub account to get started.
         </EmptyState>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {data.accounts.map((acc) => {
-            const sessions = activeSessions(acc.id);
-            return (
-              <Card key={acc.id} className="p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-semibold">{acc.label}</h3>
-                      <Badge tone="indigo">{toolName(acc.tool)}</Badge>
-                    </div>
-                    <p className="mt-0.5 text-sm text-slate-500">
-                      Signed in as{' '}
-                      <span className="font-medium text-slate-700">
-                        {acc.identity.login ?? 'unknown'}
-                      </span>
-                      {acc.identity.name && ` (${acc.identity.name})`}
-                    </p>
-                  </div>
-                  <Badge tone={sessions > 0 ? 'green' : 'slate'}>
-                    {sessions} active session{sessions === 1 ? '' : 's'}
-                  </Badge>
-                </div>
-
-                <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-                  <dt className="text-slate-500">Token</dt>
-                  <dd className="font-mono text-slate-700">
-                    {acc.secretHint}{' '}
-                    {acc.identity.tokenType && (
-                      <span className="font-sans text-xs text-slate-500">
-                        ({acc.identity.tokenType})
-                      </span>
-                    )}
-                  </dd>
-                  {acc.identity.scopes && (
-                    <>
-                      <dt className="text-slate-500">Scopes</dt>
-                      <dd className="text-slate-700">{acc.identity.scopes}</dd>
-                    </>
-                  )}
-                  {acc.identity.tokenExpires && (
-                    <>
-                      <dt className="text-slate-500">Token expires</dt>
-                      <dd className="text-slate-700">{acc.identity.tokenExpires}</dd>
-                    </>
-                  )}
-                  <dt className="text-slate-500">Last verified</dt>
-                  <dd className="text-slate-700">{formatDateTime(acc.lastVerifiedAt)}</dd>
-                </dl>
-
-                <div className="mt-5 flex flex-wrap gap-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={busyId === acc.id}
-                    onClick={() =>
-                      void run(acc.id, () => api('POST', `/accounts/${acc.id}/verify`))
-                    }
-                  >
-                    {busyId === acc.id ? 'Verifying…' : 'Re-verify'}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      setEditing({ mode: 'edit', account: acc });
-                    }}
-                  >
-                    Edit / rotate token
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    disabled={busyId === acc.id}
-                    onClick={() => {
-                      const warning =
-                        sessions > 0
-                          ? `\n\n${sessions} active session key(s) will be revoked.`
-                          : '';
-                      if (confirm(`Remove account "${acc.label}"?${warning}`)) {
-                        void run(acc.id, () => api('DELETE', `/accounts/${acc.id}`));
-                      }
-                    }}
-                  >
-                    Remove
-                  </Button>
-                </div>
-              </Card>
-            );
-          })}
+          {data.accounts.map((acc) => (
+            <AccountCard
+              key={acc.id}
+              account={acc}
+              data={data}
+              viewer={viewer}
+              busy={busyId === acc.id}
+              onVerify={() => void run(acc.id, () => api('POST', `/accounts/${acc.id}/verify`))}
+              onEdit={() => {
+                setEditing({ mode: 'edit', account: acc });
+              }}
+              onRemove={() => void run(acc.id, () => api('DELETE', `/accounts/${acc.id}`))}
+            />
+          ))}
         </div>
       )}
 
@@ -169,9 +118,121 @@ export function AccountsPanel({ api, data, refresh }: PanelProps) {
           setEditing(null);
           await refresh();
         }}
-        {...{ api, data, refresh }}
+        {...{ api, data, refresh, viewer }}
       />
     </section>
+  );
+}
+
+function OwnerBadge({ account, viewer }: { account: Account; viewer: Viewer }) {
+  if (account.owner.kind === 'shared') {
+    return viewer.role === 'member' ? <Badge>shared by admin</Badge> : <Badge>shared</Badge>;
+  }
+  return viewer.role === 'admin' ? <Badge tone="amber">{account.owner.memberName}</Badge> : null;
+}
+
+function TokenDetails({ account: acc }: { account: Account }) {
+  return (
+    <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+      <dt className="text-slate-500">Token</dt>
+      <dd className="font-mono text-slate-700">
+        {acc.secretHint}{' '}
+        {acc.identity.tokenType && (
+          <span className="font-sans text-xs text-slate-500">({acc.identity.tokenType})</span>
+        )}
+      </dd>
+      {acc.identity.scopes && (
+        <>
+          <dt className="text-slate-500">Scopes</dt>
+          <dd className="text-slate-700">{acc.identity.scopes}</dd>
+        </>
+      )}
+      {acc.identity.tokenExpires && (
+        <>
+          <dt className="text-slate-500">Token expires</dt>
+          <dd className="text-slate-700">{acc.identity.tokenExpires}</dd>
+        </>
+      )}
+      <dt className="text-slate-500">Last verified</dt>
+      <dd className="text-slate-700">{formatDateTime(acc.lastVerifiedAt)}</dd>
+    </dl>
+  );
+}
+
+function AccountCard({
+  account: acc,
+  data,
+  viewer,
+  busy,
+  onVerify,
+  onEdit,
+  onRemove,
+}: {
+  account: Account;
+  data: PanelProps['data'];
+  viewer: Viewer;
+  busy: boolean;
+  onVerify: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const can = accountActions(viewer, acc);
+  const toolName = data.tools.find((t) => t.id === acc.tool)?.name ?? acc.tool;
+  const sessions = data.sessions.filter(
+    (s) => s.accountId === acc.id && s.status === 'active',
+  ).length;
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-semibold">{acc.label}</h3>
+            <Badge tone="indigo">{toolName}</Badge>
+            <OwnerBadge account={acc} viewer={viewer} />
+          </div>
+          <p className="mt-0.5 text-sm text-slate-500">
+            Signed in as{' '}
+            <span className="font-medium text-slate-700">{acc.identity.login ?? 'unknown'}</span>
+            {acc.identity.name && ` (${acc.identity.name})`}
+          </p>
+        </div>
+        <Badge tone={sessions > 0 ? 'green' : 'slate'}>
+          {sessions} active session{sessions === 1 ? '' : 's'}
+        </Badge>
+      </div>
+
+      <TokenDetails account={acc} />
+
+      {(can.verify || can.edit || can.remove) && (
+        <div className="mt-5 flex flex-wrap gap-2">
+          {can.verify && (
+            <Button variant="secondary" size="sm" disabled={busy} onClick={onVerify}>
+              {busy ? 'Verifying…' : 'Re-verify'}
+            </Button>
+          )}
+          {can.edit && (
+            <Button variant="secondary" size="sm" onClick={onEdit}>
+              Edit / rotate token
+            </Button>
+          )}
+          {can.remove && (
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                const warning =
+                  sessions > 0 ? `\n\n${sessions} active session key(s) will be revoked.` : '';
+                if (confirm(`Remove account "${acc.label}"?${warning}`)) onRemove();
+              }}
+            >
+              Remove
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -182,11 +243,12 @@ function AccountModal({
   refresh,
   api,
   data,
+  viewer,
 }: {
   editing: Editing;
   onClose: () => void;
   onSaved: () => Promise<void>;
-} & Pick<PanelProps, 'api' | 'data' | 'refresh'>) {
+} & Pick<PanelProps, 'api' | 'data' | 'refresh' | 'viewer'>) {
   const existing = editing?.mode === 'edit' ? editing.account : null;
   return (
     <Modal
@@ -209,6 +271,7 @@ function AccountModal({
           onSaved={onSaved}
           onCancel={onClose}
           refresh={refresh}
+          canConfigure={viewer.role === 'admin'}
         />
       )}
     </Modal>
@@ -227,17 +290,23 @@ function ConnectAccount({
   onSaved,
   onCancel,
   refresh,
+  canConfigure,
 }: {
   api: PanelProps['api'];
   tools: Tool[];
   onSaved: () => Promise<void>;
   onCancel: () => void;
   refresh: () => Promise<void>;
+  /** Only the admin can set up the tool's OAuth app; members only get sign-in once it exists. */
+  canConfigure: boolean;
 }) {
+  const available = (t: Tool | undefined): Tool | undefined =>
+    t?.signIn && (canConfigure || t.signIn.oauthClientId) ? t : undefined;
   const [toolId, setToolId] = useState(tools[0]?.id ?? '');
   const tool = tools.find((t) => t.id === toolId);
-  const [method, setMethod] = useState<ConnectMethod>(defaultMethod(tool));
-  const signInTool = tool?.signIn ? { ...tool, signIn: tool.signIn } : null;
+  const offered = available(tool);
+  const [method, setMethod] = useState<ConnectMethod>(defaultMethod(offered));
+  const signInTool = offered?.signIn ? { ...offered, signIn: offered.signIn } : null;
 
   return (
     <>
@@ -248,7 +317,7 @@ function ConnectAccount({
               value={toolId}
               onChange={(e) => {
                 setToolId(e.target.value);
-                setMethod(defaultMethod(tools.find((t) => t.id === e.target.value)));
+                setMethod(defaultMethod(available(tools.find((t) => t.id === e.target.value))));
               }}
             >
               {tools.map((t) => (
@@ -270,6 +339,7 @@ function ConnectAccount({
           onConnected={onSaved}
           onSettingsChanged={refresh}
           onCancel={onCancel}
+          canConfigure={canConfigure}
         />
       ) : (
         <TokenAccountForm

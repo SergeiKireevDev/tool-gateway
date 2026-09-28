@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { formatDuration } from '@/lib/format';
 import { DEFAULT_MAX_TTL_SECONDS, DEFAULT_TTL_SECONDS } from '@/lib/units';
-import type { Template, TemplateInput } from '@/lib/types';
+import type { TemplateInput, TemplateSummary as Template } from '@/lib/types';
 import type { PanelProps } from './AdminApp';
 import {
   Badge,

@@ -12,17 +12,24 @@ import {
 } from './errors.js';
 import { CryptoBox, randomId, randomToken } from './store/crypto.js';
 import type { EncryptedStore } from './store/store.js';
-import type { Account, Member, Session, SessionIssuer, Template } from './store/types.js';
+import type {
+  Account,
+  Member,
+  Session,
+  SessionIssuer,
+  Template,
+  WebSessionRole,
+} from './store/types.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { ToolProvider } from './tools/types.js';
 import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_HOUR } from './units.js';
 
 export const SESSION_KEY_PREFIX = 'gws_';
 export const ADMIN_TOKEN_PREFIX = 'gwa_';
-export const ADMIN_WEB_SESSION_PREFIX = 'gwc_';
+export const WEB_SESSION_PREFIX = 'gwc_';
 export const MEMBER_KEY_PREFIX = 'gwm_';
-const ADMIN_WEB_SESSION_TTL_HOURS = 12;
-export const ADMIN_WEB_SESSION_TTL_SECONDS = ADMIN_WEB_SESSION_TTL_HOURS * SECONDS_PER_HOUR;
+const WEB_SESSION_TTL_HOURS = 12;
+export const WEB_SESSION_TTL_SECONDS = WEB_SESSION_TTL_HOURS * SECONDS_PER_HOUR;
 const MIN_TTL = 60;
 const MAX_TTL_DAYS = 7;
 const MAX_TTL = MAX_TTL_DAYS * SECONDS_PER_DAY;
@@ -88,8 +95,11 @@ const idList = z.array(z.string().min(1)).min(1);
 
 export const memberSchema = z.object({
   name: z.string().trim().min(1).max(MAX_LABEL_LENGTH),
+  /** Google account the member signs in to the member portal with; null = key-only member. */
+  email: z.string().trim().toLowerCase().pipe(z.email()).nullable().default(null),
   templateIds: idList,
-  accountIds: idList,
+  /** Shared accounts granted to the member (its own accounts are always usable). */
+  accountIds: z.array(z.string().min(1)).default([]),
   /** ISO date-time, or null for a key that never expires. */
   expiresAt: z.iso.datetime({ offset: true }).nullable().default(null),
 });
@@ -115,6 +125,8 @@ export const deviceFlowStartSchema = z.object({
 
 /** Device flows in progress. The device code stays server-side; the browser only gets a flow id. */
 interface PendingDeviceFlow {
+  /** Member who started it (the account will be theirs), or null for the admin. */
+  ownerMemberId: string | null;
   tool: string;
   label: string;
   clientId: string;
@@ -130,18 +142,38 @@ export type DeviceFlowStatus =
   | { status: 'complete'; account: PublicAccount }
   | { status: 'failed'; message: string };
 
-export type PublicAccount = Omit<Account, 'secret'> & { secretHint: string };
+/** Who is acting: the admin, or a member (member portal or member key). */
+export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
+export const ADMIN: Actor = { kind: 'admin' };
+
+export type AccountOwner =
+  { kind: 'shared' } | { kind: 'member'; memberId: string; memberName: string };
+export type PublicAccount = Omit<Account, 'secret' | 'ownerMemberId'> & {
+  secretHint: string;
+  owner: AccountOwner;
+};
+
+/** Identity behind a browser session (Google sign-in). */
+export type WebIdentity =
+  { role: 'admin'; email: string } | { role: 'member'; email: string; member: Member };
 export type SessionStatus = 'active' | 'expired' | 'revoked';
 export type PublicSession = Omit<Session, 'keyHash' | 'issuedBy'> & {
   status: SessionStatus;
   issuedBy: SessionIssuer;
 };
-export type PublicMember = Omit<Member, 'keyHash'> & { activeSessions: number; expired: boolean };
+export type PublicMember = Omit<Member, 'keyHash' | 'email'> & {
+  email: string | null;
+  activeSessions: number;
+  ownAccounts: number;
+  expired: boolean;
+};
 
 /** What a member sees about itself: the templates and accounts it may request keys for. */
 export interface MemberView {
   id: string;
   name: string;
+  email: string | null;
+  keyHint: string;
   expiresAt: string | null;
   templates: Pick<
     Template,
@@ -154,7 +186,22 @@ export interface MemberView {
     | 'defaultTtlSeconds'
     | 'maxTtlSeconds'
   >[];
-  accounts: { id: string; tool: string; label: string; login: string | undefined }[];
+  accounts: {
+    id: string;
+    tool: string;
+    label: string;
+    login: string | undefined;
+    owned: boolean;
+  }[];
+}
+
+export interface ToolCatalogEntry {
+  id: string;
+  name: string;
+  credentialHelp: string;
+  resourceHelp: string;
+  permissions: ToolProvider['permissions'];
+  signIn: { setupHelp: string; defaultScopes: string; oauthClientId: string } | null;
 }
 
 export interface ResolvedSession {
@@ -166,6 +213,8 @@ export interface ResolvedSession {
 export class Gateway {
   private readonly usage = new Map<string, { lastUsedAt: string; count: number }>();
   private readonly deviceFlows = new Map<string, PendingDeviceFlow>();
+  /** Google accounts that sign in as admin; they can't also be member emails. */
+  private adminEmails: readonly string[] = [];
 
   constructor(
     private readonly store: EncryptedStore,
@@ -174,6 +223,10 @@ export class Gateway {
     readonly activity: ActivityLog,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  setAdminEmails(emails: readonly string[]): void {
+    this.adminEmails = emails.map((e) => e.toLowerCase());
+  }
 
   // ---------------------------------------------------------------- admin token
 
@@ -195,41 +248,67 @@ export class Gateway {
     return hash !== null && CryptoBox.equalHex(this.crypto.hashToken(token), hash);
   }
 
-  // ---------------------------------------------------------------- admin web sessions
+  // ---------------------------------------------------------------- web sessions (Google sign-in)
 
-  /** Starts a browser session for an admin who signed in (e.g. with Google). Returns the cookie value. */
-  async createAdminWebSession(email: string): Promise<{ token: string; expiresAt: Date }> {
-    const token = randomToken(ADMIN_WEB_SESSION_PREFIX);
+  /** Which role a verified Google email signs in as, or null if it isn't allowed. */
+  identify(email: string): WebIdentity | null {
+    const normalized = email.toLowerCase();
+    if (this.adminEmails.includes(normalized)) return { role: 'admin', email: normalized };
+    const member = this.store.read().members.find((m) => m.email === normalized);
+    return member && !this.memberExpired(member)
+      ? { role: 'member', email: normalized, member }
+      : null;
+  }
+
+  /** Starts a browser session. Returns the cookie value. */
+  async createWebSession(identity: WebIdentity): Promise<{ token: string; expiresAt: Date }> {
+    const token = randomToken(WEB_SESSION_PREFIX);
     const now = this.now();
-    const expiresAt = new Date(now.getTime() + ADMIN_WEB_SESSION_TTL_SECONDS * MS_PER_SECOND);
+    const expiresAt = new Date(now.getTime() + WEB_SESSION_TTL_SECONDS * MS_PER_SECOND);
+    const role: WebSessionRole = identity.role;
     await this.store.update((s) => {
-      s.adminSessions = s.adminSessions.filter((x) => Date.parse(x.expiresAt) > now.getTime());
-      s.adminSessions.push({
+      s.webSessions = s.webSessions.filter((x) => Date.parse(x.expiresAt) > now.getTime());
+      s.webSessions.push({
         id: randomId(),
         tokenHash: this.crypto.hashToken(token),
-        email,
+        role,
+        email: identity.email,
+        memberId: identity.role === 'member' ? identity.member.id : null,
         createdAt: now.toISOString(),
         expiresAt: expiresAt.toISOString(),
       });
     });
-    this.activity.add({ kind: 'admin', detail: `Admin signed in: ${email}` });
+    this.activity.add({
+      kind: role,
+      detail:
+        identity.role === 'member'
+          ? `Member "${identity.member.name}" signed in (${identity.email})`
+          : `Admin signed in: ${identity.email}`,
+    });
     return { token, expiresAt };
   }
 
-  resolveAdminWebSession(token: string): { email: string; expiresAt: string } | null {
-    if (!token.startsWith(ADMIN_WEB_SESSION_PREFIX)) return null;
+  /**
+   * Resolves a session cookie. Member sessions end as soon as the member is deleted, expires or
+   * gets a different email; admin sessions end if the email is removed from the admin list.
+   */
+  resolveWebSession(token: string): (WebIdentity & { expiresAt: string }) | null {
+    if (!token.startsWith(WEB_SESSION_PREFIX)) return null;
     const hash = this.crypto.hashToken(token);
     const session = this.store
       .read()
-      .adminSessions.find((s) => CryptoBox.equalHex(s.tokenHash, hash));
+      .webSessions.find((s) => CryptoBox.equalHex(s.tokenHash, hash));
     if (!session || Date.parse(session.expiresAt) <= this.now().getTime()) return null;
-    return { email: session.email, expiresAt: session.expiresAt };
+    const identity = this.identify(session.email);
+    if (identity?.role !== session.role) return null;
+    if (identity.role === 'member' && identity.member.id !== session.memberId) return null;
+    return { ...identity, expiresAt: session.expiresAt };
   }
 
-  async endAdminWebSession(token: string): Promise<void> {
+  async endWebSession(token: string): Promise<void> {
     const hash = this.crypto.hashToken(token);
     await this.store.update((s) => {
-      s.adminSessions = s.adminSessions.filter((x) => !CryptoBox.equalHex(x.tokenHash, hash));
+      s.webSessions = s.webSessions.filter((x) => !CryptoBox.equalHex(x.tokenHash, hash));
     });
   }
 
@@ -241,13 +320,19 @@ export class Gateway {
     return tool;
   }
 
+  /** Admin view: every account, shared or member-owned. */
   listAccounts(): PublicAccount[] {
-    return this.store.read().accounts.map(toPublicAccount);
+    return this.store.read().accounts.map((a) => this.toPublicAccount(a));
   }
 
-  async createAccount(input: unknown): Promise<PublicAccount> {
+  /** Accounts a member can use: its own plus the shared accounts granted to it. */
+  listAccountsFor(member: Member): PublicAccount[] {
+    return this.usableAccounts({ kind: 'member', member }).map((a) => this.toPublicAccount(a));
+  }
+
+  async createAccount(input: unknown, actor: Actor = ADMIN): Promise<PublicAccount> {
     const data = accountCreateSchema.parse(input);
-    return this.addAccount(this.tool(data.tool), data.label, data.secret, 'token');
+    return this.addAccount(this.tool(data.tool), data.label, data.secret, 'token', actor);
   }
 
   private async addAccount(
@@ -255,6 +340,7 @@ export class Gateway {
     label: string,
     secret: string,
     method: 'token' | 'device-flow',
+    actor: Actor,
   ): Promise<PublicAccount> {
     const identity = await this.verify(tool, secret);
     identity.connectedVia = method === 'token' ? 'pasted token' : `${tool.name} sign-in`;
@@ -267,15 +353,38 @@ export class Gateway {
       identity,
       createdAt: ts,
       lastVerifiedAt: ts,
+      ownerMemberId: actor.kind === 'member' ? actor.member.id : null,
     };
     await this.store.update((s) => {
       s.accounts.push(account);
     });
-    this.activity.add({ kind: 'admin', tool: tool.id, detail: `Connected account "${label}"` });
-    return toPublicAccount(account);
+    this.activity.add({
+      kind: actor.kind,
+      tool: tool.id,
+      detail: `${actorName(actor)} connected account "${label}"`,
+    });
+    return this.toPublicAccount(account);
   }
 
   // ---------------------------------------------------------------- tool settings & sign-in
+
+  /** Tools with their permission catalog and sign-in settings, for the UI. */
+  toolCatalog(): ToolCatalogEntry[] {
+    return this.tools.list().map((t) => ({
+      id: t.id,
+      name: t.name,
+      credentialHelp: t.credentialHelp,
+      resourceHelp: t.resourceHelp,
+      permissions: t.permissions,
+      signIn: t.deviceFlow
+        ? {
+            setupHelp: t.deviceFlow.setupHelp,
+            defaultScopes: t.deviceFlow.defaultScopes,
+            ...this.toolSettings(t.id),
+          }
+        : null,
+    }));
+  }
 
   toolSettings(toolId: string): { oauthClientId: string } {
     return { oauthClientId: this.store.read().toolSettings[toolId]?.oauthClientId ?? '' };
@@ -291,7 +400,10 @@ export class Gateway {
     return this.toolSettings(tool.id);
   }
 
-  async startDeviceFlow(input: unknown): Promise<{
+  async startDeviceFlow(
+    input: unknown,
+    actor: Actor = ADMIN,
+  ): Promise<{
     flowId: string;
     userCode: string;
     verificationUri: string;
@@ -314,6 +426,7 @@ export class Gateway {
     const now = this.now().getTime();
     const flowId = randomToken('', DEVICE_FLOW_ID_BYTES);
     this.deviceFlows.set(flowId, {
+      ownerMemberId: memberIdOf(actor),
       tool: tool.id,
       label: data.label,
       clientId,
@@ -336,8 +449,8 @@ export class Gateway {
    * Called repeatedly by the UI. Hits the tool at most once per the interval it mandates,
    * and connects the account once the user has approved the sign-in.
    */
-  async pollDeviceFlow(flowId: string): Promise<DeviceFlowStatus> {
-    const flow = this.deviceFlows.get(flowId);
+  async pollDeviceFlow(flowId: string, actor: Actor = ADMIN): Promise<DeviceFlowStatus> {
+    const flow = this.deviceFlow(flowId, actor);
     if (!flow) return { status: 'failed', message: 'Unknown or finished sign-in, start again' };
     const now = this.now().getTime();
     if (now >= flow.expiresAt) {
@@ -364,7 +477,13 @@ export class Gateway {
           return result;
         case 'complete': {
           this.deviceFlows.delete(flowId);
-          const account = await this.addAccount(tool, flow.label, result.secret, 'device-flow');
+          const account = await this.addAccount(
+            tool,
+            flow.label,
+            result.secret,
+            'device-flow',
+            actor,
+          );
           return { status: 'complete', account };
         }
       }
@@ -381,8 +500,14 @@ export class Gateway {
     }
   }
 
-  cancelDeviceFlow(flowId: string): void {
-    this.deviceFlows.delete(flowId);
+  cancelDeviceFlow(flowId: string, actor: Actor = ADMIN): void {
+    if (this.deviceFlow(flowId, actor)) this.deviceFlows.delete(flowId);
+  }
+
+  /** A device flow can only be polled or cancelled by whoever started it. */
+  private deviceFlow(flowId: string, actor: Actor): PendingDeviceFlow | undefined {
+    const flow = this.deviceFlows.get(flowId);
+    return flow?.ownerMemberId === memberIdOf(actor) ? flow : undefined;
   }
 
   private pruneDeviceFlows(): void {
@@ -392,9 +517,10 @@ export class Gateway {
     }
   }
 
-  async updateAccount(id: string, input: unknown): Promise<PublicAccount> {
+  /** Relabel an account or rotate its token. The admin only manages shared accounts this way. */
+  async updateAccount(id: string, input: unknown, actor: Actor = ADMIN): Promise<PublicAccount> {
     const data = accountUpdateSchema.parse(input);
-    const existing = this.findAccount(id);
+    const existing = this.accountFor(actor, id, 'manage');
     const patch: Partial<Account> = {};
     if (data.label) patch.label = data.label;
     if (data.secret) {
@@ -409,15 +535,15 @@ export class Gateway {
       return acc;
     });
     this.activity.add({
-      kind: 'admin',
+      kind: actor.kind,
       tool: updated.tool,
-      detail: `Updated account "${updated.label}"`,
+      detail: `${actorName(actor)} updated account "${updated.label}"`,
     });
-    return toPublicAccount(updated);
+    return this.toPublicAccount(updated);
   }
 
-  async reverifyAccount(id: string): Promise<PublicAccount> {
-    const acc = this.findAccount(id);
+  async reverifyAccount(id: string, actor: Actor = ADMIN): Promise<PublicAccount> {
+    const acc = this.accountFor(actor, id, 'oversee');
     const identity = await this.verify(this.tool(acc.tool), acc.secret);
     const updated = await this.store.update((s) => {
       const a = s.accounts.find((x) => x.id === id);
@@ -426,26 +552,39 @@ export class Gateway {
       a.lastVerifiedAt = this.now().toISOString();
       return a;
     });
-    return toPublicAccount(updated);
+    return this.toPublicAccount(updated);
   }
 
-  async deleteAccount(id: string): Promise<void> {
-    const acc = this.findAccount(id);
+  /** Members remove their own accounts; the admin can remove any account. */
+  async deleteAccount(id: string, actor: Actor = ADMIN): Promise<void> {
+    const acc = this.accountFor(actor, id, 'oversee');
     const revoked = await this.store.update((s) => {
       s.accounts = s.accounts.filter((a) => a.id !== id);
       for (const m of s.members) m.accountIds = m.accountIds.filter((x) => x !== id);
       return this.revokeWhere(s.sessions, (x) => x.accountId === id);
     });
     this.activity.add({
-      kind: 'admin',
+      kind: actor.kind,
       tool: acc.tool,
-      detail: `Removed account "${acc.label}" (revoked ${revoked} session(s))`,
+      detail: `${actorName(actor)} removed account "${acc.label}" (revoked ${revoked} session(s))`,
     });
   }
 
-  private findAccount(id: string): Account {
+  /**
+   * Looks up an account the actor may act on. Members only ever see their own accounts (others
+   * are "not found"). The admin may oversee (re-verify, remove) member accounts, but only
+   * manages (relabels, rotates tokens of) shared ones.
+   */
+  private accountFor(actor: Actor, id: string, purpose: 'manage' | 'oversee'): Account {
     const acc = this.store.read().accounts.find((a) => a.id === id);
+    if (actor.kind === 'member') {
+      if (acc?.ownerMemberId !== actor.member.id) throw notFound(ACCOUNT_NOT_FOUND);
+      return acc;
+    }
     if (!acc) throw notFound(ACCOUNT_NOT_FOUND);
+    if (purpose === 'manage' && !isShared(acc)) {
+      throw forbidden('This account belongs to a member; only they can change it');
+    }
     return acc;
   }
 
@@ -545,6 +684,7 @@ export class Gateway {
     const member: Member = {
       id: randomId(),
       name: data.name,
+      email: data.email,
       keyHash: this.crypto.hashToken(key),
       keyHint: key.slice(0, MEMBER_KEY_PREFIX.length + KEY_HINT_CHARS),
       templateIds: data.templateIds,
@@ -566,7 +706,7 @@ export class Gateway {
 
   /** Updates a member's name, allowlists or expiry. Its key and issued sessions are kept. */
   async updateMember(id: string, input: unknown): Promise<PublicMember> {
-    const data = this.validateMember(input);
+    const data = this.validateMember(input, id);
     const updated = await this.store.update((s) => {
       const member = s.members.find((m) => m.id === id);
       if (!member) throw notFound(MEMBER_NOT_FOUND);
@@ -585,7 +725,10 @@ export class Gateway {
    * Replaces a member's key (e.g. after a leak). Session keys it issued are revoked, since
    * whoever held the old key may have minted them.
    */
-  async rotateMemberKey(id: string): Promise<{ key: string; member: PublicMember }> {
+  async rotateMemberKey(
+    id: string,
+    actor: Actor = ADMIN,
+  ): Promise<{ key: string; member: PublicMember }> {
     const key = randomToken(MEMBER_KEY_PREFIX);
     const [member, revoked] = await this.store.update((s) => {
       const m = s.members.find((x) => x.id === id);
@@ -596,22 +739,30 @@ export class Gateway {
       return [m, this.revokeWhere(s.sessions, (x) => issuedByMember(x, id))] as const;
     });
     this.activity.add({
-      kind: 'admin',
-      detail: `Rotated key of member "${member.name}" (revoked ${revoked} session(s))`,
+      kind: actor.kind,
+      detail: `${actorName(actor)} rotated the key of member "${member.name}" (revoked ${revoked} session(s))`,
     });
     return { key, member: this.toPublicMember(member) };
   }
 
+  /** Deletes a member together with the accounts it connected; revokes every key it could use. */
   async deleteMember(id: string): Promise<void> {
-    const [member, revoked] = await this.store.update((s) => {
+    const [member, revoked, removedAccounts] = await this.store.update((s) => {
       const m = s.members.find((x) => x.id === id);
       if (!m) throw notFound(MEMBER_NOT_FOUND);
+      const owned = new Set(s.accounts.filter((a) => a.ownerMemberId === id).map((a) => a.id));
       s.members = s.members.filter((x) => x.id !== id);
-      return [m, this.revokeWhere(s.sessions, (x) => issuedByMember(x, id))] as const;
+      s.accounts = s.accounts.filter((a) => !owned.has(a.id));
+      s.webSessions = s.webSessions.filter((w) => w.memberId !== id);
+      const n = this.revokeWhere(
+        s.sessions,
+        (x) => issuedByMember(x, id) || owned.has(x.accountId),
+      );
+      return [m, n, owned.size] as const;
     });
     this.activity.add({
       kind: 'admin',
-      detail: `Deleted member "${member.name}" (revoked ${revoked} session(s))`,
+      detail: `Deleted member "${member.name}" and its ${removedAccounts} account(s) (revoked ${revoked} session(s))`,
     });
   }
 
@@ -630,6 +781,8 @@ export class Gateway {
     return {
       id: member.id,
       name: member.name,
+      email: member.email ?? null,
+      keyHint: member.keyHint,
       expiresAt: member.expiresAt,
       templates: state.templates
         .filter((t) => member.templateIds.includes(t.id))
@@ -654,9 +807,13 @@ export class Gateway {
             maxTtlSeconds,
           }),
         ),
-      accounts: state.accounts
-        .filter((a) => member.accountIds.includes(a.id))
-        .map((a) => ({ id: a.id, tool: a.tool, label: a.label, login: a.identity.login })),
+      accounts: this.usableAccounts({ kind: 'member', member }).map((a) => ({
+        id: a.id,
+        tool: a.tool,
+        label: a.label,
+        login: a.identity.login,
+        owned: a.ownerMemberId === member.id,
+      })),
     };
   }
 
@@ -679,19 +836,23 @@ export class Gateway {
     });
   }
 
-  private validateMember(input: unknown): z.infer<typeof memberSchema> {
+  private validateMember(input: unknown, selfId?: string): z.infer<typeof memberSchema> {
     const data = memberSchema.parse(input);
     const state = this.store.read();
     const unknownTemplates = data.templateIds.filter(
       (id) => !state.templates.some((t) => t.id === id),
     );
-    if (unknownTemplates.length)
+    if (unknownTemplates.length) {
       throw badRequest(`Unknown template(s): ${unknownTemplates.join(', ')}`);
-    const unknownAccounts = data.accountIds.filter(
-      (id) => !state.accounts.some((a) => a.id === id),
+    }
+    // Only shared accounts can be granted; member-owned accounts stay with their owner.
+    const notGrantable = data.accountIds.filter(
+      (id) => !state.accounts.some((a) => a.id === id && isShared(a)),
     );
-    if (unknownAccounts.length)
-      throw badRequest(`Unknown account(s): ${unknownAccounts.join(', ')}`);
+    if (notGrantable.length) {
+      throw badRequest(`Unknown or non-shared account(s): ${notGrantable.join(', ')}`);
+    }
+    if (data.email) this.checkMemberEmail(data.email, selfId);
     if (data.expiresAt && Date.parse(data.expiresAt) <= this.now().getTime()) {
       throw badRequest('expiresAt must be in the future');
     }
@@ -703,16 +864,46 @@ export class Gateway {
     };
   }
 
+  private checkMemberEmail(email: string, selfId: string | undefined): void {
+    if (this.adminEmails.includes(email)) {
+      throw badRequest(`${email} is an admin email: it already signs in as admin`);
+    }
+    const taken = this.store.read().members.some((m) => m.id !== selfId && m.email === email);
+    if (taken) throw conflict(`Another member already uses ${email}`);
+  }
+
   private memberExpired(m: Member): boolean {
     return m.expiresAt !== null && Date.parse(m.expiresAt) <= this.now().getTime();
   }
 
   private toPublicMember(m: Member): PublicMember {
-    const { keyHash: _omit, ...rest } = m;
-    const activeSessions = this.store
-      .read()
-      .sessions.filter((s) => issuedByMember(s, m.id) && this.statusOf(s) === 'active').length;
-    return { ...rest, activeSessions, expired: this.memberExpired(m) };
+    const { keyHash: _omit, email, ...rest } = m;
+    const state = this.store.read();
+    const activeSessions = state.sessions.filter(
+      (s) => issuedByMember(s, m.id) && this.statusOf(s) === 'active',
+    ).length;
+    const ownAccounts = state.accounts.filter((a) => a.ownerMemberId === m.id).length;
+    return {
+      ...rest,
+      email: email ?? null,
+      activeSessions,
+      ownAccounts,
+      expired: this.memberExpired(m),
+    };
+  }
+
+  private toPublicAccount(a: Account): PublicAccount {
+    const { secret, ownerMemberId, ...rest } = a;
+    const owner = ownerMemberId
+      ? this.store.read().members.find((m) => m.id === ownerMemberId)
+      : undefined;
+    return {
+      ...rest,
+      secretHint: `…${secret.slice(-SECRET_HINT_CHARS)}`,
+      owner: owner
+        ? { kind: 'member', memberId: owner.id, memberName: owner.name }
+        : { kind: 'shared' },
+    };
   }
 
   // ---------------------------------------------------------------- sessions
@@ -729,7 +920,7 @@ export class Gateway {
     const req = sessionRequestSchema.parse(input);
     const template = this.store.read().templates.find((t) => t.id === req.templateId);
     if (!template) throw notFound(TEMPLATE_NOT_FOUND);
-    const account = this.pickAccount(template, req.accountId, null);
+    const account = this.pickAccount(template, req.accountId, ADMIN);
     return this.issue(req, template, account, ADMIN_ISSUER);
   }
 
@@ -746,7 +937,7 @@ export class Gateway {
       ? this.store.read().templates.find((t) => t.id === req.templateId)
       : undefined;
     if (!template) throw forbidden('This template is not available to you');
-    const account = this.pickAccount(template, req.accountId, member.accountIds);
+    const account = this.pickAccount(template, req.accountId, { kind: 'member', member });
     return this.issue(req, template, account, {
       kind: 'member',
       memberId: member.id,
@@ -755,21 +946,25 @@ export class Gateway {
   }
 
   /**
-   * Resolves the account a key will use. `allowed` restricts the choice (members); null means
-   * any account of the template's tool (admin).
+   * Accounts an actor can issue keys against: shared accounts for the admin; for a member, its
+   * own accounts plus the shared accounts granted to it.
    */
-  private pickAccount(
-    template: Template,
-    requestedId: string | undefined,
-    allowed: readonly string[] | null,
-  ): Account {
-    const usable = this.store
-      .read()
-      .accounts.filter((a) => allowed === null || allowed.includes(a.id));
+  private usableAccounts(actor: Actor): Account[] {
+    const accounts = this.store.read().accounts;
+    if (actor.kind === 'admin') return accounts.filter(isShared);
+    const m = actor.member;
+    return accounts.filter(
+      (a) => a.ownerMemberId === m.id || (isShared(a) && m.accountIds.includes(a.id)),
+    );
+  }
+
+  /** Resolves the account a key will use (explicit, or the only usable one for the tool). */
+  private pickAccount(template: Template, requestedId: string | undefined, actor: Actor): Account {
+    const usable = this.usableAccounts(actor);
     if (requestedId) {
       const account = usable.find((a) => a.id === requestedId);
       if (!account) {
-        throw allowed === null
+        throw actor.kind === 'admin'
           ? notFound(ACCOUNT_NOT_FOUND)
           : forbidden('This account is not available to you');
       }
@@ -940,7 +1135,15 @@ function endOf(s: Session): number {
   return s.revokedAt ? Date.parse(s.revokedAt) : Date.parse(s.expiresAt);
 }
 
-function toPublicAccount(a: Account): PublicAccount {
-  const { secret, ...rest } = a;
-  return { ...rest, secretHint: `…${secret.slice(-SECRET_HINT_CHARS)}` };
+/** Accounts connected by the admin (no member owner). */
+function isShared(a: Account): boolean {
+  return !a.ownerMemberId;
+}
+
+function memberIdOf(actor: Actor): string | null {
+  return actor.kind === 'member' ? actor.member.id : null;
+}
+
+function actorName(actor: Actor): string {
+  return actor.kind === 'member' ? `Member "${actor.member.name}"` : 'Admin';
 }

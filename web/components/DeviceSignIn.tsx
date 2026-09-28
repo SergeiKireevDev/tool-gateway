@@ -17,12 +17,15 @@ export function DeviceSignIn({
   onConnected,
   onSettingsChanged,
   onCancel,
+  canConfigure,
 }: {
   api: Api;
   tool: Tool & { signIn: NonNullable<Tool['signIn']> };
   onConnected: () => Promise<void>;
   onSettingsChanged: () => Promise<void>;
   onCancel: () => void;
+  /** Whether the viewer may set the OAuth app client ID (admin only). */
+  canConfigure: boolean;
 }) {
   const [editingClient, setEditingClient] = useState(!tool.signIn.oauthClientId);
   const [label, setLabel] = useState('');
@@ -120,18 +123,20 @@ export function DeviceSignIn({
         />
       </Field>
       <ErrorBanner message={error} />
-      <p className="text-xs text-slate-500">
-        OAuth app <span className="font-mono">{tool.signIn.oauthClientId}</span> ·{' '}
-        <button
-          type="button"
-          className="underline-offset-2 hover:text-slate-800 hover:underline"
-          onClick={() => {
-            setEditingClient(true);
-          }}
-        >
-          change
-        </button>
-      </p>
+      {canConfigure && (
+        <p className="text-xs text-slate-500">
+          OAuth app <span className="font-mono">{tool.signIn.oauthClientId}</span> ·{' '}
+          <button
+            type="button"
+            className="underline-offset-2 hover:text-slate-800 hover:underline"
+            onClick={() => {
+              setEditingClient(true);
+            }}
+          >
+            change
+          </button>
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="secondary" onClick={onCancel}>
           Cancel

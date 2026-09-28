@@ -26,6 +26,20 @@ export function fakeGitHubFetch(calls: Harness['upstreamCalls']): typeof fetch {
     if (auth === 'Bearer bad-token') {
       return Promise.resolve(new Response('{"message":"Bad credentials"}', { status: 401 }));
     }
+    if (url === 'https://github.com/login/device/code') {
+      return Promise.resolve(
+        Response.json({
+          device_code: 'dev-code',
+          user_code: 'ABCD-1234',
+          verification_uri: 'https://github.com/login/device',
+          expires_in: 900,
+          interval: 5,
+        }),
+      );
+    }
+    if (url === 'https://github.com/login/oauth/access_token') {
+      return Promise.resolve(Response.json({ error: 'authorization_pending' }));
+    }
     if (url === 'https://api.github.com/user') {
       return Promise.resolve(
         Response.json(

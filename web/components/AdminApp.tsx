@@ -1,18 +1,35 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import {
   createApi,
-  fetchGoogleAdmin,
+  fetchWebUser,
+  MEMBER_API,
   signOutGoogle,
   tokenStore,
   type Api,
-  type GoogleAdmin,
+  type WebUser,
 } from '@/lib/api';
-import type { Account, Member, Session, Template, Tool } from '@/lib/types';
+import type {
+  Account,
+  Member,
+  MemberSelf,
+  Session,
+  Template,
+  TemplateSummary,
+  Tool,
+} from '@/lib/types';
 import { AccountsPanel } from './AccountsPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { LoginScreen } from './LoginScreen';
+import { MemberKeyPanel } from './MemberKeyPanel';
 import { MembersPanel } from './MembersPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { TemplatesPanel } from './TemplatesPanel';
@@ -21,18 +38,79 @@ import { ErrorBanner } from './ui';
 export interface GatewayData {
   tools: Tool[];
   accounts: Account[];
-  templates: Template[];
+  /** Full templates for the admin; only the ones granted (summaries) for a member. */
+  templates: TemplateSummary[];
   sessions: Session[];
   members: Member[];
+  /** Set in the member portal: the signed-in member. */
+  self: MemberSelf | null;
 }
+
+/** Who is looking at a screen: screens adapt what they offer (e.g. managing shared accounts). */
+export type Viewer = { role: 'admin' } | { role: 'member'; memberId: string; memberName: string };
 
 export interface PanelProps {
   api: Api;
   data: GatewayData;
   refresh: () => Promise<void>;
+  viewer: Viewer;
 }
 
-async function fetchAll(api: Api): Promise<GatewayData> {
+interface TabDef {
+  id: string;
+  label: string;
+  count?: (data: GatewayData) => number;
+  render: (props: PanelProps) => ReactNode;
+}
+
+const activeCount = (data: GatewayData): number =>
+  data.sessions.filter((s) => s.status === 'active').length;
+
+const ADMIN_TABS: TabDef[] = [
+  {
+    id: 'accounts',
+    label: 'Accounts',
+    count: (d) => d.accounts.length,
+    render: (p) => <AccountsPanel {...p} />,
+  },
+  {
+    id: 'templates',
+    label: 'Templates',
+    count: (d) => d.templates.length,
+    render: (p) => <TemplatesPanel {...p} />,
+  },
+  {
+    id: 'sessions',
+    label: 'Session keys',
+    count: activeCount,
+    render: (p) => <SessionsPanel {...p} />,
+  },
+  {
+    id: 'members',
+    label: 'Members',
+    count: (d) => d.members.length,
+    render: (p) => <MembersPanel {...p} />,
+  },
+  { id: 'activity', label: 'Activity', render: (p) => <ActivityPanel api={p.api} /> },
+];
+
+const MEMBER_TABS: TabDef[] = [
+  {
+    id: 'sessions',
+    label: 'Session keys',
+    count: activeCount,
+    render: (p) => <SessionsPanel {...p} />,
+  },
+  {
+    id: 'accounts',
+    label: 'My accounts',
+    count: (d) => d.accounts.length,
+    render: (p) => <AccountsPanel {...p} />,
+  },
+  { id: 'key', label: 'Member key', render: (p) => <MemberKeyPanel {...p} /> },
+];
+
+async function loadAdminData(api: Api): Promise<GatewayData> {
   const [tools, accounts, templates, sessions, members] = await Promise.all([
     api<Tool[]>('GET', '/tools'),
     api<Account[]>('GET', '/accounts'),
@@ -40,34 +118,34 @@ async function fetchAll(api: Api): Promise<GatewayData> {
     api<Session[]>('GET', '/sessions'),
     api<Member[]>('GET', '/members'),
   ]);
-  return { tools, accounts, templates, sessions, members };
+  return { tools, accounts, templates, sessions, members, self: null };
 }
 
-const TABS = [
-  { id: 'accounts', label: 'Accounts' },
-  { id: 'templates', label: 'Templates' },
-  { id: 'sessions', label: 'Session keys' },
-  { id: 'members', label: 'Members' },
-  { id: 'activity', label: 'Activity' },
-] as const;
-
-type TabId = (typeof TABS)[number]['id'];
+async function loadMemberData(api: Api): Promise<GatewayData> {
+  const [tools, accounts, sessions, self] = await Promise.all([
+    api<Tool[]>('GET', '/tools'),
+    api<Account[]>('GET', '/accounts'),
+    api<Session[]>('GET', '/sessions'),
+    api<MemberSelf>('GET', '/'),
+  ]);
+  return { tools, accounts, templates: self.templates, sessions, members: [], self };
+}
 
 export function AdminApp() {
   // `undefined` while server-rendering: the token only exists in the browser.
   const token = useSyncExternalStore(tokenStore.subscribe, tokenStore.get, () => undefined);
   // Google session: `undefined` while checking, `null` when not signed in.
-  const [googleAdmin, setGoogleAdmin] = useState<GoogleAdmin | null | undefined>(undefined);
+  const [webUser, setWebUser] = useState<WebUser | null | undefined>(undefined);
 
   useEffect(() => {
     if (token !== null) return;
     let active = true;
-    fetchGoogleAdmin().then(
-      (admin) => {
-        if (active) setGoogleAdmin(admin);
+    fetchWebUser().then(
+      (user) => {
+        if (active) setWebUser(user);
       },
       () => {
-        if (active) setGoogleAdmin(null);
+        if (active) setWebUser(null);
       },
     );
     return () => {
@@ -81,18 +159,18 @@ export function AdminApp() {
       return;
     }
     void signOutGoogle().finally(() => {
-      setGoogleAdmin(null);
+      setWebUser(null);
     });
   }, []);
   const sessionLost = useCallback(() => {
     tokenStore.clear();
-    setGoogleAdmin(null);
+    setWebUser(null);
   }, []);
 
   if (token === undefined) return null;
   if (token) {
     return (
-      <Dashboard
+      <AdminWorkspace
         token={token}
         identity="admin token"
         onSignOut={signOut}
@@ -100,21 +178,26 @@ export function AdminApp() {
       />
     );
   }
-  if (googleAdmin === undefined) return null;
-  if (googleAdmin) {
+  if (webUser === undefined) return null;
+  if (webUser?.role === 'admin') {
     return (
-      <Dashboard
+      <AdminWorkspace
         token={null}
-        identity={googleAdmin.email}
+        identity={webUser.email}
         onSignOut={signOut}
         onUnauthorized={sessionLost}
       />
     );
   }
+  if (webUser?.role === 'member') {
+    return <MemberPortal user={webUser} onSignOut={signOut} onUnauthorized={sessionLost} />;
+  }
   return <LoginScreen onTokenLogin={tokenStore.set} />;
 }
 
-function Dashboard({
+const ADMIN_VIEWER: Viewer = { role: 'admin' };
+
+function AdminWorkspace({
   token,
   identity,
   onSignOut,
@@ -126,13 +209,74 @@ function Dashboard({
   onUnauthorized: () => void;
 }) {
   const api = useMemo(() => createApi(token, onUnauthorized), [token, onUnauthorized]);
-  const [tab, setTab] = useState<TabId>('accounts');
+  return (
+    <Workspace
+      api={api}
+      viewer={ADMIN_VIEWER}
+      tabs={ADMIN_TABS}
+      load={loadAdminData}
+      title="Local Gateway"
+      subtitle="Scoped, short-lived access to your tools"
+      identity={identity}
+      onSignOut={onSignOut}
+    />
+  );
+}
+
+function MemberPortal({
+  user,
+  onSignOut,
+  onUnauthorized,
+}: {
+  user: Extract<WebUser, { role: 'member' }>;
+  onSignOut: () => void;
+  onUnauthorized: () => void;
+}) {
+  const api = useMemo(() => createApi(null, onUnauthorized, MEMBER_API), [onUnauthorized]);
+  const viewer = useMemo<Viewer>(
+    () => ({ role: 'member', memberId: user.memberId, memberName: user.memberName }),
+    [user.memberId, user.memberName],
+  );
+  return (
+    <Workspace
+      api={api}
+      viewer={viewer}
+      tabs={MEMBER_TABS}
+      load={loadMemberData}
+      title={`${user.memberName} · Local Gateway`}
+      subtitle="Your accounts and short-lived keys"
+      identity={user.email}
+      onSignOut={onSignOut}
+    />
+  );
+}
+
+function Workspace({
+  api,
+  viewer,
+  tabs,
+  load,
+  title,
+  subtitle,
+  identity,
+  onSignOut,
+}: {
+  api: Api;
+  viewer: Viewer;
+  tabs: TabDef[];
+  load: (api: Api) => Promise<GatewayData>;
+  title: string;
+  subtitle: string;
+  identity: string;
+  onSignOut: () => void;
+}) {
+  const [tabId, setTabId] = useState(tabs[0]?.id ?? '');
   const [data, setData] = useState<GatewayData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(
     () =>
-      fetchAll(api).then(
+      load(api).then(
         (d) => {
           setData(d);
           setError(null);
@@ -142,22 +286,14 @@ function Dashboard({
           setError((err as Error).message);
         },
       ),
-    [api],
+    [api, load],
   );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const activeSessions = data?.sessions.filter((s) => s.status === 'active').length ?? 0;
-  const counts: Partial<Record<TabId, number>> = data
-    ? {
-        accounts: data.accounts.length,
-        templates: data.templates.length,
-        sessions: activeSessions,
-        members: data.members.length,
-      }
-    : {};
+  const tab = tabs.find((t) => t.id === tabId) ?? tabs[0];
 
   return (
     <div className="min-h-screen">
@@ -168,8 +304,8 @@ function Dashboard({
               G
             </div>
             <div>
-              <h1 className="font-semibold leading-tight">Local Gateway</h1>
-              <p className="text-xs text-slate-500">Scoped, short-lived access to your tools</p>
+              <h1 className="leading-tight font-semibold">{title}</h1>
+              <p className="text-xs text-slate-500">{subtitle}</p>
             </div>
           </div>
           <div className="flex items-center gap-4 text-sm">
@@ -186,24 +322,24 @@ function Dashboard({
           </div>
         </div>
         <nav className="mx-auto flex max-w-6xl gap-1 px-6" aria-label="Sections">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => {
-                setTab(t.id);
+                setTabId(t.id);
               }}
-              aria-current={tab === t.id ? 'page' : undefined}
+              aria-current={t.id === tab?.id ? 'page' : undefined}
               className={`-mb-px flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition ${
-                tab === t.id
+                t.id === tab?.id
                   ? 'border-indigo-600 text-indigo-700'
                   : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
               }`}
             >
               {t.label}
-              {counts[t.id] !== undefined && (
+              {data && t.count && (
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                  {counts[t.id]}
+                  {t.count(data)}
                 </span>
               )}
             </button>
@@ -213,22 +349,7 @@ function Dashboard({
 
       <main className="mx-auto max-w-6xl px-6 py-8">
         <ErrorBanner message={error} />
-        {data &&
-          (() => {
-            const props: PanelProps = { api, data, refresh };
-            switch (tab) {
-              case 'accounts':
-                return <AccountsPanel {...props} />;
-              case 'templates':
-                return <TemplatesPanel {...props} />;
-              case 'sessions':
-                return <SessionsPanel {...props} />;
-              case 'members':
-                return <MembersPanel {...props} />;
-              case 'activity':
-                return <ActivityPanel api={api} />;
-            }
-          })()}
+        {data && tab?.render({ api, data, refresh, viewer })}
       </main>
     </div>
   );

@@ -2,10 +2,10 @@ import { parseCookie } from 'cookie';
 import express, { type CookieOptions, type Request, type Response, type Router } from 'express';
 import { LOGIN_TTL_MS, SignInError, type GoogleSignIn } from '../auth/google.js';
 import type { GatewayConfig } from '../config.js';
-import type { Gateway } from '../gateway.js';
+import type { Gateway, WebIdentity } from '../gateway.js';
 import { HTTP } from '../httpStatus.js';
 
-export const ADMIN_COOKIE = 'gw_admin';
+export const SESSION_COOKIE = 'gw_session';
 const LOGIN_COOKIE = 'gw_login';
 const LOGIN_COOKIE_PATH = '/auth/google';
 /**
@@ -20,15 +20,12 @@ export function readCookie(req: Request, name: string): string | undefined {
   return header ? parseCookie(header)[name] : undefined;
 }
 
-export interface CookieAdmin {
-  email: string;
-  expiresAt: string;
-}
+export type CookieIdentity = WebIdentity & { expiresAt: string };
 
-/** Resolves the admin behind the session cookie, if any (does not check the CSRF header). */
-export function cookieAdmin(gateway: Gateway, req: Request): CookieAdmin | null {
-  const token = readCookie(req, ADMIN_COOKIE);
-  return token ? gateway.resolveAdminWebSession(token) : null;
+/** Resolves who is behind the session cookie, if anyone (does not check the CSRF header). */
+export function cookieIdentity(gateway: Gateway, req: Request): CookieIdentity | null {
+  const token = readCookie(req, SESSION_COOKIE);
+  return token ? gateway.resolveWebSession(token) : null;
 }
 
 export function adminAuthRoutes(
@@ -47,12 +44,20 @@ export function adminAuthRoutes(
   });
 
   router.get('/api/auth/me', (req, res) => {
-    const admin = cookieAdmin(gateway, req);
-    if (!admin) {
+    const identity = cookieIdentity(gateway, req);
+    if (!identity) {
       res.status(HTTP.UNAUTHORIZED).json({ error: 'gateway_error', message: 'Not signed in' });
       return;
     }
-    res.json({ method: 'google', ...admin });
+    res.json({
+      method: 'google',
+      role: identity.role,
+      email: identity.email,
+      expiresAt: identity.expiresAt,
+      ...(identity.role === 'member'
+        ? { memberId: identity.member.id, memberName: identity.member.name }
+        : {}),
+    });
   });
 
   router.post('/api/auth/logout', (req, res, next) => {
@@ -62,9 +67,9 @@ export function adminAuthRoutes(
         .json({ error: 'forbidden', message: `Missing ${CSRF_HEADER} header` });
       return;
     }
-    const token = readCookie(req, ADMIN_COOKIE);
-    res.clearCookie(ADMIN_COOKIE, { ...base, sameSite: 'strict', path: '/' });
-    (token ? gateway.endAdminWebSession(token) : Promise.resolve())
+    const token = readCookie(req, SESSION_COOKIE);
+    res.clearCookie(SESSION_COOKIE, { ...base, sameSite: 'strict', path: '/' });
+    (token ? gateway.endWebSession(token) : Promise.resolve())
       .then(() => res.status(HTTP.NO_CONTENT).end())
       .catch(next);
   });
@@ -111,9 +116,14 @@ export function adminAuthRoutes(
     res.clearCookie(LOGIN_COOKIE, { ...base, sameSite: 'lax', path: LOGIN_COOKIE_PATH });
     google
       .complete(loginId, new URL(req.originalUrl, config.publicUrl))
-      .then((email) => gateway.createAdminWebSession(email))
+      .then((email) => {
+        // Admin emails sign in as admin, member emails to their member portal, anyone else is refused.
+        const identity = gateway.identify(email);
+        if (!identity) throw new SignInError(`${email} is not allowed to use this gateway`);
+        return gateway.createWebSession(identity);
+      })
       .then(({ token, expiresAt }) => {
-        res.cookie(ADMIN_COOKIE, token, {
+        res.cookie(SESSION_COOKIE, token, {
           ...base,
           sameSite: 'strict',
           path: '/',
