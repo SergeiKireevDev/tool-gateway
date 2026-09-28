@@ -70,6 +70,30 @@ export interface TemplateInput {
 
 export type SessionStatus = 'active' | 'expired' | 'revoked';
 
+export type SessionIssuer =
+  { kind: 'admin' } | { kind: 'member'; memberId: string; memberName: string };
+
+export interface Member {
+  id: string;
+  name: string;
+  keyHint: string;
+  templateIds: string[];
+  accountIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  activeSessions: number;
+  expired: boolean;
+}
+
+export interface MemberInput {
+  name: string;
+  templateIds: string[];
+  accountIds: string[];
+  expiresAt: string | null;
+}
+
 export interface Session {
   id: string;
   keyHint: string;
@@ -86,11 +110,12 @@ export interface Session {
   lastUsedAt: string | null;
   requestCount: number;
   status: SessionStatus;
+  issuedBy: SessionIssuer;
 }
 
 export interface ActivityEntry {
   at: string;
-  kind: 'proxy' | 'admin';
+  kind: 'proxy' | 'admin' | 'member';
   sessionId?: string;
   sessionLabel?: string;
   tool?: string;

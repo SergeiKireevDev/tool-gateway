@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatDateTime, formatDuration, formatRelative } from '@/lib/format';
-import type { Session, SessionStatus } from '@/lib/types';
+import type { Session, SessionIssuer, SessionStatus } from '@/lib/types';
 import { DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { PanelProps } from './AdminApp';
 import {
@@ -18,6 +18,7 @@ import {
   Modal,
   SectionHeader,
   Select,
+  Snippet,
   useNow,
 } from './ui';
 
@@ -117,6 +118,7 @@ export function SessionsPanel({ api, data, refresh }: PanelProps) {
                     <td className="px-4 py-3">
                       <div className="font-medium">{s.templateName}</div>
                       <div className="text-xs text-slate-500">{accountLabel(s.accountId)}</div>
+                      <IssuedBy issuer={s.issuedBy} />
                     </td>
                     <td className="px-4 py-3">
                       <Badge tone={STATUS_TONE[status]}>{status}</Badge>
@@ -173,6 +175,11 @@ export function SessionsPanel({ api, data, refresh }: PanelProps) {
       )}
     </section>
   );
+}
+
+function IssuedBy({ issuer }: { issuer: SessionIssuer }) {
+  if (issuer.kind !== 'member') return null;
+  return <div className="text-xs text-indigo-600">by member {issuer.memberName}</div>;
 }
 
 function IssueModal({
@@ -340,19 +347,5 @@ function KeyRevealModal({
         </div>
       </div>
     </Modal>
-  );
-}
-
-function Snippet({ title, value }: { title: string; value: string }) {
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium tracking-wide text-slate-500 uppercase">{title}</span>
-        <CopyButton value={value} />
-      </div>
-      <pre className="overflow-x-auto rounded-md bg-slate-100 px-3 py-2 font-mono text-xs text-slate-800">
-        {value}
-      </pre>
-    </div>
   );
 }

@@ -24,6 +24,28 @@ export interface Template {
   updatedAt: string;
 }
 
+/**
+ * A member can request session keys by itself (self-serve), but only for the templates and
+ * accounts the admin allowed. Its key is stored as a keyed hash only.
+ */
+export interface Member {
+  id: string;
+  name: string;
+  keyHash: string;
+  keyHint: string;
+  templateIds: string[];
+  accountIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  /** null = never expires. */
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+}
+
+/** Who issued a session key. */
+export type SessionIssuer =
+  { kind: 'admin' } | { kind: 'member'; memberId: string; memberName: string };
+
 export interface Session {
   id: string;
   /** Keyed BLAKE2b hash of the session key; the key itself is never stored. */
@@ -43,6 +65,8 @@ export interface Session {
   revokedAt: string | null;
   lastUsedAt: string | null;
   requestCount: number;
+  /** Absent on sessions created before members existed: those were issued by the admin. */
+  issuedBy?: SessionIssuer;
 }
 
 /** Browser session of a signed-in admin (cookie-based). */
@@ -62,6 +86,7 @@ export interface StoreState {
   accounts: Account[];
   templates: Template[];
   sessions: Session[];
+  members: Member[];
   /** Non-secret per-tool settings, e.g. `{ github: { oauthClientId: 'Iv1…' } }`. */
   toolSettings: Record<string, ToolSettings>;
 }
@@ -78,6 +103,7 @@ export function emptyState(): StoreState {
     accounts: [],
     templates: [],
     sessions: [],
+    members: [],
     toolSettings: {},
   };
 }

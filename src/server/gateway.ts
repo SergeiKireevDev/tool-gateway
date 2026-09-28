@@ -4,6 +4,7 @@ import {
   badGateway,
   badRequest,
   conflict,
+  forbidden,
   HttpError,
   notFound,
   unauthorized,
@@ -11,7 +12,7 @@ import {
 } from './errors.js';
 import { CryptoBox, randomId, randomToken } from './store/crypto.js';
 import type { EncryptedStore } from './store/store.js';
-import type { Account, Session, Template } from './store/types.js';
+import type { Account, Member, Session, SessionIssuer, Template } from './store/types.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type { ToolProvider } from './tools/types.js';
 import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_HOUR } from './units.js';
@@ -19,6 +20,7 @@ import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_HOUR } from './
 export const SESSION_KEY_PREFIX = 'gws_';
 export const ADMIN_TOKEN_PREFIX = 'gwa_';
 export const ADMIN_WEB_SESSION_PREFIX = 'gwc_';
+export const MEMBER_KEY_PREFIX = 'gwm_';
 const ADMIN_WEB_SESSION_TTL_HOURS = 12;
 export const ADMIN_WEB_SESSION_TTL_SECONDS = ADMIN_WEB_SESSION_TTL_HOURS * SECONDS_PER_HOUR;
 const MIN_TTL = 60;
@@ -43,6 +45,9 @@ const DEVICE_FLOW_ID_BYTES = 16;
 
 const ACCOUNT_NOT_FOUND = 'Account not found';
 const TEMPLATE_NOT_FOUND = 'Template not found';
+const MEMBER_NOT_FOUND = 'Member not found';
+const SESSION_NOT_FOUND = 'Session not found';
+const ADMIN_ISSUER: SessionIssuer = { kind: 'admin' };
 
 const ttl = z.number().int().min(MIN_TTL).max(MAX_TTL);
 
@@ -77,6 +82,16 @@ export const sessionRequestSchema = z.object({
   accountId: z.string().min(1).optional(),
   ttlSeconds: ttl.optional(),
   label: z.string().trim().max(MAX_LABEL_LENGTH).optional(),
+});
+
+const idList = z.array(z.string().min(1)).min(1);
+
+export const memberSchema = z.object({
+  name: z.string().trim().min(1).max(MAX_LABEL_LENGTH),
+  templateIds: idList,
+  accountIds: idList,
+  /** ISO date-time, or null for a key that never expires. */
+  expiresAt: z.iso.datetime({ offset: true }).nullable().default(null),
 });
 
 export const toolSettingsSchema = z.object({
@@ -117,7 +132,30 @@ export type DeviceFlowStatus =
 
 export type PublicAccount = Omit<Account, 'secret'> & { secretHint: string };
 export type SessionStatus = 'active' | 'expired' | 'revoked';
-export type PublicSession = Omit<Session, 'keyHash'> & { status: SessionStatus };
+export type PublicSession = Omit<Session, 'keyHash' | 'issuedBy'> & {
+  status: SessionStatus;
+  issuedBy: SessionIssuer;
+};
+export type PublicMember = Omit<Member, 'keyHash'> & { activeSessions: number; expired: boolean };
+
+/** What a member sees about itself: the templates and accounts it may request keys for. */
+export interface MemberView {
+  id: string;
+  name: string;
+  expiresAt: string | null;
+  templates: Pick<
+    Template,
+    | 'id'
+    | 'tool'
+    | 'name'
+    | 'description'
+    | 'permissions'
+    | 'resources'
+    | 'defaultTtlSeconds'
+    | 'maxTtlSeconds'
+  >[];
+  accounts: { id: string; tool: string; label: string; login: string | undefined }[];
+}
 
 export interface ResolvedSession {
   session: Session;
@@ -395,6 +433,7 @@ export class Gateway {
     const acc = this.findAccount(id);
     const revoked = await this.store.update((s) => {
       s.accounts = s.accounts.filter((a) => a.id !== id);
+      for (const m of s.members) m.accountIds = m.accountIds.filter((x) => x !== id);
       return this.revokeWhere(s.sessions, (x) => x.accountId === id);
     });
     this.activity.add({
@@ -482,6 +521,7 @@ export class Gateway {
     if (!tpl) throw notFound(TEMPLATE_NOT_FOUND);
     const revoked = await this.store.update((s) => {
       s.templates = s.templates.filter((t) => t.id !== id);
+      for (const m of s.members) m.templateIds = m.templateIds.filter((x) => x !== id);
       return this.revokeWhere(s.sessions, (x) => x.templateId === id);
     });
     this.activity.add({
@@ -489,6 +529,190 @@ export class Gateway {
       tool: tpl.tool,
       detail: `Deleted template "${tpl.name}" (revoked ${revoked} session(s))`,
     });
+  }
+
+  // ---------------------------------------------------------------- members
+
+  listMembers(): PublicMember[] {
+    return this.store.read().members.map((m) => this.toPublicMember(m));
+  }
+
+  /** Creates a member. The plaintext member key is returned exactly once. */
+  async createMember(input: unknown): Promise<{ key: string; member: PublicMember }> {
+    const data = this.validateMember(input);
+    const key = randomToken(MEMBER_KEY_PREFIX);
+    const ts = this.now().toISOString();
+    const member: Member = {
+      id: randomId(),
+      name: data.name,
+      keyHash: this.crypto.hashToken(key),
+      keyHint: key.slice(0, MEMBER_KEY_PREFIX.length + KEY_HINT_CHARS),
+      templateIds: data.templateIds,
+      accountIds: data.accountIds,
+      createdAt: ts,
+      updatedAt: ts,
+      expiresAt: data.expiresAt,
+      lastUsedAt: null,
+    };
+    await this.store.update((s) => {
+      if (s.members.some((m) => m.name.toLowerCase() === data.name.toLowerCase())) {
+        throw conflict(`A member named "${data.name}" already exists`);
+      }
+      s.members.push(member);
+    });
+    this.activity.add({ kind: 'admin', detail: `Created member "${member.name}"` });
+    return { key, member: this.toPublicMember(member) };
+  }
+
+  /** Updates a member's name, allowlists or expiry. Its key and issued sessions are kept. */
+  async updateMember(id: string, input: unknown): Promise<PublicMember> {
+    const data = this.validateMember(input);
+    const updated = await this.store.update((s) => {
+      const member = s.members.find((m) => m.id === id);
+      if (!member) throw notFound(MEMBER_NOT_FOUND);
+      const clash = s.members.some(
+        (m) => m.id !== id && m.name.toLowerCase() === data.name.toLowerCase(),
+      );
+      if (clash) throw conflict(`A member named "${data.name}" already exists`);
+      Object.assign(member, data, { updatedAt: this.now().toISOString() });
+      return member;
+    });
+    this.activity.add({ kind: 'admin', detail: `Updated member "${updated.name}"` });
+    return this.toPublicMember(updated);
+  }
+
+  /**
+   * Replaces a member's key (e.g. after a leak). Session keys it issued are revoked, since
+   * whoever held the old key may have minted them.
+   */
+  async rotateMemberKey(id: string): Promise<{ key: string; member: PublicMember }> {
+    const key = randomToken(MEMBER_KEY_PREFIX);
+    const [member, revoked] = await this.store.update((s) => {
+      const m = s.members.find((x) => x.id === id);
+      if (!m) throw notFound(MEMBER_NOT_FOUND);
+      m.keyHash = this.crypto.hashToken(key);
+      m.keyHint = key.slice(0, MEMBER_KEY_PREFIX.length + KEY_HINT_CHARS);
+      m.updatedAt = this.now().toISOString();
+      return [m, this.revokeWhere(s.sessions, (x) => issuedByMember(x, id))] as const;
+    });
+    this.activity.add({
+      kind: 'admin',
+      detail: `Rotated key of member "${member.name}" (revoked ${revoked} session(s))`,
+    });
+    return { key, member: this.toPublicMember(member) };
+  }
+
+  async deleteMember(id: string): Promise<void> {
+    const [member, revoked] = await this.store.update((s) => {
+      const m = s.members.find((x) => x.id === id);
+      if (!m) throw notFound(MEMBER_NOT_FOUND);
+      s.members = s.members.filter((x) => x.id !== id);
+      return [m, this.revokeWhere(s.sessions, (x) => issuedByMember(x, id))] as const;
+    });
+    this.activity.add({
+      kind: 'admin',
+      detail: `Deleted member "${member.name}" (revoked ${revoked} session(s))`,
+    });
+  }
+
+  /** Resolves a presented member key; throws 401 otherwise. */
+  resolveMember(key: string): Member {
+    if (!key.startsWith(MEMBER_KEY_PREFIX)) throw unauthorized('Member key required');
+    const hash = this.crypto.hashToken(key);
+    const member = this.store.read().members.find((m) => CryptoBox.equalHex(m.keyHash, hash));
+    if (!member) throw unauthorized('Invalid member key');
+    if (this.memberExpired(member)) throw unauthorized('Member key has expired');
+    return member;
+  }
+
+  memberView(member: Member): MemberView {
+    const state = this.store.read();
+    return {
+      id: member.id,
+      name: member.name,
+      expiresAt: member.expiresAt,
+      templates: state.templates
+        .filter((t) => member.templateIds.includes(t.id))
+        .map(
+          ({
+            id,
+            tool,
+            name,
+            description,
+            permissions,
+            resources,
+            defaultTtlSeconds,
+            maxTtlSeconds,
+          }) => ({
+            id,
+            tool,
+            name,
+            description,
+            permissions,
+            resources,
+            defaultTtlSeconds,
+            maxTtlSeconds,
+          }),
+        ),
+      accounts: state.accounts
+        .filter((a) => member.accountIds.includes(a.id))
+        .map((a) => ({ id: a.id, tool: a.tool, label: a.label, login: a.identity.login })),
+    };
+  }
+
+  listMemberSessions(member: Member): PublicSession[] {
+    return this.listSessions().filter(
+      (s) => s.issuedBy.kind === 'member' && s.issuedBy.memberId === member.id,
+    );
+  }
+
+  /** A member may only revoke session keys it issued itself. */
+  async revokeMemberSession(member: Member, sessionId: string): Promise<PublicSession> {
+    const own = this.store
+      .read()
+      .sessions.some((s) => s.id === sessionId && issuedByMember(s, member.id));
+    if (!own) throw notFound(SESSION_NOT_FOUND);
+    return this.revokeSession(sessionId, {
+      kind: 'member',
+      memberId: member.id,
+      memberName: member.name,
+    });
+  }
+
+  private validateMember(input: unknown): z.infer<typeof memberSchema> {
+    const data = memberSchema.parse(input);
+    const state = this.store.read();
+    const unknownTemplates = data.templateIds.filter(
+      (id) => !state.templates.some((t) => t.id === id),
+    );
+    if (unknownTemplates.length)
+      throw badRequest(`Unknown template(s): ${unknownTemplates.join(', ')}`);
+    const unknownAccounts = data.accountIds.filter(
+      (id) => !state.accounts.some((a) => a.id === id),
+    );
+    if (unknownAccounts.length)
+      throw badRequest(`Unknown account(s): ${unknownAccounts.join(', ')}`);
+    if (data.expiresAt && Date.parse(data.expiresAt) <= this.now().getTime()) {
+      throw badRequest('expiresAt must be in the future');
+    }
+    return {
+      ...data,
+      templateIds: [...new Set(data.templateIds)],
+      accountIds: [...new Set(data.accountIds)],
+      expiresAt: data.expiresAt && new Date(data.expiresAt).toISOString(),
+    };
+  }
+
+  private memberExpired(m: Member): boolean {
+    return m.expiresAt !== null && Date.parse(m.expiresAt) <= this.now().getTime();
+  }
+
+  private toPublicMember(m: Member): PublicMember {
+    const { keyHash: _omit, ...rest } = m;
+    const activeSessions = this.store
+      .read()
+      .sessions.filter((s) => issuedByMember(s, m.id) && this.statusOf(s) === 'active').length;
+    return { ...rest, activeSessions, expired: this.memberExpired(m) };
   }
 
   // ---------------------------------------------------------------- sessions
@@ -500,35 +724,80 @@ export class Gateway {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  /** Issues a session key. The plaintext key is returned exactly once. */
-  async issueSession(input: unknown): Promise<{ key: string; session: PublicSession }> {
+  /** Issues a session key as the admin. The plaintext key is returned exactly once. */
+  issueSession(input: unknown): Promise<{ key: string; session: PublicSession }> {
     const req = sessionRequestSchema.parse(input);
-    const state = this.store.read();
-    const template = state.templates.find((t) => t.id === req.templateId);
+    const template = this.store.read().templates.find((t) => t.id === req.templateId);
     if (!template) throw notFound(TEMPLATE_NOT_FOUND);
+    const account = this.pickAccount(template, req.accountId, null);
+    return this.issue(req, template, account, ADMIN_ISSUER);
+  }
 
-    let account: Account | undefined;
-    if (req.accountId) {
-      account = state.accounts.find((a) => a.id === req.accountId);
-      if (!account) throw notFound(ACCOUNT_NOT_FOUND);
-    } else {
-      const candidates = state.accounts.filter((a) => a.tool === template.tool);
-      if (candidates.length !== 1) {
+  /**
+   * Self-serve issuance by a member: only for its allowed templates and accounts.
+   * Unknown and disallowed ids get the same answer, so members can't probe for other ids.
+   */
+  issueSessionAsMember(
+    member: Member,
+    input: unknown,
+  ): Promise<{ key: string; session: PublicSession }> {
+    const req = sessionRequestSchema.parse(input);
+    const template = member.templateIds.includes(req.templateId)
+      ? this.store.read().templates.find((t) => t.id === req.templateId)
+      : undefined;
+    if (!template) throw forbidden('This template is not available to you');
+    const account = this.pickAccount(template, req.accountId, member.accountIds);
+    return this.issue(req, template, account, {
+      kind: 'member',
+      memberId: member.id,
+      memberName: member.name,
+    });
+  }
+
+  /**
+   * Resolves the account a key will use. `allowed` restricts the choice (members); null means
+   * any account of the template's tool (admin).
+   */
+  private pickAccount(
+    template: Template,
+    requestedId: string | undefined,
+    allowed: readonly string[] | null,
+  ): Account {
+    const usable = this.store
+      .read()
+      .accounts.filter((a) => allowed === null || allowed.includes(a.id));
+    if (requestedId) {
+      const account = usable.find((a) => a.id === requestedId);
+      if (!account) {
+        throw allowed === null
+          ? notFound(ACCOUNT_NOT_FOUND)
+          : forbidden('This account is not available to you');
+      }
+      if (account.tool !== template.tool) {
         throw badRequest(
-          candidates.length === 0
-            ? `No ${template.tool} account connected`
-            : 'Several accounts match this template: specify accountId',
+          `Account is a ${account.tool} account but template targets ${template.tool}`,
         );
       }
-      account = candidates[0];
+      return account;
     }
-    if (!account) throw notFound(ACCOUNT_NOT_FOUND);
-    if (account.tool !== template.tool) {
+    const candidates = usable.filter((a) => a.tool === template.tool);
+    const [only] = candidates;
+    if (candidates.length !== 1 || !only) {
       throw badRequest(
-        `Account is a ${account.tool} account but template targets ${template.tool}`,
+        candidates.length === 0
+          ? `No ${template.tool} account available`
+          : 'Several accounts match this template: specify accountId',
       );
     }
+    return only;
+  }
 
+  private async issue(
+    req: z.infer<typeof sessionRequestSchema>,
+    template: Template,
+    account: Account,
+    issuedBy: SessionIssuer,
+  ): Promise<{ key: string; session: PublicSession }> {
     const ttlSeconds = req.ttlSeconds ?? template.defaultTtlSeconds;
     if (ttlSeconds > template.maxTtlSeconds) {
       throw badRequest(`Requested TTL exceeds template maximum (${template.maxTtlSeconds}s)`);
@@ -552,33 +821,40 @@ export class Gateway {
       revokedAt: null,
       lastUsedAt: null,
       requestCount: 0,
+      issuedBy,
     };
     await this.store.update((s) => {
       s.sessions.push(session);
+      if (issuedBy.kind === 'member') {
+        const member = s.members.find((m) => m.id === issuedBy.memberId);
+        if (member) member.lastUsedAt = session.createdAt;
+      }
     });
+    const by = issuedBy.kind === 'member' ? `Member "${issuedBy.memberName}"` : 'Admin';
     this.activity.add({
-      kind: 'admin',
+      kind: issuedBy.kind,
       tool: template.tool,
       sessionId: session.id,
       sessionLabel: session.label,
-      detail: `Issued session from template "${template.name}" on account "${account.label}" (TTL ${ttlSeconds}s)`,
+      detail: `${by} issued a session from template "${template.name}" on account "${account.label}" (TTL ${ttlSeconds}s)`,
     });
     return { key, session: this.toPublicSession(session) };
   }
 
-  async revokeSession(id: string): Promise<PublicSession> {
+  async revokeSession(id: string, by: SessionIssuer = ADMIN_ISSUER): Promise<PublicSession> {
     const revoked = await this.store.update((s) => {
       const session = s.sessions.find((x) => x.id === id);
-      if (!session) throw notFound('Session not found');
+      if (!session) throw notFound(SESSION_NOT_FOUND);
       session.revokedAt ??= this.now().toISOString();
       return session;
     });
     this.activity.add({
-      kind: 'admin',
+      kind: by.kind,
       tool: revoked.tool,
       sessionId: id,
       sessionLabel: revoked.label,
-      detail: 'Revoked session',
+      detail:
+        by.kind === 'member' ? `Member "${by.memberName}" revoked a session` : 'Revoked session',
     });
     return this.toPublicSession(revoked);
   }
@@ -632,10 +908,11 @@ export class Gateway {
   }
 
   private toPublicSession(s: Session): PublicSession {
-    const { keyHash: _omit, ...rest } = s;
+    const { keyHash: _omit, issuedBy, ...rest } = s;
     const pending = this.usage.get(s.id);
     return {
       ...rest,
+      issuedBy: issuedBy ?? ADMIN_ISSUER,
       requestCount: s.requestCount + (pending?.count ?? 0),
       lastUsedAt: pending?.lastUsedAt ?? s.lastUsedAt,
       status: this.statusOf(s),
@@ -653,6 +930,10 @@ export class Gateway {
     }
     return n;
   }
+}
+
+function issuedByMember(s: Session, memberId: string): boolean {
+  return s.issuedBy?.kind === 'member' && s.issuedBy.memberId === memberId;
 }
 
 function endOf(s: Session): number {
