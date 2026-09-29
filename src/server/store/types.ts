@@ -21,7 +21,10 @@ export interface Template {
   name: string;
   description: string;
   permissions: string[];
-  /** Resource allowlist, e.g. `octo-org/*` or `octo-org/repo` for GitHub. Empty = unrestricted. */
+  /**
+   * Resource allowlist in the tool's own terms (`octo-org/*` repositories for GitHub, board IDs
+   * for monday.com). Empty = unrestricted.
+   */
   resources: string[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;

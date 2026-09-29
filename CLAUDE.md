@@ -17,4 +17,8 @@
   as keyed hashes. Member endpoints must only ever narrow what a member can reach (templates ∩
   accounts allowlists), and never expose other members' data.
 - Proxy authorization is deny-by-default: new GitHub endpoints need an explicit rule in
-  `src/server/tools/github.ts` plus a test in `test/github.test.ts`.
+  `src/server/tools/github.ts` plus a test in `test/github.test.ts`. monday.com is GraphQL: new
+  root fields need a rule (with their board/item scope) in `src/server/tools/monday.ts`, new nested
+  object fields an entry in `TRAVERSALS`, each with a test in `test/monday.test.ts`.
+- Tools are interchangeable providers (`src/server/tools/types.ts`); keep tool specifics out of the
+  gateway, proxy and UI (the UI reads names, hints and examples from `/api/admin/tools`).

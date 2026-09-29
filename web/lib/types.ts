@@ -8,16 +8,27 @@ export interface PermissionDef {
 
 export interface SignInConfig {
   setupHelp: string;
+  registerUrl: string;
   defaultScopes: string;
   oauthClientId: string;
+}
+
+/** Example call through the gateway, relative to the tool's proxy base URL. */
+export interface ToolExample {
+  method: 'GET' | 'POST';
+  path: string;
+  body?: string;
+  clientHint: string;
 }
 
 export interface Tool {
   id: string;
   name: string;
   credentialHelp: string;
+  credentialPlaceholder: string;
   resourceHelp: string;
   permissions: PermissionDef[];
+  example: ToolExample;
   /** Present when the tool supports interactive sign-in (OAuth device flow). */
   signIn: SignInConfig | null;
 }
