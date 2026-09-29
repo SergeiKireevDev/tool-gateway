@@ -9,6 +9,7 @@ import { EncryptedStore } from '../src/server/store/store.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
+import { createSlackProvider } from '../src/server/tools/slack.js';
 
 export interface Harness {
   gateway: Gateway;
@@ -63,13 +64,49 @@ export function fakeGitHubFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+/** Fake Slack: `auth.test` identifies any token but `xoxb-bad`; other methods echo their call. */
+export function fakeSlackFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (new Headers(init.headers).get('authorization') === 'Bearer xoxb-bad') {
+      return Promise.resolve(Response.json({ ok: false, error: 'invalid_auth' }));
+    }
+    if (url === 'https://slack.com/api/auth.test') {
+      return Promise.resolve(
+        Response.json(
+          {
+            ok: true,
+            url: 'https://acme.slack.com/',
+            team: 'Acme',
+            user: 'gatebot',
+            team_id: 'T1',
+            user_id: 'U1',
+          },
+          { headers: { 'x-oauth-scopes': 'chat:write,channels:history' } },
+        ),
+      );
+    }
+    return Promise.resolve(
+      Response.json({
+        ok: true,
+        url,
+        method: init.method,
+        body: Buffer.isBuffer(init.body) ? init.body.toString('utf8') : null,
+      }),
+    );
+  };
+}
+
 /** Routes upstream calls to the fake API of the tool they are for. */
 function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const github = fakeGitHubFetch(calls);
   const monday = fakeMondayFetch(calls);
+  const slack = fakeSlackFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
-    return url.startsWith('https://api.monday.com/') ? monday(input, init) : github(input, init);
+    if (url.startsWith('https://api.monday.com/')) return monday(input, init);
+    return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);
   };
 }
 
@@ -148,7 +185,11 @@ export async function createHarness(): Promise<Harness> {
   const gateway = new Gateway(
     store,
     crypto,
-    new ToolRegistry([createGitHubProvider(fetch), createMondayProvider(fetch)]),
+    new ToolRegistry([
+      createGitHubProvider(fetch),
+      createMondayProvider(fetch),
+      createSlackProvider(fetch),
+    ]),
     new ActivityLog(),
     () => clock.now,
   );
