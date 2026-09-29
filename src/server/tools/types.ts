@@ -38,6 +38,10 @@ export interface AuthzAllowed {
    * re-serialized form they checked, so the upstream can't read it differently.
    */
   body?: Buffer;
+  /** HTTP method to use upstream instead of the client's (e.g. when parameters moved to the body). */
+  method?: string;
+  /** Query string (with `?`, or `''`) to send upstream instead of the client's. */
+  search?: string;
   /** Called with the parsed JSON response of an allowed request (e.g. to remember cursors). */
   observeResponse?: (json: unknown) => void;
 }
