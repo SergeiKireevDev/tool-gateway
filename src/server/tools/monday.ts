@@ -1,5 +1,6 @@
 import { OperationTypeNode } from 'graphql';
-import { GraphQLRequestError, inspectGraphQLRequest, isRecord, type RootField } from './graphql.js';
+import { GraphQLRequestError, inspectGraphQLRequest, type RootField } from './graphql.js';
+import { isRecord } from './json.js';
 import type {
   AuthzAllowed,
   AuthzDecision,
