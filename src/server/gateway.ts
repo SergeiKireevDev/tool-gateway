@@ -199,9 +199,16 @@ export interface ToolCatalogEntry {
   id: string;
   name: string;
   credentialHelp: string;
+  credentialPlaceholder: string;
   resourceHelp: string;
   permissions: ToolProvider['permissions'];
-  signIn: { setupHelp: string; defaultScopes: string; oauthClientId: string } | null;
+  example: ToolProvider['example'];
+  signIn: {
+    setupHelp: string;
+    registerUrl: string;
+    defaultScopes: string;
+    oauthClientId: string;
+  } | null;
 }
 
 export interface ResolvedSession {
@@ -374,11 +381,14 @@ export class Gateway {
       id: t.id,
       name: t.name,
       credentialHelp: t.credentialHelp,
+      credentialPlaceholder: t.credentialPlaceholder,
       resourceHelp: t.resourceHelp,
       permissions: t.permissions,
+      example: t.example,
       signIn: t.deviceFlow
         ? {
             setupHelp: t.deviceFlow.setupHelp,
+            registerUrl: t.deviceFlow.registerUrl,
             defaultScopes: t.deviceFlow.defaultScopes,
             ...this.toolSettings(t.id),
           }

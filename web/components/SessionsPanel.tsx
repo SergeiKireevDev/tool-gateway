@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatDateTime, formatDuration, formatRelative } from '@/lib/format';
-import type { Session, SessionIssuer, SessionStatus } from '@/lib/types';
+import type { Session, SessionIssuer, SessionStatus, Tool } from '@/lib/types';
 import { DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { PanelProps } from './AdminApp';
 import {
@@ -175,6 +175,7 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
       {issued && (
         <KeyRevealModal
           issued={issued}
+          tool={data.tools.find((t) => t.id === issued.session.tool)}
           onClose={() => {
             setIssued(null);
           }}
@@ -314,15 +315,30 @@ function IssueModal({
   );
 }
 
+/** Example `curl` call through the gateway, from the tool's own example. */
+function exampleCurl(key: string, base: string, tool: Tool | undefined): string {
+  const example = tool?.example;
+  if (!example) return `curl -H "Authorization: Bearer ${key}" ${base}/`;
+  const lines = [`curl -H "Authorization: Bearer ${key}"`];
+  if (example.method !== 'GET') lines.push(`-X ${example.method}`);
+  if (example.body !== undefined) {
+    lines.push(`-H "Content-Type: application/json"`, `-d '${example.body}'`);
+  }
+  lines.push(`${base}${example.path}`);
+  return lines.join(' \\\n  ');
+}
+
 function KeyRevealModal({
   issued,
+  tool,
   onClose,
 }: {
   issued: { key: string; session: Session };
+  tool: Tool | undefined;
   onClose: () => void;
 }) {
   const base = `${window.location.origin}/proxy/${issued.session.tool}`;
-  const curl = `curl -H "Authorization: Bearer ${issued.key}" ${base}/user`;
+  const curl = exampleCurl(issued.key, base, tool);
   const env = `export GATEWAY_URL=${base}\nexport GATEWAY_SESSION_KEY=${issued.key}`;
 
   return (
@@ -344,8 +360,8 @@ function KeyRevealModal({
         <Snippet title="Environment" value={env} />
         <Snippet title="Example request" value={curl} />
         <p className="text-xs text-slate-500">
-          Use <code className="font-mono">{base}</code> as the API base URL (e.g. Octokit{' '}
-          <code className="font-mono">baseUrl</code>).{' '}
+          Use <code className="font-mono">{base}</code> as the API base URL
+          {tool && ` (${tool.example.clientHint})`}.{' '}
           <code className="font-mono">GET /api/session</code> with the key returns its permissions
           and expiry.
         </p>

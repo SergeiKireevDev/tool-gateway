@@ -5,14 +5,17 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API).
+Supported tools: **GitHub** (REST API) and **monday.com** (GraphQL API). Each tool is a provider
+behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
+members and the proxy work identically for both.
 
 ```
-client ──(gws_… session key)──▶ gateway ──(your real token)──▶ api.github.com
+client ──(gws_… session key)──▶ gateway ──(your real token)──▶ api.github.com / api.monday.com
                                   │
                                   ├─ checks the key is active (TTL, not revoked)
-                                  ├─ checks method + path against the template's permissions
-                                  └─ checks the repository against the template's allowlist
+                                  ├─ asks the tool whether the request is covered by the template's
+                                  │  permissions (GitHub: method + path; monday.com: the GraphQL document)
+                                  └─ … and by its resource allowlist (repositories / board IDs)
 ```
 
 ## Quick start
@@ -68,18 +71,48 @@ Go to **Accounts → Connect account**. There are two ways to connect:
      automatically, verifies it, and stores it encrypted.
 - **Paste a token**: a fine-grained or classic personal access token.
 
+## Connecting monday.com
+
+Go to **Accounts → Connect account**, pick **monday.com** and paste a personal API token (avatar →
+**Developers** → **My access tokens**). The gateway checks it with a `me` query and shows the user
+and account it belongs to.
+
 ## Concepts
 
 | Concept         | What it is                                                                                                                                                                                                                             |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Account**     | A tool credential (for example a GitHub personal access token). It is verified against the tool when connected, then stored encrypted.                                                                                                 |
-| **Template**    | A named set of permissions (for example `issues:read` or `pulls:write`), plus a resource allowlist (`owner/repo` or `owner/*`) and a default and maximum TTL.                                                                          |
+| **Account**     | A tool credential (for example a GitHub personal access token or a monday.com API token). It is verified against the tool when connected, then stored encrypted.                                                                       |
+| **Template**    | A named set of one tool's permissions (for example `issues:read` or `boards:read`), plus a resource allowlist (`owner/repo` or `owner/*` for GitHub, board IDs for monday.com) and a default and maximum TTL.                          |
 | **Session key** | A `gws_…` bearer key issued from a template and bound to one account. It stores a snapshot of the template's permissions, so editing the template later never widens live keys. Deleting the template or the account revokes its keys. |
 
 GitHub permissions are mapped to explicit REST endpoint rules (see `src/server/tools/github.ts`).
 Anything not covered by a rule is denied. That includes GraphQL, repository settings, webhooks,
 Actions secrets, and deleting repositories. The gateway can never grant more than the underlying
 token allows, so a fine-grained PAT is recommended.
+
+monday.com has a single GraphQL endpoint, so the gateway parses each document (with `graphql-js`)
+and maps every root field to a permission (see `src/server/tools/monday.ts`):
+
+| Permission      | Covers                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `boards:read`   | `boards`, `items`, `items_page_by_column_values`, `next_items_page`, `updates`, `assets` |
+| `items:write`   | create/change/move/duplicate/archive/delete items and subitems, column values            |
+| `updates:write` | `create_update`, `clear_item_updates`, editing/deleting/liking/pinning updates           |
+| `boards:write`  | board settings, groups and columns; `create_board`                                       |
+| `account:read`  | `me`, `users`, `teams`, `account`, `workspaces`, `folders`, `tags`                       |
+
+Unknown root fields (webhooks, board permissions, user management, docs, file uploads,
+subscriptions…) are denied. So are nested objects the gateway doesn't know. Every operation in the
+document is checked, fragments and variables (including their defaults) are resolved, and the
+canonical document the gateway checked is what gets sent upstream. With a board allowlist:
+
+- Each field must name its boards (`boards(ids:)`, `board_id:`) or items (`item_id:`). The gateway
+  looks up which board each item is on (subitems count as their parent's board).
+- Fields that can't name a board (`updates`, `edit_update`, `create_board`, …) and traversals to
+  other boards (`linked_items`, `mirrored_items`, `linked_board`, folder `children`) need an
+  unrestricted template.
+- Pagination cursors are only accepted if the gateway returned them to the same session.
+- Mutation results can only be read beyond scalar fields with `boards:read`.
 
 ## Using a session key
 
@@ -95,6 +128,15 @@ curl -H "Authorization: Bearer $GATEWAY_SESSION_KEY" http://127.0.0.1:7420/api/s
 
 With Octokit: `new Octokit({ auth: key, baseUrl: GATEWAY_URL })`. Pagination `Link` headers are
 rewritten to point back at the gateway.
+
+For monday.com, use `http://127.0.0.1:7420/proxy/monday/v2` as the GraphQL endpoint. The key can be
+sent as `Bearer gws_…` or bare, like monday's own tokens:
+
+```bash
+curl -X POST http://127.0.0.1:7420/proxy/monday/v2 \
+  -H "Authorization: $GATEWAY_SESSION_KEY" -H "Content-Type: application/json" \
+  -d '{"query":"query ($b: [ID!]) { boards(ids: $b) { name items_page { items { id name } } } }","variables":{"b":[1234567890]}}'
+```
 
 When the gateway denies a request, it answers `403` with an `x-gateway-denied: true` header and a
 reason. Expired, revoked or unknown keys get `401`.
@@ -212,7 +254,7 @@ Layout:
 ```
 src/server/          Express server: admin API, proxy, gateway logic
   store/             libsodium crypto + encrypted store
-  tools/             tool providers (github.ts) and path matching
+  tools/             tool providers (github.ts, monday.ts), path matching, GraphQL inspection
   http/              Express app, proxy handler
 web/                 Next.js 16 (App Router) + Tailwind CSS 4 admin UI
 test/                Vitest (unit, API/proxy e2e, live GitHub)

@@ -142,7 +142,7 @@ export function DeviceSignIn({
           Cancel
         </Button>
         <Button type="submit" disabled={busy || !label.trim()}>
-          {busy ? 'Contacting GitHub…' : `Sign in with ${tool.name}`}
+          {busy ? `Contacting ${tool.name}…` : `Sign in with ${tool.name}`}
         </Button>
       </div>
     </form>
@@ -189,12 +189,12 @@ function ClientSetup({
         <p className="font-medium">One-time setup</p>
         <p className="mt-1 text-slate-600">{tool.signIn.setupHelp}</p>
         <a
-          href="https://github.com/settings/applications/new"
+          href={tool.signIn.registerUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="mt-2 inline-block font-medium text-indigo-600 hover:text-indigo-500"
         >
-          Register a new OAuth App on GitHub ↗
+          Register a new OAuth App on {tool.name} ↗
         </a>
       </div>
       <Field label="OAuth App client ID">

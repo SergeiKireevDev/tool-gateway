@@ -217,6 +217,7 @@ function createDeviceFlow(fetchImpl: typeof fetch): DeviceFlow {
   };
 
   return {
+    registerUrl: `${WEB}/settings/applications/new`,
     setupHelp:
       'Register an OAuth App at github.com/settings/applications/new (any homepage and callback URL, e.g. http://127.0.0.1:7420), tick “Enable Device Flow”, then paste its Client ID here. No client secret is needed.',
     defaultScopes: 'repo read:org',
@@ -277,11 +278,13 @@ export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvi
     name: 'GitHub',
     credentialHelp:
       'Personal access token (fine-grained recommended). The gateway can never grant more than this token allows.',
+    credentialPlaceholder: 'github_pat_…',
     deviceFlow: createDeviceFlow(fetchImpl),
     resourceHelp:
       'One per line: "owner/repo" or "owner/*". Leave empty to allow every repository the token can reach.',
     permissions: PERMISSIONS,
     upstreamBaseUrl: API,
+    example: { method: 'GET', path: '/user', clientHint: 'e.g. Octokit baseUrl' },
 
     validateResource(pattern) {
       return RESOURCE_RE.test(pattern) ? null : `Invalid repository pattern "${pattern}"`;
@@ -313,7 +316,7 @@ export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvi
       return identity;
     },
 
-    authorize(method, segments, grant: Grant): AuthzDecision {
+    authorize({ method, segments }, grant: Grant): AuthzDecision {
       const m = method.toUpperCase();
       for (const rule of ALWAYS_ALLOWED) {
         if (rule.methods.includes(m) && matchPath(rule.pattern, segments)) {

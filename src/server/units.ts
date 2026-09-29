@@ -8,6 +8,9 @@ export const SECONDS_PER_DAY = SECONDS_PER_HOUR * HOURS_PER_DAY;
 export const MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND;
 export const MS_PER_DAY = SECONDS_PER_DAY * MS_PER_SECOND;
 
+export const BYTES_PER_KIB = 1024;
+export const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
+
 /** Owner-only permissions for secret files and the directories holding them. */
 export const PRIVATE_FILE_MODE = 0o600;
 export const PRIVATE_DIR_MODE = 0o700;

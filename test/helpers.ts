@@ -7,6 +7,7 @@ import { Gateway } from '../src/server/gateway.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
 import { EncryptedStore } from '../src/server/store/store.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
+import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
 
 export interface Harness {
@@ -62,6 +63,73 @@ export function fakeGitHubFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+/** Routes upstream calls to the fake API of the tool they are for. */
+function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
+  const github = fakeGitHubFetch(calls);
+  const monday = fakeMondayFetch(calls);
+  return (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    return url.startsWith('https://api.monday.com/') ? monday(input, init) : github(input, init);
+  };
+}
+
+/** Items known to the fake monday API: item id → board id (and parent board for subitems). */
+const ITEMS: Record<string, { board: string; parentBoard?: string }> = {
+  '11': { board: '1' },
+  '22': { board: '2' },
+  '33': { board: '9001', parentBoard: '1' },
+};
+
+export const MONDAY_PAGE_CURSOR = 'MSw5NzI4MDA5MDA';
+
+function bodyOf(init: RequestInit): { query: string; variables: Record<string, unknown> } {
+  return JSON.parse(init.body as string) as { query: string; variables: Record<string, unknown> };
+}
+
+/** Fake monday.com: `me`, the gateway's item→board lookups, and an echo for everything else. */
+export function fakeMondayFetch(calls: { url: string; init: RequestInit }[]): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (new Headers(init.headers).get('authorization') === 'bad-token') {
+      return Promise.resolve(
+        Response.json({ errors: [{ message: 'Not Authenticated' }] }, { status: 401 }),
+      );
+    }
+    const { query, variables } = bodyOf(init);
+    if (query.includes('me {') && query.includes('account {')) {
+      return Promise.resolve(
+        Response.json({
+          data: {
+            me: {
+              id: '7',
+              name: 'Ada',
+              email: 'ada@example.com',
+              account: { id: '3', name: 'Acme', slug: 'acme' },
+            },
+          },
+        }),
+      );
+    }
+    if (query.includes('parent_item { board { id } }')) {
+      const ids = variables.ids as string[];
+      const items = ids
+        .filter((id) => id in ITEMS)
+        .map((id) => ({
+          id,
+          board: { id: ITEMS[id]?.board },
+          parent_item: ITEMS[id]?.parentBoard ? { board: { id: ITEMS[id].parentBoard } } : null,
+        }));
+      return Promise.resolve(Response.json({ data: { items } }));
+    }
+    return Promise.resolve(
+      Response.json({
+        data: { echo: query, boards: [{ items_page: { cursor: MONDAY_PAGE_CURSOR } }] },
+      }),
+    );
+  };
+}
+
 export async function createHarness(): Promise<Harness> {
   const dir = await mkdtemp(path.join(tmpdir(), 'gateway-test-'));
   const config: GatewayConfig = {
@@ -73,14 +141,14 @@ export async function createHarness(): Promise<Harness> {
     google: null,
   };
   const upstreamCalls: Harness['upstreamCalls'] = [];
-  const fetch = fakeGitHubFetch(upstreamCalls);
+  const fetch = fakeUpstreams(upstreamCalls);
   const crypto = await CryptoBox.fromKeyFile(config.keyFile);
   const store = await EncryptedStore.open(config.storeFile, crypto);
   const clock = { now: new Date('2026-01-01T00:00:00Z') };
   const gateway = new Gateway(
     store,
     crypto,
-    new ToolRegistry([createGitHubProvider(fetch)]),
+    new ToolRegistry([createGitHubProvider(fetch), createMondayProvider(fetch)]),
     new ActivityLog(),
     () => clock.now,
   );

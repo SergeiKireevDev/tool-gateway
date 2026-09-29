@@ -15,7 +15,6 @@ import {
   Input,
   Modal,
   SectionHeader,
-  Select,
 } from './ui';
 
 type Editing = { mode: 'create' } | { mode: 'edit'; account: Account } | null;
@@ -87,7 +86,7 @@ export function AccountsPanel({ api, data, refresh, viewer }: PanelProps) {
 
       {data.accounts.length === 0 ? (
         <EmptyState title="No accounts connected yet">
-          Connect a GitHub account to get started.
+          Connect a {data.tools.map((t) => t.name).join(' or ')} account to get started.
         </EmptyState>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
@@ -283,7 +282,7 @@ type ConnectMethod = 'sign-in' | 'token';
 const defaultMethod = (tool: Tool | undefined): ConnectMethod =>
   tool?.signIn ? 'sign-in' : 'token';
 
-/** New account: pick the tool and how to connect it (interactive sign-in or pasted token). */
+/** New account: first pick the tool, then how to connect it (interactive sign-in or token). */
 function ConnectAccount({
   api,
   tools,
@@ -302,31 +301,45 @@ function ConnectAccount({
 }) {
   const available = (t: Tool | undefined): Tool | undefined =>
     t?.signIn && (canConfigure || t.signIn.oauthClientId) ? t : undefined;
-  const [toolId, setToolId] = useState(tools[0]?.id ?? '');
+  // With a single tool there is nothing to choose.
+  const [toolId, setToolId] = useState(tools.length === 1 ? (tools[0]?.id ?? '') : '');
   const tool = tools.find((t) => t.id === toolId);
   const offered = available(tool);
   const [method, setMethod] = useState<ConnectMethod>(defaultMethod(offered));
   const signInTool = offered?.signIn ? { ...offered, signIn: offered.signIn } : null;
 
+  if (!tool) {
+    return (
+      <ToolPicker
+        tools={tools}
+        hasSignIn={(t) => available(t) !== undefined}
+        onPick={(t) => {
+          setToolId(t.id);
+          setMethod(defaultMethod(available(t)));
+        }}
+        onCancel={onCancel}
+      />
+    );
+  }
+
   return (
     <>
       <div className="mb-4 space-y-4">
         {tools.length > 1 && (
-          <Field label="Tool">
-            <Select
-              value={toolId}
-              onChange={(e) => {
-                setToolId(e.target.value);
-                setMethod(defaultMethod(available(tools.find((t) => t.id === e.target.value))));
+          <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm ring-1 ring-slate-200">
+            <span>
+              Tool: <strong>{tool.name}</strong>
+            </span>
+            <button
+              type="button"
+              className="font-medium text-indigo-600 hover:text-indigo-500"
+              onClick={() => {
+                setToolId('');
               }}
             >
-              {tools.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+              Change
+            </button>
+          </div>
         )}
         {signInTool && (
           <MethodTabs toolName={signInTool.name} method={method} onChange={setMethod} />
@@ -352,6 +365,47 @@ function ConnectAccount({
         />
       )}
     </>
+  );
+}
+
+/** First step of connecting an account: which tool it is for. */
+function ToolPicker({
+  tools,
+  hasSignIn,
+  onPick,
+  onCancel,
+}: {
+  tools: Tool[];
+  hasSignIn: (tool: Tool) => boolean;
+  onPick: (tool: Tool) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">Which tool is this account for?</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {tools.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => {
+              onPick(t);
+            }}
+            className="rounded-lg p-4 text-left ring-1 ring-slate-200 transition hover:bg-indigo-50 hover:ring-indigo-300 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+          >
+            <span className="block font-semibold text-slate-900">{t.name}</span>
+            <span className="mt-1 block text-xs text-slate-500">
+              {hasSignIn(t) ? 'Sign in or paste a token' : 'Paste an API token'}
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="flex justify-end">
+        <Button variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -455,7 +509,7 @@ function TokenAccountForm({
           autoComplete="off"
           required={!existing}
           value={secret}
-          placeholder={existing ? existing.secretHint : 'github_pat_…'}
+          placeholder={existing ? existing.secretHint : tool?.credentialPlaceholder}
           onChange={(e) => {
             setSecret(e.target.value);
           }}
