@@ -107,8 +107,8 @@ async function forward(
 
   let upstream: globalThis.Response;
   try {
-    upstream = await fetchImpl(`${tool.upstreamBaseUrl}${rawPath}${search}`, {
-      method: req.method,
+    upstream = await fetchImpl(`${tool.upstreamBaseUrl}${rawPath}${decision.search ?? search}`, {
+      method: decision.method ?? req.method,
       headers: tool.upstreamHeaders(account.secret, toolRequest.headers),
       body,
       redirect: 'manual',

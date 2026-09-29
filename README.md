@@ -5,17 +5,17 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API) and **monday.com** (GraphQL API). Each tool is a provider
+Supported tools: **GitHub** (REST API), **monday.com** (GraphQL API) and **Slack** (Web API). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
-members and the proxy work identically for both.
+members and the proxy work identically for all of them.
 
 ```
-client ──(gws_… session key)──▶ gateway ──(your real token)──▶ api.github.com / api.monday.com
+client ──(gws_… session key)──▶ gateway ──(your real token)──▶ api.github.com / api.monday.com / slack.com
                                   │
                                   ├─ checks the key is active (TTL, not revoked)
                                   ├─ asks the tool whether the request is covered by the template's
-                                  │  permissions (GitHub: method + path; monday.com: the GraphQL document)
-                                  └─ … and by its resource allowlist (repositories / board IDs)
+                                  │  permissions (GitHub: method + path; monday.com: the GraphQL document; Slack: method + arguments)
+                                  └─ … and by its resource allowlist (repositories / board IDs / channel IDs)
 ```
 
 ## Quick start
@@ -77,12 +77,19 @@ Go to **Accounts → Connect account**, pick **monday.com** and paste a personal
 **Developers** → **My access tokens**). The gateway checks it with a `me` query and shows the user
 and account it belongs to.
 
+## Connecting Slack
+
+Create a Slack app (api.slack.com/apps), give it the bot or user scopes you need under **OAuth &
+Permissions**, install it to your workspace, then paste its bot (`xoxb-…`) or user (`xoxp-…`)
+token in **Accounts → Connect account → Slack**. The gateway checks it with `auth.test` and shows
+the workspace, user and granted scopes.
+
 ## Concepts
 
 | Concept         | What it is                                                                                                                                                                                                                             |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Account**     | A tool credential (for example a GitHub personal access token or a monday.com API token). It is verified against the tool when connected, then stored encrypted.                                                                       |
-| **Template**    | A named set of one tool's permissions (for example `issues:read` or `boards:read`), plus a resource allowlist (`owner/repo` or `owner/*` for GitHub, board IDs for monday.com) and a default and maximum TTL.                          |
+| **Template**    | A named set of one tool's permissions (for example `issues:read` or `boards:read`), plus a resource allowlist (`owner/repo` or `owner/*` for GitHub, board IDs for monday.com, channel IDs for Slack) and a default and maximum TTL.   |
 | **Session key** | A `gws_…` bearer key issued from a template and bound to one account. It stores a snapshot of the template's permissions, so editing the template later never widens live keys. Deleting the template or the account revokes its keys. |
 
 GitHub permissions are mapped to explicit REST endpoint rules (see `src/server/tools/github.ts`).
@@ -114,6 +121,25 @@ canonical document the gateway checked is what gets sent upstream. With a board 
 - Pagination cursors are only accepted if the gateway returned them to the same session.
 - Mutation results can only be read beyond scalar fields with `boards:read`.
 
+Slack Web API methods are mapped to permissions in `src/server/tools/slack.ts`:
+
+| Permission        | Covers                                                                                 |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `history:read`    | `conversations.history`, `conversations.replies`, `chat.getPermalink`, reactions, pins |
+| `chat:write`      | post, schedule, update and delete messages; add/remove reactions and pins; open DMs    |
+| `channels:read`   | `conversations.info`, `conversations.members`, `conversations.list`                    |
+| `channels:manage` | join, leave, invite, kick, rename, topic/purpose, archive; `conversations.create`      |
+| `users:read`      | `users.list`, `users.info`, `users.lookupByEmail`, profiles, `team.info`               |
+| `search:read`     | `search.messages`                                                                      |
+
+Other methods (admin, files, apps, workflows…) are denied. Arguments may come from the query
+string, a form body or a JSON body. The gateway merges them, rejects an argument given twice or a
+`token` argument, and always sends Slack one canonical form `POST`. With a channel allowlist, each
+method must name an allowed channel ID in `channel` (names like `#general` and user IDs are
+refused). Methods that can't name a channel (`conversations.open`, `conversations.create`,
+`search.messages`) need an unrestricted template. Listing channels and users is not limited by the
+allowlist.
+
 ## Using a session key
 
 Issue a key in the UI (**Session keys → Issue session key**) and copy it. It is shown only once.
@@ -131,6 +157,15 @@ rewritten to point back at the gateway.
 
 For monday.com, use `http://127.0.0.1:7420/proxy/monday/v2` as the GraphQL endpoint. The key can be
 sent as `Bearer gws_…` or bare, like monday's own tokens:
+
+For Slack, use `http://127.0.0.1:7420/proxy/slack/api/` as the API URL (for example
+`new WebClient(key, { slackApiUrl })` with `@slack/web-api`):
+
+```bash
+curl -X POST http://127.0.0.1:7420/proxy/slack/api/chat.postMessage \
+  -H "Authorization: Bearer $GATEWAY_SESSION_KEY" -H "Content-Type: application/json" \
+  -d '{"channel":"C0123456789","text":"Deployed ✅"}'
+```
 
 ```bash
 curl -X POST http://127.0.0.1:7420/proxy/monday/v2 \
@@ -254,7 +289,7 @@ Layout:
 ```
 src/server/          Express server: admin API, proxy, gateway logic
   store/             libsodium crypto + encrypted store
-  tools/             tool providers (github.ts, monday.ts), path matching, GraphQL inspection
+  tools/             tool providers (github.ts, monday.ts, slack.ts), path matching, GraphQL inspection
   http/              Express app, proxy handler
 web/                 Next.js 16 (App Router) + Tailwind CSS 4 admin UI
 test/                Vitest (unit, API/proxy e2e, live GitHub)

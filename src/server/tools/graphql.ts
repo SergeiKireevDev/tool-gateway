@@ -11,6 +11,7 @@ import {
   type OperationTypeNode,
   type SelectionSetNode,
 } from 'graphql';
+import { isRecord } from './json.js';
 
 /**
  * Generic inspection of GraphQL-over-HTTP requests, for tools whose API is a single GraphQL
@@ -178,8 +179,4 @@ function collectNested(set: SelectionSetNode, vars: Args, walk: Walk): NestedFie
     }
   }
   return out;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
