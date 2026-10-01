@@ -58,7 +58,7 @@ async function forward(
 
   const key = proxyToken(req);
   if (!key) throw unauthorized('Missing session key (Authorization: Bearer gws_…)');
-  const { session, account, tool } = gateway.resolveSession(key);
+  const session = gateway.resolveSession(key);
 
   const log = (decision: 'allowed' | 'denied', status: number, detail: string): void => {
     gateway.activity.add({
@@ -79,17 +79,20 @@ async function forward(
     res.status(status).set('x-gateway-denied', 'true').json({ error: 'forbidden', message });
   };
 
-  if (session.tool !== toolId) {
-    deny(HTTP.FORBIDDEN, `This session key is for "${session.tool}", not "${toolId}"`);
+  const resolved = gateway.resolveGrant(session, toolId);
+  if (!resolved) {
+    const covered = session.grants.map((g) => `"${g.tool}"`).join(', ');
+    deny(HTTP.FORBIDDEN, `This session key is for ${covered}, not "${toolId}"`);
     return;
   }
+  const { grant, account, tool } = resolved;
   const segments = match ? parseSafePath(rawPath) : null;
   if (!segments) {
     deny(HTTP.BAD_REQUEST, 'Malformed request path');
     return;
   }
   const toolRequest = toolRequestOf(req, segments, search);
-  const decision = await tool.authorize(toolRequest, session, {
+  const decision = await tool.authorize(toolRequest, grant, {
     sessionId: session.id,
     secret: account.secret,
   });

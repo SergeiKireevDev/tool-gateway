@@ -287,10 +287,8 @@ describe('monday.com through the proxy', () => {
       .post('/api/admin/templates')
       .set(...auth(admin))
       .send({
-        tool: 'monday',
         name: 'Board 1',
-        permissions: ['boards:read'],
-        resources,
+        grants: [{ tool: 'monday', permissions: ['boards:read'], resources }],
         defaultTtlSeconds: 600,
         maxTtlSeconds: 3600,
       })
@@ -362,10 +360,8 @@ describe('monday.com through the proxy', () => {
       .post('/api/admin/templates')
       .set(...auth(admin))
       .send({
-        tool: 'monday',
         name: 'x',
-        permissions: ['boards:read'],
-        resources: ['o/r'],
+        grants: [{ tool: 'monday', permissions: ['boards:read'], resources: ['o/r'] }],
         defaultTtlSeconds: 600,
         maxTtlSeconds: 3600,
       })

@@ -68,10 +68,14 @@ describe('real GitHub upstream', { timeout: 30_000 }, () => {
       .post('/api/admin/templates')
       .set(...as(admin))
       .send({
-        tool: 'github',
         name: 'live read',
-        permissions: ['metadata:read', 'issues:read', 'user:read'],
-        resources: [repo],
+        grants: [
+          {
+            tool: 'github',
+            permissions: ['metadata:read', 'issues:read', 'user:read'],
+            resources: [repo],
+          },
+        ],
         defaultTtlSeconds: 300,
         maxTtlSeconds: 600,
       })

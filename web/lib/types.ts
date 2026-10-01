@@ -60,14 +60,20 @@ export interface Account {
   owner: AccountOwner;
 }
 
+/** What a template grants on one tool. Empty resources = unrestricted. */
+export interface ToolGrant {
+  tool: string;
+  permissions: string[];
+  resources: string[];
+}
+
 /** What every viewer sees of a template (members get only this). */
 export interface TemplateSummary {
   id: string;
-  tool: string;
   name: string;
   description: string;
-  permissions: string[];
-  resources: string[];
+  /** One per tool the template covers. */
+  grants: ToolGrant[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
 }
@@ -78,11 +84,9 @@ export interface Template extends TemplateSummary {
 }
 
 export interface TemplateInput {
-  tool: string;
   name: string;
   description: string;
-  permissions: string[];
-  resources: string[];
+  grants: ToolGrant[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
 }
@@ -116,16 +120,18 @@ export interface MemberInput {
   expiresAt: string | null;
 }
 
+/** A session's snapshot of a template grant, with the account it uses for that tool. */
+export interface SessionGrant extends ToolGrant {
+  accountId: string;
+}
+
 export interface Session {
   id: string;
   keyHint: string;
   label: string;
-  tool: string;
-  accountId: string;
   templateId: string;
   templateName: string;
-  permissions: string[];
-  resources: string[];
+  grants: SessionGrant[];
   createdAt: string;
   expiresAt: string;
   revokedAt: string | null;

@@ -86,11 +86,11 @@ the workspace, user and granted scopes.
 
 ## Concepts
 
-| Concept         | What it is                                                                                                                                                                                                                             |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Account**     | A tool credential (for example a GitHub personal access token or a monday.com API token). It is verified against the tool when connected, then stored encrypted.                                                                       |
-| **Template**    | A named set of one tool's permissions (for example `issues:read` or `boards:read`), plus a resource allowlist (`owner/repo` or `owner/*` for GitHub, board IDs for monday.com, channel IDs for Slack) and a default and maximum TTL.   |
-| **Session key** | A `gws_…` bearer key issued from a template and bound to one account. It stores a snapshot of the template's permissions, so editing the template later never widens live keys. Deleting the template or the account revokes its keys. |
+| Concept         | What it is                                                                                                                                                                                                                                                                                            |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Account**     | A tool credential (for example a GitHub personal access token or a monday.com API token). It is verified against the tool when connected, then stored encrypted.                                                                                                                                      |
+| **Template**    | A named set of permissions on one or more tools (for example `pulls:write` on GitHub plus `items:write` on monday.com). Each tool has its own resource allowlist (`owner/repo` or `owner/*` for GitHub, board IDs for monday.com, channel IDs for Slack). The template has a default and maximum TTL. |
+| **Session key** | A `gws_…` bearer key issued from a template and bound to one account per tool of the template. It stores a snapshot of the template's permissions, so editing the template later never widens live keys. Deleting the template or any of its accounts revokes its keys.                               |
 
 GitHub permissions are mapped to explicit REST endpoint rules (see `src/server/tools/github.ts`).
 Anything not covered by a rule is denied. That includes GraphQL, repository settings, webhooks,
@@ -173,6 +173,11 @@ curl -X POST http://127.0.0.1:7420/proxy/monday/v2 \
   -d '{"query":"query ($b: [ID!]) { boards(ids: $b) { name items_page { items { id name } } } }","variables":{"b":[1234567890]}}'
 ```
 
+A key from a template that spans several tools works on each of their proxy URLs
+(`/proxy/github`, `/proxy/monday`, …). Each tool is checked against its own permissions and
+allowlist and called with its own account. Other tools are denied. `GET /api/session` lists every
+tool the key covers, with its account, permissions and proxy URL.
+
 When the gateway denies a request, it answers `403` with an `x-gateway-denied: true` header and a
 reason. Expired, revoked or unknown keys get `401`.
 
@@ -201,12 +206,12 @@ Rotating a member key revokes the session keys that member issued. Deleting a me
 the accounts it connected and revokes every key that could use them. A member key cannot call
 tools or the admin API: it can only obtain session keys.
 
-| Endpoint (with `Authorization: Bearer gwm_…`) | Purpose                                                                |
-| --------------------------------------------- | ---------------------------------------------------------------------- |
-| `GET /api/member`                             | The templates and accounts this member may use                         |
-| `POST /api/sessions`                          | Issue a session key: `{ templateId, accountId?, ttlSeconds?, label? }` |
-| `GET /api/sessions`                           | Session keys this member issued                                        |
-| `POST /api/sessions/:id/revoke`               | Revoke one of them                                                     |
+| Endpoint (with `Authorization: Bearer gwm_…`) | Purpose                                                                 |
+| --------------------------------------------- | ----------------------------------------------------------------------- |
+| `GET /api/member`                             | The templates and accounts this member may use                          |
+| `POST /api/sessions`                          | Issue a session key: `{ templateId, accountIds?, ttlSeconds?, label? }` |
+| `GET /api/sessions`                           | Session keys this member issued                                         |
+| `POST /api/sessions/:id/revoke`               | Revoke one of them                                                      |
 
 ```bash
 curl -X POST https://gateway.example/api/sessions \
@@ -215,7 +220,9 @@ curl -X POST https://gateway.example/api/sessions \
 # → 201 { "key": "gws_…", "session": { …, "issuedBy": { "kind": "member", … } } }
 ```
 
-`accountId` can be omitted when the member is allowed exactly one account for the template's tool.
+`accountIds` names at most one account per tool of the template. A tool can be left out when the
+member is allowed exactly one account for it. The single-account form `accountId` is still
+accepted.
 TTLs follow the template's default and maximum. Templates or accounts outside the member's
 allowlists get `403` (whether or not they exist). The admin UI shows which member issued each
 session key, and the Activity tab logs member actions.

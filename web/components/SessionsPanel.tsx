@@ -2,7 +2,15 @@
 
 import { useState } from 'react';
 import { formatDateTime, formatDuration, formatRelative } from '@/lib/format';
-import type { Session, SessionIssuer, SessionStatus, Tool } from '@/lib/types';
+import { grantsScope, toolName } from '@/lib/grants';
+import type {
+  Account,
+  Session,
+  SessionIssuer,
+  SessionStatus,
+  TemplateSummary,
+  Tool,
+} from '@/lib/types';
 import { DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { PanelProps } from './AdminApp';
 import {
@@ -30,9 +38,9 @@ const STATUS_TONE: Record<SessionStatus, 'green' | 'slate' | 'red'> = {
 
 const SESSION_DESCRIPTIONS: Record<PanelProps['viewer']['role'], string> = {
   admin:
-    "Short-lived keys that grant a template's permissions on one account. Hand them to scripts or agents; they stop working when the TTL expires or when revoked. Keys issued by members are listed too.",
+    "Short-lived keys that grant a template's permissions, on one account per tool. Hand them to scripts or agents; they stop working when the TTL expires or when revoked. Keys issued by members are listed too.",
   member:
-    "Short-lived keys that grant one of your templates' permissions on one of your accounts. Hand them to scripts or agents; they stop working when the TTL expires or when revoked.",
+    "Short-lived keys that grant one of your templates' permissions, on one of your accounts per tool. Hand them to scripts or agents; they stop working when the TTL expires or when revoked.",
 };
 
 export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
@@ -42,8 +50,10 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
   const [showInactive, setShowInactive] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const accountLabel = (id: string): string =>
-    data.accounts.find((a) => a.id === id)?.label ?? 'removed account';
+  const accountLabels = (s: Session): string =>
+    s.grants
+      .map((g) => data.accounts.find((a) => a.id === g.accountId)?.label ?? 'removed account')
+      .join(', ');
   // Status is computed server-side at fetch time; expire rows client-side as the clock ticks.
   const liveStatus = (s: Session): SessionStatus =>
     s.status === 'active' && Date.parse(s.expiresAt) <= now ? 'expired' : s.status;
@@ -106,7 +116,7 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
             <thead className="bg-slate-50 text-left text-xs font-medium tracking-wide text-slate-500 uppercase">
               <tr>
                 <th className="px-4 py-3">Key</th>
-                <th className="px-4 py-3">Template / account</th>
+                <th className="px-4 py-3">Template / accounts</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Expires</th>
                 <th className="px-4 py-3">Usage</th>
@@ -124,7 +134,7 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
                     </td>
                     <td className="px-4 py-3">
                       <div className="font-medium">{s.templateName}</div>
-                      <div className="text-xs text-slate-500">{accountLabel(s.accountId)}</div>
+                      <div className="text-xs text-slate-500">{accountLabels(s)}</div>
                       {viewer.role === 'admin' && <IssuedBy issuer={s.issuedBy} />}
                     </td>
                     <td className="px-4 py-3">
@@ -175,7 +185,7 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
       {issued && (
         <KeyRevealModal
           issued={issued}
-          tool={data.tools.find((t) => t.id === issued.session.tool)}
+          tools={data.tools}
           onClose={() => {
             setIssued(null);
           }}
@@ -202,8 +212,7 @@ function IssueModal({
   const first = data.templates[0];
   const [templateId, setTemplateId] = useState(first?.id ?? '');
   const template = data.templates.find((t) => t.id === templateId);
-  const accounts = data.accounts.filter((a) => a.tool === template?.tool);
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? '');
+  const [accountIds, setAccountIds] = useState(() => defaultAccounts(first, data.accounts));
   const [ttl, setTtl] = useState(first?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS);
   const [label, setLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -213,10 +222,12 @@ function IssueModal({
     const tpl = data.templates.find((t) => t.id === id);
     setTemplateId(id);
     setTtl(tpl?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS);
-    setAccountId(data.accounts.find((a) => a.tool === tpl?.tool)?.id ?? '');
+    setAccountIds(defaultAccounts(tpl, data.accounts));
   };
 
   const tooLong = template !== undefined && ttl > template.maxTtlSeconds;
+  const chosen = template?.grants.map((g) => accountIds[g.tool] ?? '') ?? [];
+  const missingAccount = chosen.length === 0 || chosen.includes('');
 
   const submit = async (): Promise<void> => {
     setBusy(true);
@@ -224,7 +235,7 @@ function IssueModal({
     try {
       const result = await api<{ key: string; session: Session }>('POST', '/sessions', {
         templateId,
-        accountId,
+        accountIds: chosen,
         ttlSeconds: ttl,
         ...(label.trim() ? { label: label.trim() } : {}),
       });
@@ -260,27 +271,21 @@ function IssueModal({
           </Select>
         </Field>
         {template && (
-          <p className="-mt-2 text-xs text-slate-500">
-            {template.permissions.join(', ')} ·{' '}
-            {template.resources.length ? template.resources.join(', ') : 'all resources'}
-          </p>
+          <p className="-mt-2 text-xs text-slate-500">{grantsScope(template.grants, data.tools)}</p>
         )}
-        <Field label="Account">
-          <Select
-            value={accountId}
-            required
-            onChange={(e) => {
-              setAccountId(e.target.value);
+        {template?.grants.map((g) => (
+          <AccountSelect
+            key={g.tool}
+            label={
+              template.grants.length > 1 ? `${toolName(data.tools, g.tool)} account` : 'Account'
+            }
+            accounts={data.accounts.filter((a) => a.tool === g.tool)}
+            value={accountIds[g.tool] ?? ''}
+            onChange={(id) => {
+              setAccountIds((ids) => ({ ...ids, [g.tool]: id }));
             }}
-          >
-            {accounts.length === 0 && <option value="">No matching account</option>}
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.label} ({a.identity.login ?? a.tool})
-              </option>
-            ))}
-          </Select>
-        </Field>
+          />
+        ))}
         <Field
           label="Time to live"
           hint={
@@ -306,12 +311,56 @@ function IssueModal({
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" disabled={busy || !accountId || tooLong}>
+          <Button type="submit" disabled={busy || missingAccount || tooLong}>
             {busy ? 'Issuing…' : 'Issue key'}
           </Button>
         </div>
       </form>
     </Modal>
+  );
+}
+
+/** Initial account choice for each tool of a template: the first usable account. */
+function defaultAccounts(
+  template: TemplateSummary | undefined,
+  accounts: Account[],
+): Record<string, string> {
+  return Object.fromEntries(
+    (template?.grants ?? []).map((g) => [
+      g.tool,
+      accounts.find((a) => a.tool === g.tool)?.id ?? '',
+    ]),
+  );
+}
+
+function AccountSelect({
+  label,
+  accounts,
+  value,
+  onChange,
+}: {
+  label: string;
+  accounts: Account[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <Field label={label}>
+      <Select
+        value={value}
+        required
+        onChange={(e) => {
+          onChange(e.target.value);
+        }}
+      >
+        {accounts.length === 0 && <option value="">No matching account</option>}
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.label} ({a.identity.login ?? a.tool})
+          </option>
+        ))}
+      </Select>
+    </Field>
   );
 }
 
@@ -328,18 +377,29 @@ function exampleCurl(key: string, base: string, tool: Tool | undefined): string 
   return lines.join(' \\\n  ');
 }
 
+/** Proxy base URL per tool; a single-tool key keeps the plain `GATEWAY_URL` name. */
+function envSnippet(key: string, bases: { tool: string; base: string }[]): string {
+  const urls = bases.map(({ tool, base }) =>
+    bases.length === 1
+      ? `export GATEWAY_URL=${base}`
+      : `export GATEWAY_${tool.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_URL=${base}`,
+  );
+  return [...urls, `export GATEWAY_SESSION_KEY=${key}`].join('\n');
+}
+
 function KeyRevealModal({
   issued,
-  tool,
+  tools,
   onClose,
 }: {
   issued: { key: string; session: Session };
-  tool: Tool | undefined;
+  tools: Tool[];
   onClose: () => void;
 }) {
-  const base = `${window.location.origin}/proxy/${issued.session.tool}`;
-  const curl = exampleCurl(issued.key, base, tool);
-  const env = `export GATEWAY_URL=${base}\nexport GATEWAY_SESSION_KEY=${issued.key}`;
+  const bases = issued.session.grants.map((g) => ({
+    tool: g.tool,
+    base: `${window.location.origin}/proxy/${g.tool}`,
+  }));
 
   return (
     <Modal wide open title="Session key issued" onClose={onClose}>
@@ -355,13 +415,28 @@ function KeyRevealModal({
         </div>
         <p className="text-sm text-slate-600">
           Valid until <strong>{formatDateTime(issued.session.expiresAt)}</strong> with template{' '}
-          <strong>{issued.session.templateName}</strong>.
+          <strong>{issued.session.templateName}</strong>
+          {bases.length > 1 && <> on {bases.map((b) => toolName(tools, b.tool)).join(', ')}</>}.
         </p>
-        <Snippet title="Environment" value={env} />
-        <Snippet title="Example request" value={curl} />
+        <Snippet title="Environment" value={envSnippet(issued.key, bases)} />
+        {bases.map(({ tool: id, base }) => {
+          const tool = tools.find((t) => t.id === id);
+          return (
+            <div key={id} className="space-y-2">
+              <Snippet
+                title={
+                  bases.length > 1 ? `Example request (${tool?.name ?? id})` : 'Example request'
+                }
+                value={exampleCurl(issued.key, base, tool)}
+              />
+              <p className="text-xs text-slate-500">
+                Use <code className="font-mono">{base}</code> as the {tool?.name ?? id} API base URL
+                {tool && ` (${tool.example.clientHint})`}.
+              </p>
+            </div>
+          );
+        })}
         <p className="text-xs text-slate-500">
-          Use <code className="font-mono">{base}</code> as the API base URL
-          {tool && ` (${tool.example.clientHint})`}.{' '}
           <code className="font-mono">GET /api/session</code> with the key returns its permissions
           and expiry.
         </p>

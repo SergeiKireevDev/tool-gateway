@@ -27,10 +27,8 @@ beforeEach(async () => {
   const tpl = (name: string, permissions: string[]) =>
     admin('post', '/templates')
       .send({
-        tool: 'github',
         name,
-        permissions,
-        resources: [],
+        grants: [{ tool: 'github', permissions, resources: [] }],
         defaultTtlSeconds: 600,
         maxTtlSeconds: 3600,
       })

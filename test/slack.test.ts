@@ -223,10 +223,8 @@ describe('Slack through the proxy', () => {
       .post('/api/admin/templates')
       .set(...auth(admin))
       .send({
-        tool: 'slack',
         name: 'Post to #eng',
-        permissions: ['chat:write'],
-        resources: ['C1111'],
+        grants: [{ tool: 'slack', permissions: ['chat:write'], resources: ['C1111'] }],
         defaultTtlSeconds: 600,
         maxTtlSeconds: 3600,
       })
@@ -281,10 +279,8 @@ describe('Slack through the proxy', () => {
       .post('/api/admin/templates')
       .set(...auth(admin))
       .send({
-        tool: 'slack',
         name: 'x',
-        permissions: ['chat:write'],
-        resources: ['#general'],
+        grants: [{ tool: 'slack', permissions: ['chat:write'], resources: ['#general'] }],
         defaultTtlSeconds: 600,
         maxTtlSeconds: 3600,
       })

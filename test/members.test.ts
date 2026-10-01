@@ -26,10 +26,8 @@ async function createMember(overrides: object = {}): Promise<{ key: string; id: 
 }
 
 const template = (name: string, permissions: string[]) => ({
-  tool: 'github',
   name,
-  permissions,
-  resources: ['o/r'],
+  grants: [{ tool: 'github', permissions, resources: ['o/r'] }],
   defaultTtlSeconds: 600,
   maxTtlSeconds: 3600,
 });
@@ -124,7 +122,7 @@ describe('member keys (self-serve)', () => {
       .expect(201);
     expect(res.body.key).toMatch(/^gws_/);
     expect(res.body.session).toMatchObject({
-      accountId: ids.acc1,
+      grants: [{ tool: 'github', accountId: ids.acc1 }],
       issuedBy: { kind: 'member', memberName: 'ci-bot' },
     });
     await request(app)
@@ -155,7 +153,7 @@ describe('member keys (self-serve)', () => {
       .set(...bearer(key))
       .send({ templateId: ids.tplRead })
       .expect(400);
-    expect(res.body.message).toMatch(/specify accountId/);
+    expect(res.body.message).toMatch(/exactly one in accountIds/);
     await request(app)
       .post('/api/sessions')
       .set(...bearer(key))

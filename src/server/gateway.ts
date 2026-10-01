@@ -16,8 +16,10 @@ import type {
   Account,
   Member,
   Session,
+  SessionGrant,
   SessionIssuer,
   Template,
+  ToolGrant,
   WebSessionRole,
 } from './store/types.js';
 import type { ToolRegistry } from './tools/registry.js';
@@ -43,6 +45,7 @@ const MAX_SECRET_LENGTH = 4096;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_CLIENT_ID_LENGTH = 100;
 const MAX_SCOPES_LENGTH = 300;
+const MAX_ACCOUNTS_PER_SESSION = 20;
 
 /** Non-secret key prefix shown in the UI to tell keys apart. */
 const KEY_HINT_CHARS = 6;
@@ -69,23 +72,35 @@ export const accountUpdateSchema = z.object({
   secret: z.string().trim().min(1).max(MAX_SECRET_LENGTH).optional(),
 });
 
+export const toolGrantSchema = z.object({
+  tool: z.string().min(1),
+  permissions: z.array(z.string()).min(1, 'Select at least one permission'),
+  resources: z.array(z.string().trim()).default([]),
+});
+
 export const templateSchema = z
   .object({
-    tool: z.string().min(1),
     name: z.string().trim().min(1).max(MAX_LABEL_LENGTH),
     description: z.string().trim().max(MAX_DESCRIPTION_LENGTH).default(''),
-    permissions: z.array(z.string()).min(1, 'Select at least one permission'),
-    resources: z.array(z.string().trim()).default([]),
+    /** One entry per tool the template covers. */
+    grants: z.array(toolGrantSchema).min(1, 'Grant access to at least one tool'),
     defaultTtlSeconds: ttl,
     maxTtlSeconds: ttl,
   })
   .refine((t) => t.defaultTtlSeconds <= t.maxTtlSeconds, {
     message: 'Default TTL must not exceed max TTL',
     path: ['defaultTtlSeconds'],
+  })
+  .refine((t) => new Set(t.grants.map((g) => g.tool)).size === t.grants.length, {
+    message: 'Each tool can only appear once in a template',
+    path: ['grants'],
   });
 
 export const sessionRequestSchema = z.object({
   templateId: z.string().min(1),
+  /** At most one account per tool of the template; omitted tools use the only usable account. */
+  accountIds: z.array(z.string().min(1)).max(MAX_ACCOUNTS_PER_SESSION).default([]),
+  /** Single-account form kept for existing clients: same as `accountIds: [accountId]`. */
   accountId: z.string().min(1).optional(),
   ttlSeconds: ttl.optional(),
   label: z.string().trim().max(MAX_LABEL_LENGTH).optional(),
@@ -177,14 +192,7 @@ export interface MemberView {
   expiresAt: string | null;
   templates: Pick<
     Template,
-    | 'id'
-    | 'tool'
-    | 'name'
-    | 'description'
-    | 'permissions'
-    | 'resources'
-    | 'defaultTtlSeconds'
-    | 'maxTtlSeconds'
+    'id' | 'name' | 'description' | 'grants' | 'defaultTtlSeconds' | 'maxTtlSeconds'
   >[];
   accounts: {
     id: string;
@@ -211,8 +219,14 @@ export interface ToolCatalogEntry {
   } | null;
 }
 
-export interface ResolvedSession {
-  session: Session;
+/** A template grant with the account chosen for it at issuance. */
+interface BoundGrant {
+  grant: ToolGrant;
+  account: Account;
+}
+
+export interface ResolvedGrant {
+  grant: SessionGrant;
   account: Account;
   tool: ToolProvider;
 }
@@ -571,7 +585,7 @@ export class Gateway {
     const revoked = await this.store.update((s) => {
       s.accounts = s.accounts.filter((a) => a.id !== id);
       for (const m of s.members) m.accountIds = m.accountIds.filter((x) => x !== id);
-      return this.revokeWhere(s.sessions, (x) => x.accountId === id);
+      return this.revokeWhere(s.sessions, (x) => usesAccount(x, (a) => a === id));
     });
     this.activity.add({
       kind: actor.kind,
@@ -614,17 +628,22 @@ export class Gateway {
 
   private validateTemplate(input: unknown): z.infer<typeof templateSchema> {
     const data = templateSchema.parse(input);
-    const tool = this.tool(data.tool);
+    return { ...data, grants: data.grants.map((g) => this.validateGrant(g)) };
+  }
+
+  private validateGrant(grant: ToolGrant): ToolGrant {
+    const tool = this.tool(grant.tool);
     const known = new Set(tool.permissions.map((p) => p.id));
-    const unknown = data.permissions.filter((p) => !known.has(p));
-    if (unknown.length) throw badRequest(`Unknown permission(s): ${unknown.join(', ')}`);
-    data.permissions = [...new Set(data.permissions)];
-    data.resources = [...new Set(data.resources.filter(Boolean))];
-    for (const r of data.resources) {
-      const err = tool.validateResource(r);
-      if (err) throw badRequest(err);
+    const unknown = grant.permissions.filter((p) => !known.has(p));
+    if (unknown.length) {
+      throw badRequest(`Unknown ${tool.name} permission(s): ${unknown.join(', ')}`);
     }
-    return data;
+    const resources = [...new Set(grant.resources.filter(Boolean))];
+    for (const r of resources) {
+      const err = tool.validateResource(r);
+      if (err) throw badRequest(`${tool.name}: ${err}`);
+    }
+    return { tool: tool.id, permissions: [...new Set(grant.permissions)], resources };
   }
 
   async createTemplate(input: unknown): Promise<Template> {
@@ -639,7 +658,7 @@ export class Gateway {
     });
     this.activity.add({
       kind: 'admin',
-      tool: data.tool,
+      tool: toolsOf(template),
       detail: `Created template "${data.name}"`,
     });
     return template;
@@ -659,7 +678,7 @@ export class Gateway {
     });
     this.activity.add({
       kind: 'admin',
-      tool: data.tool,
+      tool: toolsOf(updated),
       detail: `Updated template "${data.name}"`,
     });
     return updated;
@@ -675,7 +694,7 @@ export class Gateway {
     });
     this.activity.add({
       kind: 'admin',
-      tool: tpl.tool,
+      tool: toolsOf(tpl),
       detail: `Deleted template "${tpl.name}" (revoked ${revoked} session(s))`,
     });
   }
@@ -766,7 +785,7 @@ export class Gateway {
       s.webSessions = s.webSessions.filter((w) => w.memberId !== id);
       const n = this.revokeWhere(
         s.sessions,
-        (x) => issuedByMember(x, id) || owned.has(x.accountId),
+        (x) => issuedByMember(x, id) || usesAccount(x, (a) => owned.has(a)),
       );
       return [m, n, owned.size] as const;
     });
@@ -796,27 +815,14 @@ export class Gateway {
       expiresAt: member.expiresAt,
       templates: state.templates
         .filter((t) => member.templateIds.includes(t.id))
-        .map(
-          ({
-            id,
-            tool,
-            name,
-            description,
-            permissions,
-            resources,
-            defaultTtlSeconds,
-            maxTtlSeconds,
-          }) => ({
-            id,
-            tool,
-            name,
-            description,
-            permissions,
-            resources,
-            defaultTtlSeconds,
-            maxTtlSeconds,
-          }),
-        ),
+        .map(({ id, name, description, grants, defaultTtlSeconds, maxTtlSeconds }) => ({
+          id,
+          name,
+          description,
+          grants,
+          defaultTtlSeconds,
+          maxTtlSeconds,
+        })),
       accounts: this.usableAccounts({ kind: 'member', member }).map((a) => ({
         id: a.id,
         tool: a.tool,
@@ -930,8 +936,8 @@ export class Gateway {
     const req = sessionRequestSchema.parse(input);
     const template = this.store.read().templates.find((t) => t.id === req.templateId);
     if (!template) throw notFound(TEMPLATE_NOT_FOUND);
-    const account = this.pickAccount(template, req.accountId, ADMIN);
-    return this.issue(req, template, account, ADMIN_ISSUER);
+    const accounts = this.pickAccounts(template, requestedAccounts(req), ADMIN);
+    return this.issue(req, template, accounts, ADMIN_ISSUER);
   }
 
   /**
@@ -947,8 +953,11 @@ export class Gateway {
       ? this.store.read().templates.find((t) => t.id === req.templateId)
       : undefined;
     if (!template) throw forbidden('This template is not available to you');
-    const account = this.pickAccount(template, req.accountId, { kind: 'member', member });
-    return this.issue(req, template, account, {
+    const accounts = this.pickAccounts(template, requestedAccounts(req), {
+      kind: 'member',
+      member,
+    });
+    return this.issue(req, template, accounts, {
       kind: 'member',
       memberId: member.id,
       memberName: member.name,
@@ -968,39 +977,46 @@ export class Gateway {
     );
   }
 
-  /** Resolves the account a key will use (explicit, or the only usable one for the tool). */
-  private pickAccount(template: Template, requestedId: string | undefined, actor: Actor): Account {
+  /**
+   * Resolves the account a key will use for each tool of the template, in template order: the
+   * requested one, or the only usable account for that tool.
+   */
+  private pickAccounts(template: Template, requestedIds: string[], actor: Actor): BoundGrant[] {
     const usable = this.usableAccounts(actor);
-    if (requestedId) {
-      const account = usable.find((a) => a.id === requestedId);
+    const requested = requestedIds.map((id) => {
+      const account = usable.find((a) => a.id === id);
       if (!account) {
         throw actor.kind === 'admin'
           ? notFound(ACCOUNT_NOT_FOUND)
           : forbidden('This account is not available to you');
       }
-      if (account.tool !== template.tool) {
+      if (!template.grants.some((g) => g.tool === account.tool)) {
         throw badRequest(
-          `Account is a ${account.tool} account but template targets ${template.tool}`,
+          `Account "${account.label}" is a ${account.tool} account but the template does not cover ${account.tool}`,
         );
       }
       return account;
-    }
-    const candidates = usable.filter((a) => a.tool === template.tool);
-    const [only] = candidates;
-    if (candidates.length !== 1 || !only) {
-      throw badRequest(
-        candidates.length === 0
-          ? `No ${template.tool} account available`
-          : 'Several accounts match this template: specify accountId',
-      );
-    }
-    return only;
+    });
+    return template.grants.map((grant) => {
+      const { tool } = grant;
+      const explicit = requested.filter((a) => a.tool === tool);
+      const candidates = explicit.length ? explicit : usable.filter((a) => a.tool === tool);
+      const [only] = candidates;
+      if (candidates.length !== 1 || !only) {
+        throw badRequest(
+          candidates.length === 0
+            ? `No ${tool} account available`
+            : `Several ${tool} accounts match this template: give exactly one in accountIds`,
+        );
+      }
+      return { grant, account: only };
+    });
   }
 
   private async issue(
     req: z.infer<typeof sessionRequestSchema>,
     template: Template,
-    account: Account,
+    bound: BoundGrant[],
     issuedBy: SessionIssuer,
   ): Promise<{ key: string; session: PublicSession }> {
     const ttlSeconds = req.ttlSeconds ?? template.defaultTtlSeconds;
@@ -1015,12 +1031,14 @@ export class Gateway {
       keyHash: this.crypto.hashToken(key),
       keyHint: key.slice(0, SESSION_KEY_PREFIX.length + KEY_HINT_CHARS),
       label: req.label ?? '',
-      tool: template.tool,
-      accountId: account.id,
       templateId: template.id,
       templateName: template.name,
-      permissions: [...template.permissions],
-      resources: [...template.resources],
+      grants: bound.map(({ grant, account }) => ({
+        tool: grant.tool,
+        accountId: account.id,
+        permissions: [...grant.permissions],
+        resources: [...grant.resources],
+      })),
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + ttlSeconds * MS_PER_SECOND).toISOString(),
       revokedAt: null,
@@ -1036,12 +1054,13 @@ export class Gateway {
       }
     });
     const by = issuedBy.kind === 'member' ? `Member "${issuedBy.memberName}"` : 'Admin';
+    const on = bound.map(({ account }) => `"${account.label}"`).join(', ');
     this.activity.add({
       kind: issuedBy.kind,
-      tool: template.tool,
+      tool: toolsOf(template),
       sessionId: session.id,
       sessionLabel: session.label,
-      detail: `${by} issued a session from template "${template.name}" on account "${account.label}" (TTL ${ttlSeconds}s)`,
+      detail: `${by} issued a session from template "${template.name}" on account${bound.length === 1 ? '' : 's'} ${on} (TTL ${ttlSeconds}s)`,
     });
     return { key, session: this.toPublicSession(session) };
   }
@@ -1055,7 +1074,7 @@ export class Gateway {
     });
     this.activity.add({
       kind: by.kind,
-      tool: revoked.tool,
+      tool: toolsOf(revoked),
       sessionId: id,
       sessionLabel: revoked.label,
       detail:
@@ -1064,20 +1083,29 @@ export class Gateway {
     return this.toPublicSession(revoked);
   }
 
-  /** Resolves a presented session key; throws 401/403 with a useful message otherwise. */
-  resolveSession(key: string): ResolvedSession {
+  /** Resolves a presented session key to an active session; throws 401 otherwise. */
+  resolveSession(key: string): Session {
     if (!key.startsWith(SESSION_KEY_PREFIX)) throw unauthorized('Invalid session key');
     const hash = this.crypto.hashToken(key);
-    const state = this.store.read();
-    const session = state.sessions.find((s) => CryptoBox.equalHex(s.keyHash, hash));
+    const session = this.store.read().sessions.find((s) => CryptoBox.equalHex(s.keyHash, hash));
     if (!session) throw unauthorized('Invalid session key');
     const status = this.statusOf(session);
     if (status !== 'active') throw unauthorized(`Session key is ${status}`);
-    const account = state.accounts.find((a) => a.id === session.accountId);
+    return session;
+  }
+
+  /**
+   * What an active session may do on one tool, with the account to use. Null when the session
+   * does not cover that tool; throws 401 if its account or tool is gone.
+   */
+  resolveGrant(session: Session, toolId: string): ResolvedGrant | null {
+    const grant = session.grants.find((g) => g.tool === toolId);
+    if (!grant) return null;
+    const account = this.store.read().accounts.find((a) => a.id === grant.accountId);
     if (!account) throw unauthorized('Account behind this session was removed');
-    const tool = this.tools.get(session.tool);
+    const tool = this.tools.get(grant.tool);
     if (!tool) throw unauthorized('Tool is no longer available');
-    return { session, account, tool };
+    return { grant, account, tool };
   }
 
   recordUsage(sessionId: string): void {
@@ -1139,6 +1167,20 @@ export class Gateway {
 
 function issuedByMember(s: Session, memberId: string): boolean {
   return s.issuedBy?.kind === 'member' && s.issuedBy.memberId === memberId;
+}
+
+function usesAccount(s: Session, matches: (accountId: string) => boolean): boolean {
+  return s.grants.some((g) => matches(g.accountId));
+}
+
+/** Tools a template or session covers, for the activity log. */
+function toolsOf(x: { grants: readonly ToolGrant[] }): string {
+  return x.grants.map((g) => g.tool).join(', ');
+}
+
+/** Accounts named in a session request, deduplicated (`accountId` is the single-account form). */
+function requestedAccounts(req: z.infer<typeof sessionRequestSchema>): string[] {
+  return [...new Set(req.accountId ? [...req.accountIds, req.accountId] : req.accountIds)];
 }
 
 function endOf(s: Session): number {
