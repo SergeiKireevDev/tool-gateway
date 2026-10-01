@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from '../units.js';
 import type { CryptoBox } from './crypto.js';
+import { migrate } from './migrate.js';
 import { emptyState, type StoreState } from './types.js';
 
 const AAD = 'local-gateway/store/v2';
@@ -41,7 +42,7 @@ export class EncryptedStore {
         `Unable to decrypt ${this.file}: wrong master key or corrupted file. Refusing to start.`,
       );
     }
-    this.state = { ...emptyState(), ...(JSON.parse(plaintext) as Partial<StoreState>) };
+    this.state = migrate(JSON.parse(plaintext) as Parameters<typeof migrate>[0]);
   }
 
   read(): Readonly<StoreState> {

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { formatDateTime, formatRelative } from '@/lib/format';
+import { grantsScope } from '@/lib/grants';
 import type { Member, MemberInput } from '@/lib/types';
 import { MS_PER_SECOND, SECONDS_PER_DAY } from '@/lib/units';
 import type { GatewayData, PanelProps } from './AdminApp';
@@ -335,7 +336,7 @@ function MemberModal({
           items={data.templates.map((t) => ({
             id: t.id,
             label: t.name,
-            hint: t.resources.length ? t.resources.join(', ') : 'all repositories',
+            hint: grantsScope(t.grants, data.tools),
           }))}
           selected={templateIds}
           onChange={setTemplateIds}

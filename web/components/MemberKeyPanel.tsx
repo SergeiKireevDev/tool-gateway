@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import { formatDateTime, formatDuration } from '@/lib/format';
 import type { PanelProps } from './AdminApp';
+import { GrantList } from './GrantList';
 import { MemberKeyReveal } from './MembersPanel';
-import { Badge, Button, Card, ErrorBanner, SectionHeader } from './ui';
+import { Button, Card, ErrorBanner, SectionHeader } from './ui';
 
 /** Member portal: the member's own key (for scripts) and the templates it gives access to. */
 export function MemberKeyPanel({ api, data, refresh }: PanelProps) {
@@ -63,16 +64,12 @@ export function MemberKeyPanel({ api, data, refresh }: PanelProps) {
               <span className="font-mono text-xs text-slate-400">{t.id}</span>
             </div>
             {t.description && <p className="mt-1 text-sm text-slate-500">{t.description}</p>}
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {t.permissions.map((p) => (
-                <Badge key={p} tone={p.endsWith(':read') ? 'slate' : 'amber'}>
-                  {p}
-                </Badge>
-              ))}
+            <div className="mt-3">
+              <GrantList grants={t.grants} tools={data.tools} />
             </div>
-            <p className="mt-2 text-xs text-slate-500">
-              {t.resources.length ? t.resources.join(', ') : 'All repositories'} · up to{' '}
-              {formatDuration(t.maxTtlSeconds)}
+            <p className="mt-3 text-xs text-slate-500">
+              Keys last up to {formatDuration(t.maxTtlSeconds)}
+              {t.grants.length > 1 && ', with one of your accounts for each tool'}
             </p>
           </Card>
         ))}

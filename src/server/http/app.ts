@@ -41,16 +41,21 @@ export function createApp(
     h((req) => {
       const key = bearerToken(req);
       if (!key) throw unauthorized('Missing session key');
-      const { session, account } = gateway.resolveSession(key);
+      const session = gateway.resolveSession(key);
       return {
         id: session.id,
-        tool: session.tool,
         template: session.templateName,
-        account: { label: account.label, identity: account.identity },
-        permissions: session.permissions,
-        resources: session.resources,
         expiresAt: session.expiresAt,
-        proxyBaseUrl: `${config.publicUrl}/proxy/${session.tool}`,
+        grants: session.grants.map(({ tool, permissions, resources }) => {
+          const account = gateway.resolveGrant(session, tool)?.account;
+          return {
+            tool,
+            account: account && { label: account.label, identity: account.identity },
+            permissions,
+            resources,
+            proxyBaseUrl: `${config.publicUrl}/proxy/${tool}`,
+          };
+        }),
       };
     }),
   );

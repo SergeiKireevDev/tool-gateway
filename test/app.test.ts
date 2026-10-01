@@ -22,10 +22,8 @@ async function setup(templateOverrides: Record<string, unknown> = {}): Promise<{
     .post('/api/admin/templates')
     .set(...auth(admin))
     .send({
-      tool: 'github',
       name: 'Issues RO',
-      permissions: ['issues:read'],
-      resources: ['o/r'],
+      grants: [{ tool: 'github', permissions: ['issues:read'], resources: ['o/r'] }],
       defaultTtlSeconds: 600,
       maxTtlSeconds: 3600,
       ...templateOverrides,
@@ -86,18 +84,28 @@ describe('admin API', () => {
   });
 
   it('validates templates', async () => {
-    const base = { tool: 'github', name: 'T', defaultTtlSeconds: 600, maxTtlSeconds: 3600 };
+    const base = { name: 'T', defaultTtlSeconds: 600, maxTtlSeconds: 3600 };
+    const gh = (permissions: string[], resources: string[] = []) => ({
+      tool: 'github',
+      permissions,
+      resources,
+    });
     const post = (body: object) =>
       request(app)
         .post('/api/admin/templates')
         .set(...auth(admin))
         .send(body);
-    await post({ ...base, permissions: [] }).expect(400);
-    await post({ ...base, permissions: ['nope:read'] }).expect(400);
-    await post({ ...base, permissions: ['issues:read'], resources: ['bad pattern'] }).expect(400);
-    await post({ ...base, permissions: ['issues:read'], defaultTtlSeconds: 7200 }).expect(400);
-    await post({ ...base, permissions: ['issues:read'] }).expect(201);
-    await post({ ...base, permissions: ['issues:read'] }).expect(409);
+    await post({ ...base, grants: [] }).expect(400);
+    await post({ ...base, grants: [gh([])] }).expect(400);
+    await post({ ...base, grants: [gh(['nope:read'])] }).expect(400);
+    await post({ ...base, grants: [gh(['issues:read'], ['bad pattern'])] }).expect(400);
+    await post({ ...base, grants: [{ tool: 'nope', permissions: ['x'] }] }).expect(400);
+    await post({ ...base, grants: [gh(['issues:read']), gh(['pulls:read'])] }).expect(400);
+    await post({ ...base, grants: [gh(['issues:read'])], defaultTtlSeconds: 7200 }).expect(400);
+    // A grant's permissions are checked against its own tool.
+    await post({ ...base, grants: [{ tool: 'monday', permissions: ['issues:read'] }] }).expect(400);
+    await post({ ...base, grants: [gh(['issues:read'])] }).expect(201);
+    await post({ ...base, grants: [gh(['issues:read'])] }).expect(409);
   });
 
   it('caps session TTL at the template maximum', async () => {
@@ -216,10 +224,8 @@ describe('proxy', () => {
       .put(`/api/admin/templates/${templateId}`)
       .set(...auth(admin))
       .send({
-        tool: 'github',
         name: 'Issues RW',
-        permissions: ['issues:read', 'issues:write'],
-        resources: [],
+        grants: [{ tool: 'github', permissions: ['issues:read', 'issues:write'], resources: [] }],
         defaultTtlSeconds: 600,
         maxTtlSeconds: 3600,
       })
@@ -256,10 +262,16 @@ describe('proxy', () => {
       .set(...auth(key))
       .expect(200);
     expect(info.body).toMatchObject({
-      tool: 'github',
-      permissions: ['issues:read'],
-      resources: ['o/r'],
-      proxyBaseUrl: 'http://gateway.test/proxy/github',
+      template: 'Issues RO',
+      grants: [
+        {
+          tool: 'github',
+          account: { label: 'Personal' },
+          permissions: ['issues:read'],
+          resources: ['o/r'],
+          proxyBaseUrl: 'http://gateway.test/proxy/github',
+        },
+      ],
     });
     await h.gateway.flush();
     const list = await request(app)

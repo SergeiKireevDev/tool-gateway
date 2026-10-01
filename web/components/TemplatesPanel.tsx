@@ -2,9 +2,11 @@
 
 import { useState } from 'react';
 import { formatDuration } from '@/lib/format';
+import { toolName } from '@/lib/grants';
 import { DEFAULT_MAX_TTL_SECONDS, DEFAULT_TTL_SECONDS } from '@/lib/units';
-import type { TemplateInput, TemplateSummary as Template } from '@/lib/types';
+import type { TemplateInput, TemplateSummary as Template, Tool } from '@/lib/types';
 import type { PanelProps } from './AdminApp';
+import { GrantList } from './GrantList';
 import {
   Badge,
   Button,
@@ -16,7 +18,6 @@ import {
   Input,
   Modal,
   SectionHeader,
-  Select,
   Textarea,
 } from './ui';
 
@@ -25,9 +26,6 @@ type Editing = { mode: 'create' } | { mode: 'edit'; template: Template } | null;
 export function TemplatesPanel({ api, data, refresh }: PanelProps) {
   const [editing, setEditing] = useState<Editing>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const permissionLabel = (tool: string, id: string): string =>
-    data.tools.find((t) => t.id === tool)?.permissions.find((p) => p.id === id)?.label ?? id;
 
   const remove = async (tpl: Template): Promise<void> => {
     const active = data.sessions.filter(
@@ -48,7 +46,7 @@ export function TemplatesPanel({ api, data, refresh }: PanelProps) {
     <section>
       <SectionHeader
         title="Permission templates"
-        description="A template defines what a session key may do: which operations, on which resources, and for how long. Session keys snapshot their template when issued — editing a template does not widen existing keys."
+        description="A template defines what a session key may do: which operations, on which resources, and for how long. It can span several tools (e.g. open pull requests on GitHub and update items on monday.com); the key then uses one account per tool. Session keys snapshot their template when issued — editing a template does not widen existing keys."
         action={
           <Button
             disabled={data.tools.length === 0}
@@ -74,11 +72,13 @@ export function TemplatesPanel({ api, data, refresh }: PanelProps) {
             <Card key={tpl.id} className="p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <h3 className="font-semibold">{tpl.name}</h3>
-                    <Badge tone="indigo">
-                      {data.tools.find((t) => t.id === tpl.tool)?.name ?? tpl.tool}
-                    </Badge>
+                    {tpl.grants.map((g) => (
+                      <Badge key={g.tool} tone="indigo">
+                        {toolName(data.tools, g.tool)}
+                      </Badge>
+                    ))}
                   </div>
                   {tpl.description && (
                     <p className="mt-0.5 text-sm text-slate-500">{tpl.description}</p>
@@ -100,33 +100,8 @@ export function TemplatesPanel({ api, data, refresh }: PanelProps) {
                 </div>
               </div>
 
-              <div className="mt-4 grid gap-4 text-sm md:grid-cols-3">
-                <div className="md:col-span-2">
-                  <p className="mb-1.5 text-xs font-medium tracking-wide text-slate-500 uppercase">
-                    Permissions
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {tpl.permissions.map((p) => (
-                      <Badge key={p} tone={p.endsWith(':read') ? 'slate' : 'amber'}>
-                        {permissionLabel(tpl.tool, p)}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="mb-1.5 text-xs font-medium tracking-wide text-slate-500 uppercase">
-                    Resources
-                  </p>
-                  {tpl.resources.length === 0 ? (
-                    <span className="text-amber-700">Unrestricted</span>
-                  ) : (
-                    <ul className="font-mono text-xs text-slate-700">
-                      {tpl.resources.map((r) => (
-                        <li key={r}>{r}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+              <div className="mt-4">
+                <GrantList grants={tpl.grants} tools={data.tools} />
               </div>
               <p className="mt-4 text-xs text-slate-500">
                 TTL: default {formatDuration(tpl.defaultTtlSeconds)}, max{' '}
@@ -166,31 +141,22 @@ function TemplateModal({
   onSaved: () => Promise<void>;
 } & Pick<PanelProps, 'api' | 'data'>) {
   const existing = editing?.mode === 'edit' ? editing.template : null;
-  const [form, setForm] = useState<TemplateInput>(() => ({
-    tool: existing?.tool ?? data.tools[0]?.id ?? '',
+  const [form, setForm] = useState<Omit<TemplateInput, 'grants'>>(() => ({
     name: existing?.name ?? '',
     description: existing?.description ?? '',
-    permissions: existing?.permissions ?? [],
-    resources: existing?.resources ?? [],
     defaultTtlSeconds: existing?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS,
     maxTtlSeconds: existing?.maxTtlSeconds ?? DEFAULT_MAX_TTL_SECONDS,
   }));
-  const [resourcesText, setResourcesText] = useState(form.resources.join('\n'));
+  const [drafts, setDrafts] = useState(() => initialDrafts(data.tools, existing));
+  // One tool is edited at a time; the others show a one-line summary.
+  const [expanded, setExpanded] = useState<string | null>(() =>
+    existing ? null : (data.tools[0]?.id ?? null),
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const tool = data.tools.find((t) => t.id === form.tool);
 
-  const set = <K extends keyof TemplateInput>(key: K, value: TemplateInput[K]): void => {
+  const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]): void => {
     setForm((f) => ({ ...f, [key]: value }));
-  };
-
-  const togglePermission = (id: string): void => {
-    set(
-      'permissions',
-      form.permissions.includes(id)
-        ? form.permissions.filter((p) => p !== id)
-        : [...form.permissions, id],
-    );
   };
 
   const submit = async (): Promise<void> => {
@@ -198,10 +164,15 @@ function TemplateModal({
     setError(null);
     const body: TemplateInput = {
       ...form,
-      resources: resourcesText
-        .split(/[\n,]/)
-        .map((r) => r.trim())
-        .filter(Boolean),
+      grants: data.tools.flatMap((t) => {
+        const d = drafts[t.id];
+        if (!d?.enabled) return [];
+        const resources = d.resourcesText
+          .split(/[\n,]/)
+          .map((r) => r.trim())
+          .filter(Boolean);
+        return [{ tool: t.id, permissions: d.permissions, resources }];
+      }),
     };
     try {
       if (existing) await api('PUT', `/templates/${existing.id}`, body);
@@ -228,33 +199,16 @@ function TemplateModal({
           void submit();
         }}
       >
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Name">
-            <Input
-              required
-              value={form.name}
-              placeholder="e.g. Read-only on my-org"
-              onChange={(e) => {
-                set('name', e.target.value);
-              }}
-            />
-          </Field>
-          <Field label="Tool">
-            <Select
-              value={form.tool}
-              disabled={existing !== null}
-              onChange={(e) => {
-                setForm((f) => ({ ...f, tool: e.target.value, permissions: [] }));
-              }}
-            >
-              {data.tools.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
+        <Field label="Name">
+          <Input
+            required
+            value={form.name}
+            placeholder="e.g. Release agent"
+            onChange={(e) => {
+              set('name', e.target.value);
+            }}
+          />
+        </Field>
         <Field label="Description (optional)">
           <Input
             value={form.description}
@@ -264,46 +218,28 @@ function TemplateModal({
           />
         </Field>
 
-        <fieldset>
-          <legend className="text-sm font-medium text-slate-700">Permissions</legend>
-          <div className="mt-2 grid max-h-72 gap-2 overflow-y-auto p-1 sm:grid-cols-2">
-            {tool?.permissions.map((p) => {
-              const checked = form.permissions.includes(p.id);
-              return (
-                <label
-                  key={p.id}
-                  className={`flex cursor-pointer gap-3 rounded-lg p-3 ring-1 transition ${
-                    checked ? 'bg-indigo-50 ring-indigo-300' : 'ring-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 size-4 accent-indigo-600"
-                    checked={checked}
-                    onChange={() => {
-                      togglePermission(p.id);
-                    }}
-                  />
-                  <span>
-                    <span className="block text-sm font-medium">{p.label}</span>
-                    <span className="block text-xs text-slate-500">{p.description}</span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+        <fieldset className="space-y-3">
+          <legend className="mb-2 text-sm font-medium text-slate-700">
+            Tools{' '}
+            <span className="font-normal text-slate-500">
+              (one or more; a key gets one account per tool)
+            </span>
+          </legend>
+          {data.tools.map((t) => (
+            <GrantEditor
+              key={t.id}
+              tool={t}
+              draft={drafts[t.id] ?? EMPTY_DRAFT}
+              expanded={expanded === t.id}
+              onExpand={(open) => {
+                setExpanded(open ? t.id : null);
+              }}
+              onChange={(draft) => {
+                setDrafts((d) => ({ ...d, [t.id]: draft }));
+              }}
+            />
+          ))}
         </fieldset>
-
-        <Field label="Resource allowlist" hint={tool?.resourceHelp}>
-          <Textarea
-            rows={3}
-            value={resourcesText}
-            placeholder={'my-org/*\nsomeone/some-repo'}
-            onChange={(e) => {
-              setResourcesText(e.target.value);
-            }}
-          />
-        </Field>
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Default TTL">
@@ -338,5 +274,161 @@ function TemplateModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/** Editor state of one tool's grant; disabled tools are left out of the template. */
+interface GrantDraft {
+  enabled: boolean;
+  permissions: string[];
+  resourcesText: string;
+}
+
+const EMPTY_DRAFT: GrantDraft = { enabled: false, permissions: [], resourcesText: '' };
+
+/** One draft per tool, from the template being edited (a new template starts on the first tool). */
+function initialDrafts(tools: Tool[], existing: Template | null): Record<string, GrantDraft> {
+  return Object.fromEntries(
+    tools.map((t, i) => {
+      const grant = existing?.grants.find((g) => g.tool === t.id);
+      const draft: GrantDraft = grant
+        ? {
+            enabled: true,
+            permissions: grant.permissions,
+            resourcesText: grant.resources.join('\n'),
+          }
+        : { ...EMPTY_DRAFT, enabled: !existing && i === 0 };
+      return [t.id, draft];
+    }),
+  );
+}
+
+/** "Pull requests (write), Issues (read) · octo-org/*" */
+function grantSummary(tool: Tool, draft: GrantDraft): string {
+  const permissions = tool.permissions
+    .filter((p) => draft.permissions.includes(p.id))
+    .map((p) => p.label)
+    .join(', ');
+  const resources = draft.resourcesText
+    .split(/[\n,]/)
+    .map((r) => r.trim())
+    .filter(Boolean);
+  return `${permissions || 'No permissions selected'} · ${
+    resources.length ? resources.join(', ') : 'all resources'
+  }`;
+}
+
+/** One tool of the template: a compact row, expanded to pick permissions and resources. */
+function GrantEditor({
+  tool,
+  draft,
+  expanded,
+  onExpand,
+  onChange,
+}: {
+  tool: Tool;
+  draft: GrantDraft;
+  expanded: boolean;
+  onExpand: (open: boolean) => void;
+  onChange: (draft: GrantDraft) => void;
+}) {
+  const open = draft.enabled && expanded;
+  const incomplete = draft.enabled && draft.permissions.length === 0;
+
+  return (
+    <div className={`rounded-lg ring-1 ${draft.enabled ? 'ring-indigo-300' : 'ring-slate-200'}`}>
+      <div className="flex items-center gap-3 px-3 py-2">
+        <label className="flex shrink-0 cursor-pointer items-center gap-2.5">
+          <input
+            type="checkbox"
+            className="size-4 accent-indigo-600"
+            checked={draft.enabled}
+            onChange={(e) => {
+              onChange({ ...draft, enabled: e.target.checked });
+              onExpand(e.target.checked);
+            }}
+          />
+          <span className="text-sm font-medium">{tool.name}</span>
+        </label>
+        {draft.enabled && !open && (
+          <span
+            className={`min-w-0 flex-1 truncate text-xs ${incomplete ? 'text-amber-700' : 'text-slate-500'}`}
+            title={grantSummary(tool, draft)}
+          >
+            {grantSummary(tool, draft)}
+          </span>
+        )}
+        {draft.enabled && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="ml-auto shrink-0"
+            onClick={() => {
+              onExpand(!open);
+            }}
+          >
+            {open ? 'Done' : 'Edit'}
+          </Button>
+        )}
+      </div>
+      {open && <GrantFields tool={tool} draft={draft} onChange={onChange} />}
+    </div>
+  );
+}
+
+function GrantFields({
+  tool,
+  draft,
+  onChange,
+}: {
+  tool: Tool;
+  draft: GrantDraft;
+  onChange: (draft: GrantDraft) => void;
+}) {
+  const togglePermission = (id: string): void => {
+    onChange({
+      ...draft,
+      permissions: draft.permissions.includes(id)
+        ? draft.permissions.filter((p) => p !== id)
+        : [...draft.permissions, id],
+    });
+  };
+
+  return (
+    <div className="space-y-3 border-t border-slate-100 px-3 pt-3 pb-3">
+      <div className="grid gap-1.5 sm:grid-cols-2">
+        {tool.permissions.map((p) => {
+          const checked = draft.permissions.includes(p.id);
+          return (
+            <label
+              key={p.id}
+              title={p.description}
+              className={`flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm ring-1 transition ${
+                checked ? 'bg-indigo-50 ring-indigo-300' : 'ring-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <input
+                type="checkbox"
+                className="size-4 shrink-0 accent-indigo-600"
+                checked={checked}
+                onChange={() => {
+                  togglePermission(p.id);
+                }}
+              />
+              <span className="truncate">{p.label}</span>
+            </label>
+          );
+        })}
+      </div>
+      <Field label="Resource allowlist" hint={tool.resourceHelp}>
+        <Textarea
+          rows={2}
+          value={draft.resourcesText}
+          onChange={(e) => {
+            onChange({ ...draft, resourcesText: e.target.value });
+          }}
+        />
+      </Field>
+    </div>
   );
 }

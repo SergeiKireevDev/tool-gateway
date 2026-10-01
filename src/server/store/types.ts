@@ -15,17 +15,26 @@ export interface Account {
   ownerMemberId?: string | null;
 }
 
-export interface Template {
-  id: string;
+/** What a template grants on one tool. */
+export interface ToolGrant {
   tool: string;
-  name: string;
-  description: string;
   permissions: string[];
   /**
    * Resource allowlist in the tool's own terms (`octo-org/*` repositories for GitHub, board IDs
-   * for monday.com). Empty = unrestricted.
+   * for monday.com, channel IDs for Slack). Empty = unrestricted.
    */
   resources: string[];
+}
+
+/**
+ * A template grants access to one or more tools (at most one grant per tool), so a single session
+ * key can e.g. open pull requests on GitHub and update items on monday.com.
+ */
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  grants: ToolGrant[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
   createdAt: string;
@@ -53,6 +62,11 @@ export interface Member {
   lastUsedAt: string | null;
 }
 
+/** A template grant bound to the account a session key uses for that tool. */
+export interface SessionGrant extends ToolGrant {
+  accountId: string;
+}
+
 /** Who issued a session key. */
 export type SessionIssuer =
   { kind: 'admin' } | { kind: 'member'; memberId: string; memberName: string };
@@ -64,13 +78,10 @@ export interface Session {
   /** Short non-secret prefix to help identify a key in the UI. */
   keyHint: string;
   label: string;
-  tool: string;
-  accountId: string;
   templateId: string;
   templateName: string;
   /** Snapshot of the template at issuance: later template edits do not widen live sessions. */
-  permissions: string[];
-  resources: string[];
+  grants: SessionGrant[];
   createdAt: string;
   expiresAt: string;
   revokedAt: string | null;
@@ -95,8 +106,11 @@ export interface WebSession {
   expiresAt: string;
 }
 
+/** Bumped whenever the persisted shape changes; see `migrate.ts`. */
+export const STORE_VERSION = 2;
+
 export interface StoreState {
-  version: 1;
+  version: typeof STORE_VERSION;
   adminTokenHash: string | null;
   webSessions: WebSession[];
   accounts: Account[];
@@ -113,7 +127,7 @@ export interface ToolSettings {
 
 export function emptyState(): StoreState {
   return {
-    version: 1,
+    version: STORE_VERSION,
     adminTokenHash: null,
     webSessions: [],
     accounts: [],

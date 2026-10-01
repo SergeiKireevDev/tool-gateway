@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { formatDateTime } from '@/lib/format';
+import { sessionUsesAccount } from '@/lib/grants';
 import type { Account, Tool } from '@/lib/types';
 import type { PanelProps, Viewer } from './AdminApp';
 import { DeviceSignIn } from './DeviceSignIn';
@@ -178,7 +179,7 @@ function AccountCard({
   const can = accountActions(viewer, acc);
   const toolName = data.tools.find((t) => t.id === acc.tool)?.name ?? acc.tool;
   const sessions = data.sessions.filter(
-    (s) => s.accountId === acc.id && s.status === 'active',
+    (s) => sessionUsesAccount(s, acc.id) && s.status === 'active',
   ).length;
 
   return (
