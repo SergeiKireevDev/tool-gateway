@@ -7,7 +7,7 @@ import type { Gateway } from '../gateway.js';
 import { HTTP } from '../httpStatus.js';
 import { parseSafePath } from '../tools/pathMatch.js';
 import { BYTES_PER_MIB } from '../units.js';
-import type { AuthzAllowed, ToolRequest } from '../tools/types.js';
+import type { AuthzAllowed, ToolProvider, ToolRequest } from '../tools/types.js';
 import { proxyToken } from './auth.js';
 
 /** Response headers never forwarded to the client. */
@@ -102,25 +102,14 @@ async function forward(
   }
 
   gateway.recordUsage(session.id);
-  const body = decision.body ?? toolRequest.body;
-  const controller = new AbortController();
-  res.on('close', () => {
-    controller.abort();
-  });
-
-  let upstream: globalThis.Response;
-  try {
-    upstream = await fetchImpl(`${tool.upstreamBaseUrl}${rawPath}${decision.search ?? search}`, {
-      method: decision.method ?? req.method,
-      headers: tool.upstreamHeaders(account.secret, toolRequest.headers),
-      body,
-      redirect: 'manual',
-      signal: controller.signal,
-    });
-  } catch (err) {
-    log('allowed', HTTP.BAD_GATEWAY, `Upstream error: ${(err as Error).message}`);
-    throw badGateway(`Upstream request failed: ${(err as Error).message}`);
-  }
+  const upstream = await fetchUpstream(
+    fetchImpl,
+    res,
+    { tool, secret: account.secret, rawPath, request: toolRequest, decision },
+    (message) => {
+      log('allowed', HTTP.BAD_GATEWAY, `Upstream error: ${message}`);
+    },
+  );
 
   log(
     'allowed',
@@ -132,6 +121,45 @@ async function forward(
       tool.rewriteResponseHeader?.(name, value, `${config.publicUrl}${prefix}`) ?? value,
     observe: decision.observeResponse,
   });
+}
+
+interface AuthorizedUpstreamRequest {
+  tool: ToolProvider;
+  secret: string;
+  rawPath: string;
+  request: ToolRequest;
+  decision: AuthzAllowed;
+}
+
+/** Sends the authorized request with canonical overrides, cancelling it if the client closes. */
+async function fetchUpstream(
+  fetchImpl: typeof fetch,
+  res: Response,
+  { tool, secret, rawPath, request, decision }: AuthorizedUpstreamRequest,
+  logError: (message: string) => void,
+): Promise<globalThis.Response> {
+  const body = decision.body ?? request.body;
+  const controller = new AbortController();
+  res.on('close', () => {
+    controller.abort();
+  });
+
+  try {
+    return await fetchImpl(
+      `${tool.upstreamBaseUrl}${rawPath}${decision.search ?? request.search}`,
+      {
+        method: decision.method ?? request.method,
+        headers: tool.upstreamHeaders(secret, request.headers),
+        body,
+        redirect: 'manual',
+        signal: controller.signal,
+      },
+    );
+  } catch (err) {
+    const message = (err as Error).message;
+    logError(message);
+    throw badGateway(`Upstream request failed: ${message}`);
+  }
 }
 
 function toolRequestOf(req: Request, segments: string[], search: string): ToolRequest {
