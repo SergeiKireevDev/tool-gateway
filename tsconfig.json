@@ -16,6 +16,13 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src/server/**/*.ts", "test/**/*.ts", "vitest.config.ts", "eslint.config.js"],
+  "include": [
+    "src/server/**/*.ts",
+    "src/guest/**/*.ts",
+    "src/vmd/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "eslint.config.js"
+  ],
   "exclude": ["src/ui/**"]
 }

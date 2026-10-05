@@ -4,7 +4,7 @@
   "description": "Local gateway that brokers scoped, short-lived access to third-party tools (GitHub, monday.com, Slack)",
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/server/index.ts",
-    "build": "tsc -p tsconfig.build.json && next build web",
+    "build": "tsc -p tsconfig.build.json && next build web && npm run build:guest",
     "start": "NODE_ENV=production node dist/server/index.js",
     "admin:reset-token": "tsx src/server/cli/resetAdminToken.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit",
@@ -13,7 +13,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test",
+    "build:guest": "node scripts/build-guest.mjs"
   },
   "author": "",
   "license": "UNLICENSED",
@@ -38,6 +39,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/supertest": "^7.2.1",
+    "esbuild": "^0.28.2",
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",

@@ -5,6 +5,6 @@
     "outDir": "dist",
     "sourceMap": true
   },
-  "include": ["src/server/**/*.ts"],
+  "include": ["src/server/**/*.ts", "src/vmd/**/*.ts"],
   "exclude": ["src/ui/**", "test/**"]
 }
