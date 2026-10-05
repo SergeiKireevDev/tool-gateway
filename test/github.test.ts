@@ -10,6 +10,7 @@ const authz = (method: string, segments: string[], grant: Grant): Promise<AuthzD
     gh.authorize({ method, segments, search: '', headers: new Headers(), body: undefined }, grant, {
       sessionId: 's',
       secret: 'unused',
+      tokensRemaining: null,
     }),
   );
 

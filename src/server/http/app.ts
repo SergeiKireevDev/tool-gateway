@@ -218,10 +218,14 @@ function mountSessionKeyRoutes(
         id: session.id,
         template: session.templateName,
         expiresAt: session.expiresAt,
+        tokenBudget: session.tokenBudget ?? null,
+        tokensRemaining: gateway.tokensRemaining(session),
         grants: session.grants.map(({ tool, permissions, resources }) => {
-          const account = gateway.resolveGrant(session, tool)?.account;
+          const resolved = gateway.resolveGrant(session, tool);
+          const account = resolved?.account;
           return {
             tool,
+            kind: resolved?.tool.kind ?? 'tool',
             account: account && { label: account.label, identity: account.identity },
             permissions,
             resources,

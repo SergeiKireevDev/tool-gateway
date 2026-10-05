@@ -25,6 +25,27 @@ export interface ToolRequestContext {
   sessionId: string;
   /** Only for lookups the decision depends on (e.g. which board an item is on). Never log it. */
   secret: string;
+  /** LLM tokens the session may still use, or null when it has no token budget. */
+  tokensRemaining: number | null;
+}
+
+/** Tokens one LLM call used, normalized across providers (cached input is not counted twice). */
+export interface TokenUsage {
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/**
+ * Reads an LLM response as it streams through the proxy (SSE or JSON) and reports the tokens it
+ * used once it ends. Sees the bytes but never changes them.
+ */
+export interface UsageMeter {
+  write(chunk: Uint8Array): void;
+  /** Usage seen so far (also after an aborted stream), or null when the response had none. */
+  end(): TokenUsage | null;
 }
 
 export interface AuthzAllowed {
@@ -44,6 +65,8 @@ export interface AuthzAllowed {
   search?: string;
   /** Called with the parsed JSON response of an allowed request (e.g. to remember cursors). */
   observeResponse?: (json: unknown) => void;
+  /** LLM calls: meters the (streamed) response, given its content type, for token budgets. */
+  meter?: (contentType: string) => UsageMeter;
 }
 
 export type AuthzDecision = AuthzAllowed | { allowed: false; reason: string };
@@ -85,6 +108,13 @@ export interface ToolExample {
 export interface ToolProvider {
   id: string;
   name: string;
+  /** `llm`: a model API used by agents themselves, not offered to them as a tool. */
+  kind?: 'tool' | 'llm';
+  /**
+   * Request headers that may carry the session key besides `Authorization` (e.g. `x-api-key`),
+   * so clients that send their API key their own way can use a session key unchanged.
+   */
+  sessionKeyHeaders?: readonly string[];
   /** Shown in the admin UI next to the credential field. */
   credentialHelp: string;
   /** Placeholder for the credential field, e.g. the token's prefix. */

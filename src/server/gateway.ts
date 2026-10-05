@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ActivityLog } from './activity.js';
+import type { LlmUsageLog } from './llmUsage.js';
 import {
   badGateway,
   badRequest,
@@ -47,6 +48,7 @@ const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_CLIENT_ID_LENGTH = 100;
 const MAX_SCOPES_LENGTH = 300;
 const MAX_ACCOUNTS_PER_SESSION = 20;
+const MAX_TOKEN_BUDGET = 1e10;
 
 /** Non-secret key prefix shown in the UI to tell keys apart. */
 const KEY_HINT_CHARS = 6;
@@ -108,6 +110,8 @@ export const sessionRequestSchema = z.object({
   accountId: z.string().min(1).optional(),
   ttlSeconds: ttl.optional(),
   label: z.string().trim().max(MAX_LABEL_LENGTH).optional(),
+  /** Most LLM tokens (input + output + cache) the key may use; absent = no budget. */
+  tokenBudget: z.number().int().min(1).max(MAX_TOKEN_BUDGET).optional(),
 });
 
 const idList = z.array(z.string().min(1)).min(1);
@@ -210,6 +214,7 @@ export interface MemberView {
 export interface ToolCatalogEntry {
   id: string;
   name: string;
+  kind: 'tool' | 'llm';
   credentialHelp: string;
   credentialPlaceholder: string;
   resourceHelp: string;
@@ -246,6 +251,7 @@ export class Gateway {
     private readonly crypto: CryptoBox,
     readonly tools: ToolRegistry,
     readonly activity: ActivityLog,
+    readonly llmUsage: LlmUsageLog,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
@@ -398,6 +404,7 @@ export class Gateway {
     return this.tools.list().map((t) => ({
       id: t.id,
       name: t.name,
+      kind: t.kind ?? 'tool',
       credentialHelp: t.credentialHelp,
       credentialPlaceholder: t.credentialPlaceholder,
       resourceHelp: t.resourceHelp,
@@ -1096,6 +1103,7 @@ export class Gateway {
       lastUsedAt: null,
       requestCount: 0,
       issuedBy,
+      tokenBudget: req.tokenBudget ?? null,
     };
     await this.store.update((s) => {
       // Re-checked inside the mutation: the request may have waited (slow body, queued run)
@@ -1159,6 +1167,13 @@ export class Gateway {
     const tool = this.tools.get(grant.tool);
     if (!tool) throw unauthorized('Tool is no longer available');
     return { grant, account, tool };
+  }
+
+  /** LLM tokens the session may still use, or null when it has no token budget. */
+  tokensRemaining(session: Session): number | null {
+    const budget = session.tokenBudget ?? null;
+    if (budget === null) return null;
+    return budget - this.llmUsage.totalsFor([session.id]).total;
   }
 
   recordUsage(sessionId: string): void {

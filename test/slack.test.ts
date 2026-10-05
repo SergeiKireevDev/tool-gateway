@@ -26,7 +26,7 @@ const authz = (grant: Grant, call: Call): Promise<AuthzDecision> =>
         body: call.body === undefined ? undefined : Buffer.from(call.body),
       },
       grant,
-      { sessionId: 's', secret: 'unused' },
+      { sessionId: 's', secret: 'unused', tokensRemaining: null },
     ),
   );
 

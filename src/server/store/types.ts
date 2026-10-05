@@ -97,6 +97,8 @@ export interface Session {
   requestCount: number;
   /** Absent on sessions created before members existed: those were issued by the admin. */
   issuedBy?: SessionIssuer;
+  /** Most LLM tokens the key may use (see `llmUsage.ts`); null/absent = no budget. */
+  tokenBudget?: number | null;
 }
 
 /** Browser session after signing in with Google (cookie-based), for the admin or a member. */
