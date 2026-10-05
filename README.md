@@ -260,20 +260,23 @@ Limitations for now:
 
 - Anyone who can read both the key file and the store as your OS user can decrypt them. Moving the
   master key to the OS keychain is a natural next step.
-- The activity log is kept in memory.
+- The SQLite database (`./data/gateway.sqlite`: activity, agent runs, transcripts) is not encrypted
+  at rest. It never holds credentials or keys (they are redacted before writing), and it relies on
+  file permissions and host disk encryption.
 
 ## Configuration
 
-| Variable               | Default                               |
-| ---------------------- | ------------------------------------- |
-| `GATEWAY_HOST`         | `127.0.0.1`                           |
-| `GATEWAY_PORT`         | `7420`                                |
-| `GATEWAY_DATA_DIR`     | `./data`                              |
-| `GATEWAY_KEY_FILE`     | `~/.local-gateway/master.key`         |
-| `GATEWAY_PUBLIC_URL`   | `http://<host>:<port>`                |
-| `GOOGLE_CLIENT_ID`     | unset (Google sign-in off)            |
-| `GOOGLE_CLIENT_SECRET` | unset                                 |
-| `GATEWAY_ADMIN_EMAILS` | empty (nobody can use Google sign-in) |
+| Variable               | Default                                                                            |
+| ---------------------- | ---------------------------------------------------------------------------------- |
+| `GATEWAY_HOST`         | `127.0.0.1`                                                                        |
+| `GATEWAY_PORT`         | `7420`                                                                             |
+| `GATEWAY_DATA_DIR`     | `./data`                                                                           |
+| `GATEWAY_KEY_FILE`     | `~/.local-gateway/master.key`                                                      |
+| `GATEWAY_PUBLIC_URL`   | `http://<host>:<port>`                                                             |
+| `GATEWAY_VM_HOST`      | unset (agent VMs off). The VM bridge IP; serves only `/proxy/*` and `/api/session` |
+| `GOOGLE_CLIENT_ID`     | unset (Google sign-in off)                                                         |
+| `GOOGLE_CLIENT_SECRET` | unset                                                                              |
+| `GATEWAY_ADMIN_EMAILS` | empty (nobody can use Google sign-in)                                              |
 
 Variables are read from `.env` in the working directory (see `.env.example`), then overridden by
 the real environment.

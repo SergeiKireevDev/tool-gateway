@@ -2,6 +2,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ActivityLog } from '../src/server/activity.js';
+import { Database, IN_MEMORY } from '../src/server/db/database.js';
 import type { GatewayConfig } from '../src/server/config.js';
 import { Gateway } from '../src/server/gateway.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
@@ -173,6 +174,8 @@ export async function createHarness(): Promise<Harness> {
     host: '127.0.0.1',
     port: 0,
     storeFile: path.join(dir, 'data', 'store.enc'),
+    dbFile: IN_MEMORY,
+    vmHost: null,
     keyFile: path.join(dir, 'key', 'master.key'),
     publicUrl: 'http://gateway.test',
     google: null,
@@ -190,7 +193,7 @@ export async function createHarness(): Promise<Harness> {
       createMondayProvider(fetch),
       createSlackProvider(fetch),
     ]),
-    new ActivityLog(),
+    new ActivityLog(Database.open(IN_MEMORY)),
     () => clock.now,
   );
   return { gateway, config, clock, fetch, upstreamCalls };

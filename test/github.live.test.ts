@@ -7,6 +7,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { ActivityLog } from '../src/server/activity.js';
+import { Database, IN_MEMORY } from '../src/server/db/database.js';
 import { Gateway } from '../src/server/gateway.js';
 import { createApp } from '../src/server/http/app.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
@@ -26,7 +27,7 @@ async function liveApp() {
     store,
     crypto,
     new ToolRegistry([createGitHubProvider()]),
-    new ActivityLog(),
+    new ActivityLog(Database.open(IN_MEMORY)),
   );
   const admin = await gateway.rotateAdminToken();
   return { app: createApp(gateway, config), admin };
