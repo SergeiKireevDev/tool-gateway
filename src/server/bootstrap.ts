@@ -2,6 +2,7 @@ import { ActivityLog } from './activity.js';
 import { type GatewayConfig, vmPublicUrl } from './config.js';
 import { Database } from './db/database.js';
 import { Gateway } from './gateway.js';
+import { Webhooks } from './webhooks.js';
 import { Launchpad } from './launchpad/launchpad.js';
 import { LocalProcessDriver } from './launchpad/localDriver.js';
 import { RunStore } from './launchpad/runStore.js';
@@ -23,6 +24,7 @@ export interface Services {
   db: Database;
   launchpad: Launchpad | null;
   scheduler: Scheduler | null;
+  webhooks: Webhooks;
 }
 
 export async function openGateway(config: GatewayConfig): Promise<Services> {
@@ -46,7 +48,8 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
       scheduler.onRunFinished(run);
     });
   }
-  return { gateway, db, launchpad, scheduler };
+  const webhooks = new Webhooks(store, crypto, db, gateway.activity, config.publicUrl);
+  return { gateway, db, launchpad, scheduler, webhooks };
 }
 
 function openLaunchpad(

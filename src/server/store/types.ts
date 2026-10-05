@@ -121,8 +121,31 @@ export interface WebSession {
   expiresAt: string;
 }
 
+/** How a webhook checks that a delivery is genuine, on top of its hard-to-guess address. */
+export type WebhookAuth =
+  /** The address alone (a 256-bit secret in the URL). */
+  | { kind: 'url' }
+  /** `Authorization: <JWT>` signed HS256 with this secret (monday.com apps' signing secret). */
+  | { kind: 'jwt'; signingSecret: string }
+  /** `Authorization: Bearer <secret>`; only the secret's keyed hash is kept. */
+  | { kind: 'bearer'; secretHash: string };
+
+/** An inbound webhook endpoint: `POST <publicUrl>/hooks/<token>`. */
+export interface Webhook {
+  id: string;
+  name: string;
+  /** What sends it; `monday` also answers monday.com's URL challenge. */
+  source: 'monday' | 'generic';
+  /** Keyed hash of the address token; the address is shown once. */
+  tokenHash: string;
+  auth: WebhookAuth;
+  /** The member who owns it, or null for the admin. */
+  ownerMemberId: string | null;
+  createdAt: string;
+}
+
 /** Bumped whenever the persisted shape changes; see `migrate.ts`. */
-export const STORE_VERSION = 3;
+export const STORE_VERSION = 4;
 
 export interface StoreState {
   version: typeof STORE_VERSION;
@@ -134,6 +157,7 @@ export interface StoreState {
   members: Member[];
   /** Non-secret per-tool settings, e.g. `{ github: { oauthClientId: 'Iv1…' } }`. */
   toolSettings: Record<string, ToolSettings>;
+  webhooks: Webhook[];
 }
 
 export interface ToolSettings {
@@ -150,5 +174,6 @@ export function emptyState(): StoreState {
     sessions: [],
     members: [],
     toolSettings: {},
+    webhooks: [],
   };
 }

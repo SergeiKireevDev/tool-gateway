@@ -160,3 +160,37 @@ export async function pkcePair(): Promise<{ verifier: string; challenge: string 
   );
   return { verifier, challenge: sodium.to_base64(new Uint8Array(digest), B64) };
 }
+
+/**
+ * Checks an HMAC-SHA256 signature in constant time (JWT HS256, as monday.com signs its
+ * webhooks). The standard libsodium build has no HMAC-SHA256, so this uses Web Crypto's verify.
+ */
+export async function verifyHmacSha256(
+  key: string,
+  data: string,
+  signature: Uint8Array,
+): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(key),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  );
+  return globalThis.crypto.subtle.verify(
+    'HMAC',
+    cryptoKey,
+    new Uint8Array(signature),
+    encoder.encode(data),
+  );
+}
+
+/** Decodes base64url (JWT parts); null when it isn't valid. */
+export function fromBase64Url(text: string): Uint8Array | null {
+  try {
+    return sodium.from_base64(text, B64);
+  } catch {
+    return null;
+  }
+}

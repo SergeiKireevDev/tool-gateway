@@ -18,6 +18,8 @@ import { memberRoutes } from './memberRoutes.js';
 import { proxyHandler } from './proxy.js';
 import type { Launchpad } from '../launchpad/launchpad.js';
 import type { Scheduler } from '../launchpad/scheduler.js';
+import type { Webhooks } from '../webhooks.js';
+import { webhookReceiver, webhookRoutes } from './webhookRoutes.js';
 import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
 
 export interface AppOptions {
@@ -28,6 +30,8 @@ export interface AppOptions {
   /** The agent launchpad; its routes are off when absent. */
   launchpad?: Launchpad | null;
   scheduler?: Scheduler | null;
+  /** Inbound webhooks; their routes are off when absent. */
+  webhooks?: Webhooks | null;
 }
 
 export function createApp(
@@ -41,6 +45,7 @@ export function createApp(
 
   mountSessionKeyRoutes(app, gateway, config, options.fetch);
   if (options.launchpad) app.use('/runner', runnerRoutes(options.launchpad));
+  if (options.webhooks) app.use('/hooks', webhookReceiver(options.webhooks));
 
   // ------------------------------------------------------------------ admin API
   const google =
@@ -195,10 +200,20 @@ export function createApp(
     );
   }
 
+  if (options.webhooks)
+    admin.use(
+      '/webhooks',
+      webhookRoutes(options.webhooks, () => ADMIN),
+    );
   app.use('/api/admin', admin);
   app.use(
     '/api/me',
-    memberPortalRoutes(gateway, options.launchpad ?? null, options.scheduler ?? null),
+    memberPortalRoutes(
+      gateway,
+      options.launchpad ?? null,
+      options.scheduler ?? null,
+      options.webhooks ?? null,
+    ),
   );
   app.use('/api', memberRoutes(gateway));
   app.use('/api', (_req, _res, next) => {
