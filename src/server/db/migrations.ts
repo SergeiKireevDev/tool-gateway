@@ -93,4 +93,33 @@ export const MIGRATIONS: readonly string[] = [
      launch_enabled INTEGER NOT NULL,
      max_concurrent INTEGER
    );`,
+
+  // 4: recurring agents
+  `CREATE TABLE schedules (
+     id TEXT PRIMARY KEY,
+     member_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     name TEXT NOT NULL,
+     prompt TEXT NOT NULL,
+     harness TEXT NOT NULL,
+     model TEXT,
+     template_id TEXT NOT NULL,
+     account_ids TEXT NOT NULL,
+     preset TEXT NOT NULL,
+     minute INTEGER NOT NULL,
+     hour INTEGER NOT NULL,
+     weekday INTEGER NOT NULL,
+     day_of_month INTEGER NOT NULL,
+     timezone TEXT NOT NULL,
+     key_generation INTEGER NOT NULL,
+     enabled INTEGER NOT NULL,
+     stopped_reason TEXT,
+     memory TEXT,
+     next_run_at TEXT,
+     last_run_id TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX schedules_member ON schedules (member_id);
+   CREATE INDEX schedules_due ON schedules (enabled, next_run_at);`,
 ];

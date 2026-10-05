@@ -3,6 +3,7 @@ import { createApp, createVmApp } from '../src/server/http/app.js';
 import { Launchpad } from '../src/server/launchpad/launchpad.js';
 import type { RunnerConfig } from '../src/server/launchpad/protocol.js';
 import { RunStore } from '../src/server/launchpad/runStore.js';
+import { Scheduler } from '../src/server/launchpad/scheduler.js';
 import type { VmDriver, VmInfo, VmSpec } from '../src/server/launchpad/vmDriver.js';
 import { createHarness, type Harness } from './helpers.js';
 
@@ -48,15 +49,18 @@ export class FakeVmDriver implements VmDriver {
 
 export interface LaunchHarness extends Harness {
   launchpad: Launchpad;
+  scheduler: Scheduler;
   driver: FakeVmDriver;
   app: ReturnType<typeof createApp>;
   vmApp: ReturnType<typeof createVmApp>;
   adminToken: string;
   ids: { github: string; anthropic: string; template: string; noLlmTemplate: string };
+  /** A fresh portal cookie for a member (web sessions last 12 hours of the test clock). */
+  cookieFor(name: string): Promise<string>;
   /** Creates a member with a Google email and returns it with a portal cookie. */
   member(name: string, templateIds?: string[]): Promise<{ id: string; cookie: string }>;
-  portal(cookie: string, method: 'get' | 'post', path: string): request.Test;
-  admin(method: 'get' | 'post' | 'put', path: string): request.Test;
+  portal(cookie: string, method: 'get' | 'post' | 'patch' | 'delete', path: string): request.Test;
+  admin(method: 'get' | 'post' | 'put' | 'patch', path: string): request.Test;
   runner(token: string, method: 'post' | 'put', path: string): request.Test;
 }
 
@@ -71,10 +75,14 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     vmGatewayUrl: 'http://172.30.0.1:7420',
     now: () => h.clock.now,
   });
-  const app = createApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
+  const scheduler = new Scheduler(h.db, h.gateway, launchpad, () => h.clock.now);
+  launchpad.onFinished((run) => {
+    scheduler.onRunFinished(run);
+  });
+  const app = createApp(h.gateway, h.config, { fetch: h.fetch, launchpad, scheduler });
   const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
   const adminToken = await h.gateway.rotateAdminToken();
-  const admin = (method: 'get' | 'post' | 'put', path: string) =>
+  const admin = (method: 'get' | 'post' | 'put' | 'patch', path: string) =>
     request(app)[method](`/api/admin${path}`).set('authorization', `Bearer ${adminToken}`);
 
   const github = await admin('post', '/accounts')
@@ -112,12 +120,19 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
   return {
     ...h,
     launchpad,
+    scheduler,
     driver,
     app,
     vmApp,
     adminToken,
     ids,
     admin,
+    async cookieFor(name) {
+      const identity = h.gateway.identify(`${name}@example.com`);
+      if (identity?.role !== 'member') throw new Error('member sign-in failed');
+      const { token } = await h.gateway.createWebSession(identity);
+      return `gw_session=${token}`;
+    },
     async member(name, templateIds = [ids.template, ids.noLlmTemplate]) {
       const email = `${name}@example.com`;
       const res = await admin('post', '/members')

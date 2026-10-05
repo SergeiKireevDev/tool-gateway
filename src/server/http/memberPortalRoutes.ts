@@ -4,6 +4,7 @@ import type { Actor, Gateway } from '../gateway.js';
 import type { Member } from '../store/types.js';
 import { cookieIdentity, CSRF_HEADER } from './adminAuth.js';
 import type { Launchpad } from '../launchpad/launchpad.js';
+import type { Scheduler } from '../launchpad/scheduler.js';
 import { memberLaunchRoutes } from '../launchpad/routes.js';
 import { created, h, param } from './handlers.js';
 
@@ -14,7 +15,11 @@ const actorOf = (res: Response): Actor => ({ kind: 'member', member: memberOf(re
  * The member portal API, for members signed in with Google (session cookie). Paths mirror the
  * admin API so the UI can reuse its screens; every operation is scoped to the signed-in member.
  */
-export function memberPortalRoutes(gateway: Gateway, launchpad: Launchpad | null): Router {
+export function memberPortalRoutes(
+  gateway: Gateway,
+  launchpad: Launchpad | null,
+  scheduler: Scheduler | null,
+): Router {
   const router = express.Router();
   router.use((req, res, next) => {
     const identity = cookieIdentity(gateway, req);
@@ -82,7 +87,7 @@ export function memberPortalRoutes(gateway: Gateway, launchpad: Launchpad | null
     }),
   );
 
-  if (launchpad) router.use('/launchpad', memberLaunchRoutes(launchpad, gateway));
+  if (launchpad) router.use('/launchpad', memberLaunchRoutes(launchpad, gateway, scheduler));
 
   // Session keys issued by this member.
   router.get(
