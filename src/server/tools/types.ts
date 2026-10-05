@@ -96,6 +96,28 @@ export interface DeviceFlow {
   poll(clientId: string, deviceCode: string): Promise<DevicePollResult>;
 }
 
+/** Tokens from an OAuth sign-in; the access token is the account's secret. */
+export interface OAuthTokens {
+  access: string;
+  refresh: string;
+  /** How long the access token lasts, in seconds (the gateway refreshes it a little earlier). */
+  expiresInSeconds: number;
+  /** Who signed in (e.g. email, organization), shown in the UI. */
+  identity: Record<string, string>;
+}
+
+/**
+ * OAuth authorization-code sign-in with PKCE, completed by pasting the redirect URL (or code) back:
+ * the redirect goes to the user's own machine, not to the gateway.
+ */
+export interface OAuthSignIn {
+  /** Explains the steps in the UI. */
+  help: string;
+  authorizeUrl(challenge: string, state: string): string;
+  exchange(code: string, state: string, verifier: string): Promise<OAuthTokens>;
+  refresh(refreshToken: string): Promise<OAuthTokens>;
+}
+
 export interface ToolExample {
   method: 'GET' | 'POST';
   path: string;
@@ -139,6 +161,8 @@ export interface ToolProvider {
   /** Headers sent upstream: auth is injected here, everything else is an explicit allowlist. */
   upstreamHeaders(secret: string, incoming: Headers): Headers;
   deviceFlow?: DeviceFlow;
+  /** "Sign in with …" through OAuth (tokens are refreshed by the gateway). */
+  oauthSignIn?: OAuthSignIn;
   /** Optional response header rewriting (e.g. pagination links pointing back at the gateway). */
   rewriteResponseHeader?(name: string, value: string, proxyBaseUrl: string): string;
 }

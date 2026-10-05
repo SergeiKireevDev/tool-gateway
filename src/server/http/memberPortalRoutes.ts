@@ -73,6 +73,20 @@ export function memberPortalRoutes(
     h((req, res) => gateway.deleteAccount(param(req, 'id'), actorOf(res))),
   );
   router.post(
+    '/sign-ins',
+    created((req, res) => gateway.signIns.start(req.body, actorOf(res))),
+  );
+  router.post(
+    '/sign-ins/:id/complete',
+    created((req, res) => gateway.signIns.complete(param(req, 'id'), req.body, actorOf(res))),
+  );
+  router.delete(
+    '/sign-ins/:id',
+    h((req, res) => {
+      gateway.signIns.cancel(param(req, 'id'), actorOf(res));
+    }),
+  );
+  router.post(
     '/device-flows',
     created((req, res) => gateway.startDeviceFlow(req.body, actorOf(res))),
   );

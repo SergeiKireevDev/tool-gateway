@@ -164,6 +164,11 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
   return (input, init = {}) => {
     const url = input instanceof Request ? input.url : String(input);
     calls.push({ url, init });
+    if (url === 'https://platform.claude.com/v1/oauth/token') {
+      return Promise.resolve(
+        fakeClaudeToken(JSON.parse(init.body as string) as Record<string, string>),
+      );
+    }
     const headers = new Headers(init.headers);
     const key =
       headers.get('x-api-key') ?? headers.get('x-goog-api-key') ?? headers.get('authorization');
@@ -181,7 +186,26 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+/** Fake Claude OAuth token endpoint: code `good-code`, then refresh tokens r1 → r2 → … */
+function fakeClaudeToken(body: Record<string, string>): Response {
+  const n =
+    body.grant_type === 'authorization_code' && body.code === 'good-code'
+      ? 1
+      : body.grant_type === 'refresh_token' && /^r\d+$/.test(body.refresh_token ?? '')
+        ? Number(body.refresh_token?.slice(1)) + 1
+        : 0;
+  if (n === 0) return Response.json({ error: 'invalid_grant' }, { status: 400 });
+  return Response.json({
+    access_token: `sk-ant-oat01-token${String(n)}`,
+    refresh_token: `r${String(n)}`,
+    expires_in: 3600,
+    account: { email_address: 'alice@claude.example' },
+    organization: { name: 'Alice Max' },
+  });
+}
+
 const LLM_HOSTS = [
+  'https://platform.claude.com/',
   'https://api.anthropic.com/',
   'https://api.openai.com/',
   'https://generativelanguage.googleapis.com/',

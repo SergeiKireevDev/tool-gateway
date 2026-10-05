@@ -7,7 +7,7 @@ import express, {
 import { ZodError } from 'zod';
 import type { GatewayConfig } from '../config.js';
 import { forbidden, HttpError, notFound, unauthorized } from '../errors.js';
-import type { Gateway } from '../gateway.js';
+import { ADMIN, type Gateway } from '../gateway.js';
 import { HTTP, isClientError } from '../httpStatus.js';
 import { GoogleSignIn } from '../auth/google.js';
 import { adminAuthRoutes, cookieIdentity, CSRF_HEADER } from './adminAuth.js';
@@ -82,6 +82,20 @@ export function createApp(
   admin.put(
     '/tools/:tool/settings',
     h((req) => gateway.updateToolSettings(param(req, 'tool'), req.body)),
+  );
+  admin.post(
+    '/sign-ins',
+    created((req) => gateway.signIns.start(req.body, ADMIN)),
+  );
+  admin.post(
+    '/sign-ins/:id/complete',
+    created((req) => gateway.signIns.complete(param(req, 'id'), req.body, ADMIN)),
+  );
+  admin.delete(
+    '/sign-ins/:id',
+    h((req) => {
+      gateway.signIns.cancel(param(req, 'id'), ADMIN);
+    }),
   );
   admin.post(
     '/device-flows',

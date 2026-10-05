@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ActivityLog } from './activity.js';
 import type { LlmUsageLog } from './llmUsage.js';
+import { OAuthSignIns } from './oauthSignIns.js';
 import {
   badGateway,
   badRequest,
@@ -25,8 +26,14 @@ import type {
   WebSessionRole,
 } from './store/types.js';
 import type { ToolRegistry } from './tools/registry.js';
-import type { ToolProvider } from './tools/types.js';
-import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_DAY, SECONDS_PER_HOUR } from './units.js';
+import type { OAuthTokens, ToolProvider } from './tools/types.js';
+import {
+  MS_PER_DAY,
+  MS_PER_MINUTE,
+  MS_PER_SECOND,
+  SECONDS_PER_DAY,
+  SECONDS_PER_HOUR,
+} from './units.js';
 
 export const SESSION_KEY_PREFIX = 'gws_';
 export const ADMIN_TOKEN_PREFIX = 'gwa_';
@@ -49,6 +56,8 @@ const MAX_CLIENT_ID_LENGTH = 100;
 const MAX_SCOPES_LENGTH = 300;
 const MAX_ACCOUNTS_PER_SESSION = 20;
 const MAX_TOKEN_BUDGET = 1e10;
+const TOKEN_REFRESH_MARGIN_MINUTES = 5;
+const TOKEN_REFRESH_MARGIN_MS = TOKEN_REFRESH_MARGIN_MINUTES * MS_PER_MINUTE;
 
 /** Non-secret key prefix shown in the UI to tell keys apart. */
 const KEY_HINT_CHARS = 6;
@@ -171,8 +180,10 @@ export const ADMIN: Actor = { kind: 'admin' };
 
 export type AccountOwner =
   { kind: 'shared' } | { kind: 'member'; memberId: string; memberName: string };
-export type PublicAccount = Omit<Account, 'secret' | 'ownerMemberId'> & {
+export type PublicAccount = Omit<Account, 'secret' | 'ownerMemberId' | 'oauth'> & {
   secretHint: string;
+  /** Connected through an OAuth sign-in (refreshed by the gateway) rather than a pasted token. */
+  signedIn: boolean;
   owner: AccountOwner;
 };
 
@@ -215,6 +226,8 @@ export interface ToolCatalogEntry {
   id: string;
   name: string;
   kind: 'tool' | 'llm';
+  /** Present when the tool offers "Sign in with …" through OAuth. */
+  oauthSignIn: { help: string } | null;
   credentialHelp: string;
   credentialPlaceholder: string;
   resourceHelp: string;
@@ -243,6 +256,9 @@ export interface ResolvedGrant {
 export class Gateway {
   private readonly usage = new Map<string, { lastUsedAt: string; count: number }>();
   private readonly deviceFlows = new Map<string, PendingDeviceFlow>();
+  private readonly refreshing = new Map<string, Promise<Account>>();
+  /** "Sign in with …" flows (OAuth) in progress. */
+  readonly signIns: OAuthSignIns;
   /** Google accounts that sign in as admin; they can't also be member emails. */
   private adminEmails: readonly string[] = [];
 
@@ -253,7 +269,9 @@ export class Gateway {
     readonly activity: ActivityLog,
     readonly llmUsage: LlmUsageLog,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.signIns = new OAuthSignIns(this, now);
+  }
 
   setAdminEmails(emails: readonly string[]): void {
     this.adminEmails = emails.map((e) => e.toLowerCase());
@@ -405,6 +423,7 @@ export class Gateway {
       id: t.id,
       name: t.name,
       kind: t.kind ?? 'tool',
+      oauthSignIn: t.oauthSignIn ? { help: t.oauthSignIn.help } : null,
       credentialHelp: t.credentialHelp,
       credentialPlaceholder: t.credentialPlaceholder,
       resourceHelp: t.resourceHelp,
@@ -560,6 +579,7 @@ export class Gateway {
     if (data.label) patch.label = data.label;
     if (data.secret) {
       patch.secret = data.secret;
+      patch.oauth = null;
       patch.identity = await this.verify(this.tool(existing.tool), data.secret);
       patch.lastVerifiedAt = this.now().toISOString();
     }
@@ -579,6 +599,7 @@ export class Gateway {
 
   async reverifyAccount(id: string, actor: Actor = ADMIN): Promise<PublicAccount> {
     const acc = this.accountFor(actor, id, 'oversee');
+    if (acc.oauth) return this.toPublicAccount(await this.freshAccount(acc, true));
     const identity = await this.verify(this.tool(acc.tool), acc.secret);
     const updated = await this.store.update((s) => {
       const a = s.accounts.find((x) => x.id === id);
@@ -588,6 +609,81 @@ export class Gateway {
       return a;
     });
     return this.toPublicAccount(updated);
+  }
+
+  /** Connects an account from an OAuth sign-in (its access token is refreshed by the gateway). */
+  async addOAuthAccount(
+    toolId: string,
+    label: string,
+    tokens: OAuthTokens,
+    actor: Actor,
+  ): Promise<PublicAccount> {
+    const tool = this.tool(toolId);
+    const ts = this.now().toISOString();
+    const account: Account = {
+      id: randomId(),
+      tool: tool.id,
+      label,
+      secret: tokens.access,
+      oauth: { refreshToken: tokens.refresh, expiresAt: this.tokenExpiry(tokens) },
+      identity: { ...tokens.identity, connectedVia: `${tool.name} sign-in` },
+      createdAt: ts,
+      lastVerifiedAt: ts,
+      ownerMemberId: actor.kind === 'member' ? actor.member.id : null,
+    };
+    await this.store.update((s) => {
+      s.accounts.push(account);
+    });
+    this.activity.add({
+      kind: actor.kind,
+      tool: tool.id,
+      detail: `${actorName(actor)} signed in to ${tool.name} as account "${label}"`,
+    });
+    return this.toPublicAccount(account);
+  }
+
+  /**
+   * The account with a usable credential: OAuth access tokens are refreshed shortly before they
+   * expire (once at a time per account; refresh tokens are single-use).
+   */
+  async freshAccount(account: Account, force = false): Promise<Account> {
+    const { oauth } = account;
+    if (!oauth) return account;
+    if (!force && Date.parse(oauth.expiresAt) > this.now().getTime()) return account;
+    const pending = this.refreshing.get(account.id);
+    if (pending) return pending;
+    const refresh = this.refreshAccount(account, oauth.refreshToken).finally(() => {
+      this.refreshing.delete(account.id);
+    });
+    this.refreshing.set(account.id, refresh);
+    return refresh;
+  }
+
+  /** When to refresh an access token: a few minutes before it really expires. */
+  private tokenExpiry(tokens: OAuthTokens): string {
+    const lifetimeMs = tokens.expiresInSeconds * MS_PER_SECOND - TOKEN_REFRESH_MARGIN_MS;
+    return new Date(this.now().getTime() + Math.max(0, lifetimeMs)).toISOString();
+  }
+
+  private async refreshAccount(account: Account, refreshToken: string): Promise<Account> {
+    const signIn = this.tool(account.tool).oauthSignIn;
+    if (!signIn) throw unauthorized('This account can no longer be refreshed');
+    let tokens: OAuthTokens;
+    try {
+      tokens = await signIn.refresh(refreshToken);
+    } catch (err) {
+      throw badGateway(
+        `Could not refresh "${account.label}": ${(err as Error).message}. Sign in again.`,
+      );
+    }
+    return this.store.update((s) => {
+      const acc = s.accounts.find((a) => a.id === account.id);
+      if (!acc) throw unauthorized('Account behind this session was removed');
+      acc.secret = tokens.access;
+      acc.oauth = { refreshToken: tokens.refresh, expiresAt: this.tokenExpiry(tokens) };
+      acc.lastVerifiedAt = this.now().toISOString();
+      return acc;
+    });
   }
 
   /** Members remove their own accounts; the admin can remove any account. */
@@ -923,13 +1019,14 @@ export class Gateway {
   }
 
   private toPublicAccount(a: Account): PublicAccount {
-    const { secret, ownerMemberId, ...rest } = a;
+    const { secret, ownerMemberId, oauth, ...rest } = a;
     const owner = ownerMemberId
       ? this.store.read().members.find((m) => m.id === ownerMemberId)
       : undefined;
     return {
       ...rest,
-      secretHint: `…${secret.slice(-SECRET_HINT_CHARS)}`,
+      secretHint: oauth ? 'signed in' : `…${secret.slice(-SECRET_HINT_CHARS)}`,
+      signedIn: Boolean(oauth),
       owner: owner
         ? { kind: 'member', memberId: owner.id, memberName: owner.name }
         : { kind: 'shared' },

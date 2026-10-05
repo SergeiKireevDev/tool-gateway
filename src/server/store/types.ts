@@ -4,6 +4,11 @@ export interface Account {
   label: string;
   /** Third-party credential. Only ever persisted inside the encrypted store. */
   secret: string;
+  /**
+   * OAuth sign-in accounts: the refresh token and when `secret` (the access token) expires.
+   * The gateway refreshes the access token before it does.
+   */
+  oauth?: { refreshToken: string; expiresAt: string } | null;
   /** Tool-specific identity info gathered when the account was verified. */
   identity: Record<string, string>;
   createdAt: string;

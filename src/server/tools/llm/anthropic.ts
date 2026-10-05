@@ -3,6 +3,8 @@ import { matchPath } from '../pathMatch.js';
 import type {
   AuthzDecision,
   Grant,
+  OAuthSignIn,
+  OAuthTokens,
   ToolProvider,
   ToolRequest,
   ToolRequestContext,
@@ -34,6 +36,22 @@ import {
 
 const API = 'https://api.anthropic.com';
 const DEFAULT_VERSION = '2023-06-01';
+
+// "Sign in with Claude" (Claude Pro/Max subscriptions): the OAuth client Claude Code uses.
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
+const OAUTH_REDIRECT_URI = 'http://localhost:53692/callback';
+const OAUTH_SCOPES =
+  'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload';
+/** Subscription tokens are only accepted for requests that identify as Claude Code. */
+const OAUTH_TOKEN_MARK = 'sk-ant-oat';
+const OAUTH_BETAS = ['claude-code-20250219', 'oauth-2025-04-20'];
+const CLAUDE_CODE_USER_AGENT = 'claude-cli/2.1.289 (external, cli)';
+export const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+const BETA_HEADER = 'anthropic-beta';
+
+const isOAuthToken = (secret: string): boolean => secret.includes(OAUTH_TOKEN_MARK);
 /** `budget_tokens` must be at least this (and below `max_tokens`) when extended thinking is on. */
 const MIN_THINKING_BUDGET = 1024;
 
@@ -75,12 +93,34 @@ function capTokens(body: Record<string, unknown>, remaining: number | null): voi
   thinking.budget_tokens = cap - 1;
 }
 
+/**
+ * Subscription (OAuth) tokens need the Claude Code identity as the first system block. Claude
+ * Code sends it itself; other clients (pi, scripts) get it added in front of their own prompt.
+ */
+function ensureClaudeCodeIdentity(body: Record<string, unknown>): void {
+  const identity = { type: 'text', text: CLAUDE_CODE_IDENTITY };
+  const { system } = body;
+  if (typeof system === 'string') {
+    if (!system.startsWith(CLAUDE_CODE_IDENTITY))
+      body.system = [identity, { type: 'text', text: system }];
+    return;
+  }
+  const blocks = Array.isArray(system) ? (system as unknown[]) : [];
+  // Claude Code may lead with other blocks (e.g. a billing header) before its identity.
+  const hasIdentity = blocks.some(
+    (b) => isRecord(b) && typeof b.text === 'string' && b.text.startsWith(CLAUDE_CODE_IDENTITY),
+  );
+  if (hasIdentity) return;
+  body.system = [identity, ...blocks];
+}
+
 function messages(request: ToolRequest, grant: Grant, ctx: ToolRequestContext): AuthzDecision {
   requirePermission(grant, LLM_PERM.INVOKE);
   const body = jsonBody(request);
   const model = checkModel(grant, body.model);
   checkServerTools(body, grant);
   capTokens(body, ctx.tokensRemaining);
+  if (isOAuthToken(ctx.secret)) ensureClaudeCodeIdentity(body);
   const stream = body.stream === true;
   return {
     allowed: true,
@@ -162,7 +202,10 @@ export function createAnthropicProvider(fetchImpl: typeof fetch = fetch): ToolPr
 
     validateResource: validateModelPattern,
 
+    oauthSignIn: claudeSignIn(fetchImpl),
+
     async verifyCredential(secret) {
+      if (isOAuthToken(secret)) return { keyType: 'Claude subscription (pasted OAuth token)' };
       const res = await fetchImpl(`${API}/v1/models?limit=1`, {
         headers: { 'x-api-key': secret, 'anthropic-version': DEFAULT_VERSION },
       });
@@ -173,10 +216,92 @@ export function createAnthropicProvider(fetchImpl: typeof fetch = fetch): ToolPr
     authorize: (request, grant, ctx) => decide(() => authorizeRequest(request, grant, ctx)),
 
     upstreamHeaders(secret, incoming) {
-      const headers = forwardHeaders(incoming, ['anthropic-beta', 'content-type', 'accept']);
+      const headers = forwardHeaders(incoming, [BETA_HEADER, 'content-type', 'accept']);
       headers.set('anthropic-version', incoming.get('anthropic-version') ?? DEFAULT_VERSION);
-      headers.set('x-api-key', secret);
+      if (!isOAuthToken(secret)) {
+        headers.set('x-api-key', secret);
+        return headers;
+      }
+      // Subscription token: sent the way Claude Code sends it.
+      const betas = new Set([
+        ...OAUTH_BETAS,
+        ...(incoming.get(BETA_HEADER) ?? '')
+          .split(',')
+          .map((b) => b.trim())
+          .filter(Boolean),
+      ]);
+      headers.set('authorization', `Bearer ${secret}`);
+      headers.set(BETA_HEADER, [...betas].join(','));
+      headers.set('user-agent', CLAUDE_CODE_USER_AGENT);
+      headers.set('x-app', 'cli');
       return headers;
     },
+  };
+}
+
+/** Tokens from Anthropic's OAuth token endpoint. */
+function tokensOf(json: unknown): OAuthTokens {
+  if (
+    !isRecord(json) ||
+    typeof json.access_token !== 'string' ||
+    typeof json.refresh_token !== 'string'
+  ) {
+    throw new Error('Unexpected answer from Claude sign-in');
+  }
+  const expiresIn = typeof json.expires_in === 'number' ? json.expires_in : 0;
+  const identity: Record<string, string> = { keyType: 'Claude subscription (sign-in)' };
+  if (isRecord(json.account) && typeof json.account.email_address === 'string') {
+    identity.login = json.account.email_address;
+  }
+  if (isRecord(json.organization) && typeof json.organization.name === 'string') {
+    identity.organization = json.organization.name;
+  }
+  return {
+    access: json.access_token,
+    refresh: json.refresh_token,
+    expiresInSeconds: expiresIn,
+    identity,
+  };
+}
+
+function claudeSignIn(fetchImpl: typeof fetch): OAuthSignIn {
+  const token = async (body: Record<string, string>): Promise<OAuthTokens> => {
+    const res = await fetchImpl(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ client_id: OAUTH_CLIENT_ID, ...body }),
+    });
+    const json: unknown = await res.json().catch(() => null);
+    if (!res.ok) {
+      const error =
+        isRecord(json) && typeof json.error === 'string' ? json.error : `HTTP ${res.status}`;
+      throw new Error(`Claude sign-in failed (${error})`);
+    }
+    return tokensOf(json);
+  };
+  return {
+    help: 'Opens claude.ai to sign in with your Claude subscription. After approving, your browser lands on a localhost page that does not load: copy that page’s full address and paste it here.',
+    authorizeUrl(challenge, state) {
+      const params = new URLSearchParams({
+        code: 'true',
+        client_id: OAUTH_CLIENT_ID,
+        response_type: 'code',
+        redirect_uri: OAUTH_REDIRECT_URI,
+        scope: OAUTH_SCOPES,
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        state,
+      });
+      return `${OAUTH_AUTHORIZE_URL}?${params.toString()}`;
+    },
+    exchange: (code, state, verifier) =>
+      token({
+        grant_type: 'authorization_code',
+        code,
+        state,
+        redirect_uri: OAUTH_REDIRECT_URI,
+        code_verifier: verifier,
+      }),
+    refresh: (refreshToken) => token({ grant_type: 'refresh_token', refresh_token: refreshToken }),
   };
 }
