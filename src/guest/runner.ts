@@ -144,6 +144,27 @@ function readMemory(file: string): string | null {
   return text.slice(0, RUNNER_LIMITS.memory);
 }
 
+const GITHUB_TOOL = 'gateway_github';
+
+/**
+ * git config for the agent: github.com URLs go to the gateway's git endpoint, which takes the
+ * session key and holds the real GitHub credential.
+ */
+function gitConfig(config: RunnerConfig): string {
+  const base = `${config.gatewayUrl}/proxy/github/git/`;
+  return [
+    '[user]',
+    '\tname = Launchpad agent',
+    '\temail = agent@launchpad.invalid',
+    `[url "${base}"]`,
+    '\tinsteadOf = https://github.com/',
+    '\tinsteadOf = git@github.com:',
+    `[http "${base}"]`,
+    `\textraHeader = Authorization: Bearer ${config.sessionKey}`,
+    '',
+  ].join('\n');
+}
+
 /** Starts the harness and resolves when it exits (or was stopped at the deadline). */
 function runHarness(
   config: RunnerConfig,
@@ -231,6 +252,9 @@ export async function main(argv: readonly string[]): Promise<void> {
   const ids = agentIds();
   const home = args.home;
   for (const dir of [home, path.join(home, 'work'), path.join(home, 'out')]) makeDir(dir, ids);
+  if (config.gatewayTools.includes(GITHUB_TOOL)) {
+    writeOwned(path.join(home, '.gitconfig'), gitConfig(config), ids);
+  }
   const memoryFile = path.join(home, 'MEMORY.md');
   if (config.memory !== null) writeOwned(memoryFile, config.memory, ids);
 

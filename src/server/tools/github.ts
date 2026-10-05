@@ -1,4 +1,5 @@
 import { HTTP } from '../httpStatus.js';
+import { authorizeGit, GIT_SEGMENT } from './githubGit.js';
 import { matchPath } from './pathMatch.js';
 import type {
   AuthzDecision,
@@ -7,6 +8,7 @@ import type {
   Grant,
   PermissionDef,
   ToolProvider,
+  ToolRequest,
 } from './types.js';
 
 const API = 'https://api.github.com';
@@ -272,6 +274,36 @@ function createDeviceFlow(fetchImpl: typeof fetch): DeviceFlow {
   };
 }
 
+/** REST API calls: method + path rules, then the repository allowlist. */
+function authorizeApi({ method, segments }: ToolRequest, grant: Grant): AuthzDecision {
+  const m = method.toUpperCase();
+  for (const rule of ALWAYS_ALLOWED) {
+    if (rule.methods.includes(m) && matchPath(rule.pattern, segments)) {
+      return { allowed: true, permission: rule.permission };
+    }
+  }
+  let repoDenied = false;
+  let matchedPermission: string | null = null;
+  for (const rule of RULES) {
+    if (!rule.methods.includes(m)) continue;
+    const params = matchPath(rule.pattern, segments);
+    if (!params) continue;
+    matchedPermission ??= rule.permission;
+    if (!grant.permissions.includes(rule.permission)) continue;
+    const { owner, repo } = params;
+    if (owner !== undefined && repo !== undefined && !repoMatches(grant.resources, owner, repo)) {
+      repoDenied = true;
+      continue;
+    }
+    return { allowed: true, permission: rule.permission };
+  }
+  if (repoDenied) return { allowed: false, reason: 'Repository is not in the allowlist' };
+  if (matchedPermission) {
+    return { allowed: false, reason: `Missing permission "${matchedPermission}"` };
+  }
+  return { allowed: false, reason: 'Endpoint is not covered by any gateway permission' };
+}
+
 export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvider {
   return {
     id: 'github',
@@ -316,37 +348,13 @@ export function createGitHubProvider(fetchImpl: typeof fetch = fetch): ToolProvi
       return identity;
     },
 
-    authorize({ method, segments }, grant: Grant): AuthzDecision {
-      const m = method.toUpperCase();
-      for (const rule of ALWAYS_ALLOWED) {
-        if (rule.methods.includes(m) && matchPath(rule.pattern, segments)) {
-          return { allowed: true, permission: rule.permission };
-        }
+    authorize(request, grant: Grant, ctx) {
+      if (request.segments[0] === GIT_SEGMENT) {
+        return authorizeGit(request, grant, ctx, fetchImpl, (owner, repo) =>
+          repoMatches(grant.resources, owner, repo),
+        );
       }
-      let repoDenied = false;
-      let matchedPermission: string | null = null;
-      for (const rule of RULES) {
-        if (!rule.methods.includes(m)) continue;
-        const params = matchPath(rule.pattern, segments);
-        if (!params) continue;
-        matchedPermission ??= rule.permission;
-        if (!grant.permissions.includes(rule.permission)) continue;
-        const { owner, repo } = params;
-        if (
-          owner !== undefined &&
-          repo !== undefined &&
-          !repoMatches(grant.resources, owner, repo)
-        ) {
-          repoDenied = true;
-          continue;
-        }
-        return { allowed: true, permission: rule.permission };
-      }
-      if (repoDenied) return { allowed: false, reason: 'Repository is not in the allowlist' };
-      if (matchedPermission) {
-        return { allowed: false, reason: `Missing permission "${matchedPermission}"` };
-      }
-      return { allowed: false, reason: 'Endpoint is not covered by any gateway permission' };
+      return authorizeApi(request, grant);
     },
 
     upstreamHeaders(secret, incoming) {

@@ -65,6 +65,13 @@ export interface AuthzAllowed {
   search?: string;
   /** Called with the parsed JSON response of an allowed request (e.g. to remember cursors). */
   observeResponse?: (json: unknown) => void;
+  /**
+   * Absolute upstream URL to call instead of `upstreamBaseUrl` + path + query (e.g. git traffic,
+   * which goes to github.com rather than the API host). Built by the tool from checked segments.
+   */
+  upstreamUrl?: string;
+  /** Headers to send upstream instead of the tool's `upstreamHeaders` (same rules apply). */
+  upstreamHeaders?: (secret: string, incoming: Headers) => Headers;
   /** LLM calls: meters the (streamed) response, given its content type, for token budgets. */
   meter?: (contentType: string) => UsageMeter;
 }

@@ -49,6 +49,11 @@ export function fakeGitHubFetch(calls: Harness['upstreamCalls']): typeof fetch {
     if (url === 'https://github.com/login/oauth/access_token') {
       return Promise.resolve(Response.json({ error: 'authorization_pending' }));
     }
+    if (url === 'https://api.github.com/repos/o/r') {
+      return Promise.resolve(
+        Response.json({ url, method: init.method ?? 'GET', default_branch: 'main' }),
+      );
+    }
     if (url === 'https://api.github.com/user') {
       return Promise.resolve(
         Response.json(

@@ -36,7 +36,9 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
 3. **Run.** In the VM, the runner reads its config from `/dev/vdb` (root only) and starts the
    harness as user `agent`. The harness reaches:
    - the model API through `/proxy/<provider>`;
-   - the tools through the gateway MCP server (or the pi extension).
+   - the tools through the gateway MCP server (or the pi extension);
+   - git: `https://github.com/…` URLs are rewritten to the gateway's git endpoint, so `git clone`
+     and `git push` of allowed repositories work. Pushes to the default branch are refused.
 
    The runner streams the normalized transcript and stops the agent at the deadline.
 
