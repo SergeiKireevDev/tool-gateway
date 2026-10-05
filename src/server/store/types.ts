@@ -52,6 +52,11 @@ export interface Member {
   email?: string | null;
   keyHash: string;
   keyHint: string;
+  /**
+   * Bumped each time the member key is rotated. Launchpad schedules record it and stop once it
+   * changes, so a rotated (revoked) member key also stops scheduled agents.
+   */
+  keyGeneration: number;
   templateIds: string[];
   /** Shared (admin) accounts granted to this member. Its own accounts are always usable. */
   accountIds: string[];
@@ -69,7 +74,10 @@ export interface SessionGrant extends ToolGrant {
 
 /** Who issued a session key. */
 export type SessionIssuer =
-  { kind: 'admin' } | { kind: 'member'; memberId: string; memberName: string };
+  | { kind: 'admin' }
+  | { kind: 'member'; memberId: string; memberName: string }
+  /** Issued by the agent launchpad for a run it launched on a member's behalf. */
+  | { kind: 'launchpad'; memberId: string; memberName: string; runId: string };
 
 export interface Session {
   id: string;
@@ -107,7 +115,7 @@ export interface WebSession {
 }
 
 /** Bumped whenever the persisted shape changes; see `migrate.ts`. */
-export const STORE_VERSION = 2;
+export const STORE_VERSION = 3;
 
 export interface StoreState {
   version: typeof STORE_VERSION;

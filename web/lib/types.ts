@@ -94,7 +94,9 @@ export interface TemplateInput {
 export type SessionStatus = 'active' | 'expired' | 'revoked';
 
 export type SessionIssuer =
-  { kind: 'admin' } | { kind: 'member'; memberId: string; memberName: string };
+  | { kind: 'admin' }
+  | { kind: 'member'; memberId: string; memberName: string }
+  | { kind: 'launchpad'; memberId: string; memberName: string; runId: string };
 
 export interface Member {
   id: string;
@@ -143,7 +145,7 @@ export interface Session {
 
 export interface ActivityEntry {
   at: string;
-  kind: 'proxy' | 'admin' | 'member';
+  kind: 'proxy' | 'admin' | 'member' | 'launchpad';
   sessionId?: string;
   sessionLabel?: string;
   tool?: string;

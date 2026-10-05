@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/server/http/app.js';
+import type { Member } from '../src/server/store/types.js';
 import { createHarness, type Harness } from './helpers.js';
 
 let h: Harness;
@@ -309,5 +310,63 @@ describe('member keys (self-serve)', () => {
       .set(...bearer(admin));
     expect(members.body[0]).toMatchObject({ activeSessions: 1 });
     expect(members.body[0].lastUsedAt).toBeTruthy();
+  });
+});
+
+describe('stale member snapshots (audit finding #1)', () => {
+  const issueAs = (member: Member) =>
+    h.gateway.issueSessionAsMember(member, { templateId: ids.tplRead, accountIds: [ids.acc1] });
+  const snapshot = (key: string): Member => structuredClone(h.gateway.resolveMember(key));
+
+  it('refuses a key resolved before the member key was rotated', async () => {
+    const { key, id } = await createMember();
+    const stale = snapshot(key);
+    await h.gateway.rotateMemberKey(id);
+    await expect(issueAs(stale)).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('refuses a key resolved before the member was deleted', async () => {
+    const { key, id } = await createMember();
+    const stale = snapshot(key);
+    await h.gateway.deleteMember(id);
+    await expect(issueAs(stale)).rejects.toMatchObject({ status: 401 });
+  });
+
+  it('refuses a key resolved before the member was narrowed', async () => {
+    const { key, id } = await createMember({ templateIds: [ids.tplRead, ids.tplWrite] });
+    const stale = snapshot(key);
+    await h.gateway.updateMember(id, {
+      name: 'ci-bot',
+      templateIds: [ids.tplWrite],
+      accountIds: [ids.acc1],
+    });
+    await expect(issueAs(stale)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('counts key rotations', async () => {
+    const { id } = await createMember();
+    expect(h.gateway.memberKeyGeneration(id)).toBe(0);
+    await h.gateway.rotateMemberKey(id);
+    expect(h.gateway.memberKeyGeneration(id)).toBe(1);
+  });
+});
+
+describe('launchpad session keys', () => {
+  it('issues keys for a run within the member limits, revoked when the key rotates', async () => {
+    const { id } = await createMember();
+    const { key, session } = await h.gateway.issueSessionForRun(id, 'run-1', {
+      templateId: ids.tplRead,
+      accountIds: [ids.acc1],
+    });
+    expect(key).toMatch(/^gws_/);
+    expect(session.issuedBy).toMatchObject({ kind: 'launchpad', memberId: id, runId: 'run-1' });
+    await expect(
+      h.gateway.issueSessionForRun(id, 'run-2', { templateId: ids.tplWrite }),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      h.gateway.issueSessionForRun(id, 'run-3', { templateId: ids.tplRead }, 1),
+    ).rejects.toMatchObject({ status: 401 });
+    await h.gateway.rotateMemberKey(id);
+    expect(() => h.gateway.resolveSession(key)).toThrow('revoked');
   });
 });

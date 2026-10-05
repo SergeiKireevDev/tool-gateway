@@ -256,14 +256,11 @@ describe('member-owned accounts', () => {
     expect(alicePoll.body.status).toBe('pending');
   });
 
-  it('lets a member rotate its own member key', async () => {
-    const res = await portal(aliceCookie, 'post', '/rotate-key').expect(200);
-    const newKey = res.body.key as string;
-    expect(newKey).toMatch(/^gwm_/);
+  it('never lets members see or rotate their member key', async () => {
+    await portal(aliceCookie, 'post', '/rotate-key').expect(404);
     await request(ctx.app)
       .get('/api/member')
       .set('authorization', `Bearer ${alice.key}`)
-      .expect(401);
-    await request(ctx.app).get('/api/member').set('authorization', `Bearer ${newKey}`).expect(200);
+      .expect(200);
   });
 });

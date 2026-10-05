@@ -34,10 +34,7 @@ export function memberPortalRoutes(gateway: Gateway): Router {
     '/',
     h((_req, res) => gateway.memberView(memberOf(res))),
   );
-  router.post(
-    '/rotate-key',
-    h((_req, res) => gateway.rotateMemberKey(memberOf(res).id, actorOf(res))),
-  );
+  // No key rotation here: members never handle their member key, only the admin rotates it.
   router.get(
     '/tools',
     h(() => gateway.toolCatalog()),

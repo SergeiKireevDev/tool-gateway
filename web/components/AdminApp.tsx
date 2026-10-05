@@ -29,7 +29,7 @@ import type {
 import { AccountsPanel } from './AccountsPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { LoginScreen } from './LoginScreen';
-import { MemberKeyPanel } from './MemberKeyPanel';
+import { MyTemplatesPanel } from './MyTemplatesPanel';
 import { MembersPanel } from './MembersPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { TemplatesPanel } from './TemplatesPanel';
@@ -107,7 +107,7 @@ const MEMBER_TABS: TabDef[] = [
     count: (d) => d.accounts.length,
     render: (p) => <AccountsPanel {...p} />,
   },
-  { id: 'key', label: 'Member key', render: (p) => <MemberKeyPanel {...p} /> },
+  { id: 'templates', label: 'My templates', render: (p) => <MyTemplatesPanel {...p} /> },
 ];
 
 async function loadAdminData(api: Api): Promise<GatewayData> {
