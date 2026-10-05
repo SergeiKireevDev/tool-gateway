@@ -37,8 +37,9 @@ export function Button({
       type="button"
       {...props}
       className={cx(
-        'inline-flex items-center justify-center gap-1.5 rounded-md font-medium shadow-xs transition',
+        'inline-flex items-center justify-center gap-1.5 font-medium shadow-xs transition',
         'focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
+        variant === 'primary' ? 'rounded-lg' : 'rounded-md',
         size === 'sm' ? 'px-2.5 py-1 text-xs' : 'px-3.5 py-2 text-sm',
         VARIANTS[variant],
         className,
