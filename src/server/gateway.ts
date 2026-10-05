@@ -181,6 +181,8 @@ export const ADMIN: Actor = { kind: 'admin' };
 export type AccountOwner =
   { kind: 'shared' } | { kind: 'member'; memberId: string; memberName: string };
 export type PublicAccount = Omit<Account, 'secret' | 'ownerMemberId' | 'oauth'> & {
+  /** `tool` (GitHub, Slack…) or `llm` (a model provider: Anthropic, OpenAI, Gemini). */
+  kind: 'tool' | 'llm';
   secretHint: string;
   /** Connected through an OAuth sign-in (refreshed by the gateway) rather than a pasted token. */
   signedIn: boolean;
@@ -1025,6 +1027,7 @@ export class Gateway {
       : undefined;
     return {
       ...rest,
+      kind: this.tools.get(a.tool)?.kind ?? 'tool',
       secretHint: oauth ? 'signed in' : `…${secret.slice(-SECRET_HINT_CHARS)}`,
       signedIn: Boolean(oauth),
       owner: owner
