@@ -230,9 +230,16 @@ function mountSessionKeyRoutes(
         grants: session.grants.map(({ tool, permissions, resources }) => {
           const resolved = gateway.resolveGrant(session, tool);
           const account = resolved?.account;
+          const provider = resolved?.tool;
           return {
             tool,
-            kind: resolved?.tool.kind ?? 'tool',
+            kind: provider?.kind ?? 'tool',
+            name: provider?.name ?? tool,
+            permissionDetails: (provider?.permissions ?? []).filter((p) =>
+              permissions.includes(p.id),
+            ),
+            resourceHelp: provider?.resourceHelp ?? '',
+            example: provider?.example ?? null,
             account: account && { label: account.label, identity: account.identity },
             permissions,
             resources,

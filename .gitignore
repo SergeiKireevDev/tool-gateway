@@ -19,3 +19,4 @@ dist/
 web/.next/
 *.tsbuildinfo
 coverage/
+guest/dist/

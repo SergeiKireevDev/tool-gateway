@@ -8,7 +8,17 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/', 'data/', 'coverage/', 'node_modules/', 'web/.next/', 'web/next-env.d.ts'] },
+  {
+    ignores: [
+      'dist/',
+      'guest/dist/',
+      'data/',
+      'coverage/',
+      'node_modules/',
+      'web/.next/',
+      'web/next-env.d.ts',
+    ],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
@@ -33,13 +43,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ['src/server/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts'],
     languageOptions: { globals: globals.node },
   },
   {
     // Rules carried over from ../../oyster/eslint.config.mjs (applied to application code, like
     // oyster, not to tests). TypeScript-aware variants replace the core rules where one exists.
-    files: ['src/server/**/*.ts', 'web/**/*.{ts,tsx}'],
+    files: ['src/**/*.ts', 'web/**/*.{ts,tsx}'],
     plugins: { sonarjs },
     rules: {
       'no-empty': ['error', { allowEmptyCatch: true }],
@@ -90,6 +100,10 @@ export default tseslint.config(
   {
     files: ['**/*.js', '**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
+  },
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: globals.node },
   },
   prettier,
 );

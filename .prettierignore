@@ -3,3 +3,4 @@ data/
 coverage/
 package-lock.json
 web/next-env.d.ts
+guest/dist/
