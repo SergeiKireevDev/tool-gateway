@@ -209,7 +209,7 @@ describe('pi', () => {
         '--model',
         'anthropic/claude-sonnet-5',
         '-e',
-        '/opt/launchpad/pi-extension.js',
+        '/opt/launchpad/pi-extension.mjs',
       ]),
     );
     expect(launch.env.ANTHROPIC_API_KEY).toBe('gws_key');

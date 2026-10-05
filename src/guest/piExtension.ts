@@ -2,7 +2,7 @@ import { callGatewayTool, gatewayEnv, loadGatewayTools } from './gatewayTools.js
 
 /**
  * pi extension: registers the gateway's tools as pi tools (pi has no MCP client). Loaded with
- * `pi -e /opt/launchpad/pi-extension.js`; reads GATEWAY_URL and GATEWAY_SESSION_KEY.
+ * `pi -e /opt/launchpad/pi-extension.mjs`; reads GATEWAY_URL and GATEWAY_SESSION_KEY.
  */
 
 interface PiToolResult {
