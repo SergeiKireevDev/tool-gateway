@@ -145,3 +145,18 @@ export function randomToken(prefix: string, bytes = TOKEN_BYTES): string {
 export function randomId(): string {
   return sodium.to_base64(sodium.randombytes_buf(ID_BYTES), B64);
 }
+
+const PKCE_VERIFIER_BYTES = 32;
+
+/**
+ * PKCE pair for OAuth sign-in (RFC 7636, S256). The verifier comes from libsodium; the challenge is
+ * its SHA-256, which the standard libsodium build lacks, so it uses Web Crypto's digest.
+ */
+export async function pkcePair(): Promise<{ verifier: string; challenge: string }> {
+  const verifier = sodium.to_base64(sodium.randombytes_buf(PKCE_VERIFIER_BYTES), B64);
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(verifier),
+  );
+  return { verifier, challenge: sodium.to_base64(new Uint8Array(digest), B64) };
+}

@@ -88,7 +88,8 @@ async function forward(
     deny(HTTP.FORBIDDEN, `This session key is for ${covered}, not "${toolId}"`);
     return;
   }
-  const { grant, account, tool } = resolved;
+  const { grant, tool } = resolved;
+  const account = await gateway.freshAccount(resolved.account);
   const segments = match ? parseSafePath(rawPath) : null;
   if (!segments) {
     deny(HTTP.BAD_REQUEST, 'Malformed request path');

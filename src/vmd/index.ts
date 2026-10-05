@@ -1,9 +1,11 @@
-import { mkdir } from 'node:fs/promises';
+import { chown, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { loadVmdConfig } from './config.js';
 import { realHost } from './host.js';
 import { createVmdServer, listenOnSocket } from './server.js';
 import { VmManager } from './vmManager.js';
+
+const SOCKET_DIR_MODE = 0o750;
 
 /** vmd: the root daemon that boots agent microVMs for the gateway's launchpad. */
 async function main(): Promise<void> {
@@ -11,7 +13,10 @@ async function main(): Promise<void> {
   const config = loadVmdConfig();
   const vms = new VmManager(config, realHost);
   await vms.init();
-  await mkdir(path.dirname(config.socket), { recursive: true, mode: 0o750 });
+  const socketDir = path.dirname(config.socket);
+  await mkdir(socketDir, { recursive: true, mode: SOCKET_DIR_MODE });
+  // The gateway's group must be able to reach the socket inside.
+  if (config.socketGid !== null) await chown(socketDir, 0, config.socketGid);
   const server = createVmdServer(vms);
   await listenOnSocket(server, config.socket, config.socketGid);
   console.info(

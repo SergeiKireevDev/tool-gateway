@@ -6,6 +6,7 @@ import { sessionUsesAccount } from '@/lib/grants';
 import type { Account, Tool } from '@/lib/types';
 import type { PanelProps, Viewer } from './AdminApp';
 import { DeviceSignIn } from './DeviceSignIn';
+import { OAuthSignIn } from './OAuthSignIn';
 import {
   Badge,
   Button,
@@ -281,7 +282,7 @@ function AccountModal({
 type ConnectMethod = 'sign-in' | 'token';
 
 const defaultMethod = (tool: Tool | undefined): ConnectMethod =>
-  tool?.signIn ? 'sign-in' : 'token';
+  tool?.signIn || tool?.oauthSignIn ? 'sign-in' : 'token';
 
 /** New account: first pick the tool, then how to connect it (interactive sign-in or token). */
 function ConnectAccount({
@@ -301,7 +302,7 @@ function ConnectAccount({
   canConfigure: boolean;
 }) {
   const available = (t: Tool | undefined): Tool | undefined =>
-    t?.signIn && (canConfigure || t.signIn.oauthClientId) ? t : undefined;
+    t?.oauthSignIn || (t?.signIn && (canConfigure || t.signIn.oauthClientId)) ? t : undefined;
   // With a single tool there is nothing to choose.
   const [toolId, setToolId] = useState(tools.length === 1 ? (tools[0]?.id ?? '') : '');
   const tool = tools.find((t) => t.id === toolId);
@@ -342,11 +343,11 @@ function ConnectAccount({
             </button>
           </div>
         )}
-        {signInTool && (
-          <MethodTabs toolName={signInTool.name} method={method} onChange={setMethod} />
-        )}
+        {offered && <MethodTabs toolName={offered.name} method={method} onChange={setMethod} />}
       </div>
-      {method === 'sign-in' && signInTool ? (
+      {method === 'sign-in' && offered?.oauthSignIn ? (
+        <OAuthSignIn api={api} tool={offered} onConnected={onSaved} onCancel={onCancel} />
+      ) : method === 'sign-in' && signInTool ? (
         <DeviceSignIn
           api={api}
           tool={signInTool}

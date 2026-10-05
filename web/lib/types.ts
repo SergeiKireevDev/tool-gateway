@@ -33,6 +33,8 @@ export interface Tool {
   example: ToolExample;
   /** Present when the tool supports interactive sign-in (OAuth device flow). */
   signIn: SignInConfig | null;
+  /** Present when the tool supports "Sign in with …" through OAuth (paste back the redirect). */
+  oauthSignIn: { help: string } | null;
 }
 
 export interface DeviceFlowStart {
@@ -57,6 +59,8 @@ export interface Account {
   label: string;
   identity: Record<string, string>;
   secretHint: string;
+  /** Connected by signing in (the gateway refreshes it) rather than with a pasted token. */
+  signedIn: boolean;
   createdAt: string;
   lastVerifiedAt: string;
   owner: AccountOwner;
