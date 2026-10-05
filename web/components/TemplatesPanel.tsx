@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatDuration } from '@/lib/format';
-import { toolName } from '@/lib/grants';
+import { toolName, toolsOfKind } from '@/lib/grants';
 import { DEFAULT_MAX_TTL_SECONDS, DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { TemplateInput, TemplateSummary as Template, Tool } from '@/lib/types';
 import type { PanelProps } from './AdminApp';
@@ -218,28 +218,28 @@ function TemplateModal({
           />
         </Field>
 
-        <fieldset className="space-y-3">
-          <legend className="mb-2 text-sm font-medium text-slate-700">
-            Tools{' '}
-            <span className="font-normal text-slate-500">
-              (one or more; a key gets one account per tool)
-            </span>
-          </legend>
-          {data.tools.map((t) => (
-            <GrantEditor
-              key={t.id}
-              tool={t}
-              draft={drafts[t.id] ?? EMPTY_DRAFT}
-              expanded={expanded === t.id}
-              onExpand={(open) => {
-                setExpanded(open ? t.id : null);
-              }}
-              onChange={(draft) => {
-                setDrafts((d) => ({ ...d, [t.id]: draft }));
-              }}
-            />
-          ))}
-        </fieldset>
+        {(['tool', 'llm'] as const).map((kind) => (
+          <fieldset key={kind} className="space-y-3">
+            <legend className="mb-2 text-sm font-medium text-slate-700">
+              {FIELDSET[kind].title}{' '}
+              <span className="font-normal text-slate-500">{FIELDSET[kind].hint}</span>
+            </legend>
+            {toolsOfKind(data.tools, kind).map((t) => (
+              <GrantEditor
+                key={t.id}
+                tool={t}
+                draft={drafts[t.id] ?? EMPTY_DRAFT}
+                expanded={expanded === t.id}
+                onExpand={(open) => {
+                  setExpanded(open ? t.id : null);
+                }}
+                onChange={(draft) => {
+                  setDrafts((d) => ({ ...d, [t.id]: draft }));
+                }}
+              />
+            ))}
+          </fieldset>
+        ))}
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Default TTL">
@@ -276,6 +276,17 @@ function TemplateModal({
     </Modal>
   );
 }
+
+const FIELDSET = {
+  tool: {
+    title: 'Tool access',
+    hint: '(what keys may do on GitHub, monday.com, Slack…; one account per tool)',
+  },
+  llm: {
+    title: 'Model access',
+    hint: '(for agents: which model APIs and models they may call; one provider account each)',
+  },
+} as const;
 
 /** Editor state of one tool's grant; disabled tools are left out of the template. */
 interface GrantDraft {

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { formatDateTime } from '@/lib/format';
-import { sessionUsesAccount } from '@/lib/grants';
+import { type AccountKind, kindOf, sessionUsesAccount, toolsOfKind } from '@/lib/grants';
 import type { Account, Tool } from '@/lib/types';
 import type { PanelProps, Viewer } from './AdminApp';
 import { DeviceSignIn } from './DeviceSignIn';
@@ -42,14 +42,49 @@ function accountActions(viewer: Viewer, acc: Account): AccountActions {
   return { edit: acc.owner.kind === 'shared', verify: true, remove: true };
 }
 
-const DESCRIPTIONS: Record<Viewer['role'], string> = {
-  admin:
-    'Shared accounts you connect can be granted to members. Members also connect their own accounts, which only they can use: you can re-verify or remove those, not change them. Credentials are stored encrypted and never leave the gateway.',
-  member:
-    'Accounts you connect are private to you: only your session keys can use them. Shared accounts granted by the admin are listed too. Credentials are stored encrypted and never leave the gateway.',
+const COPY: Record<AccountKind, Record<Viewer['role'], { title: string; description: string }>> = {
+  tool: {
+    admin: {
+      title: 'Tool accounts',
+      description:
+        'Accounts on the tools agents and scripts act on (GitHub, monday.com, Slack…). Shared accounts you connect can be granted to members; members also connect their own, which only they can use (you can re-verify or remove those, not change them). Credentials are stored encrypted and never leave the gateway.',
+    },
+    member: {
+      title: 'My tool accounts',
+      description:
+        'Your accounts on the tools agents and scripts act on (GitHub, monday.com, Slack…), private to you, plus shared ones granted by the admin. Credentials are stored encrypted and never leave the gateway.',
+    },
+  },
+  llm: {
+    admin: {
+      title: 'Model providers',
+      description:
+        'API keys and sign-ins for the model APIs agents think with (Anthropic, OpenAI, Gemini). Agents call them through the gateway with their session key and never see these credentials. Shared ones can be granted to members; members also sign in with their own.',
+    },
+    member: {
+      title: 'My model providers',
+      description:
+        'Your sign-ins and API keys for the model APIs your agents think with (Anthropic, OpenAI, Gemini), plus shared ones granted by the admin. Agents never see these credentials: the gateway uses them on their behalf.',
+    },
+  },
 };
 
-export function AccountsPanel({ api, data, refresh, viewer }: PanelProps) {
+const CONNECT_LABEL: Record<AccountKind, string> = {
+  tool: 'Connect a tool account',
+  llm: 'Connect a model provider',
+};
+
+export function AccountsPanel({
+  api,
+  data: all,
+  refresh,
+  viewer,
+  kind,
+}: PanelProps & { kind: AccountKind }) {
+  // This panel only shows and connects accounts of one kind: tools or model providers.
+  const tools = toolsOfKind(all.tools, kind);
+  const data = { ...all, accounts: all.accounts.filter((a) => kindOf(all.tools, a.tool) === kind) };
+  const copy = COPY[kind][viewer.role];
   const [editing, setEditing] = useState<Editing>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -70,15 +105,15 @@ export function AccountsPanel({ api, data, refresh, viewer }: PanelProps) {
   return (
     <section>
       <SectionHeader
-        title={viewer.role === 'member' ? 'My accounts' : 'Tool accounts'}
-        description={DESCRIPTIONS[viewer.role]}
+        title={copy.title}
+        description={copy.description}
         action={
           <Button
             onClick={() => {
               setEditing({ mode: 'create' });
             }}
           >
-            + Connect account
+            + {CONNECT_LABEL[kind]}
           </Button>
         }
       />
@@ -88,7 +123,7 @@ export function AccountsPanel({ api, data, refresh, viewer }: PanelProps) {
 
       {data.accounts.length === 0 ? (
         <EmptyState title="No accounts connected yet">
-          Connect a {data.tools.map((t) => t.name).join(' or ')} account to get started.
+          Connect a {tools.map((t) => t.name).join(' or ')} account to get started.
         </EmptyState>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
@@ -119,6 +154,8 @@ export function AccountsPanel({ api, data, refresh, viewer }: PanelProps) {
           setEditing(null);
           await refresh();
         }}
+        title={CONNECT_LABEL[kind]}
+        tools={tools}
         {...{ api, data, refresh, viewer }}
       />
     </section>
@@ -132,10 +169,35 @@ function OwnerBadge({ account, viewer }: { account: Account; viewer: Viewer }) {
   return viewer.role === 'admin' ? <Badge tone="amber">{account.owner.memberName}</Badge> : null;
 }
 
+/** Who the account is: a tool login, or for a model provider the credential type and sign-in. */
+function AccountIdentity({ account: acc }: { account: Account }) {
+  const { login, name, keyType, organization } = acc.identity;
+  if (acc.kind === 'llm') {
+    return (
+      <p className="mt-0.5 text-sm text-slate-500">
+        {keyType ?? 'API key'}
+        {login && (
+          <>
+            {' · '}
+            <span className="font-medium text-slate-700">{login}</span>
+          </>
+        )}
+        {organization && ` (${organization})`}
+      </p>
+    );
+  }
+  return (
+    <p className="mt-0.5 text-sm text-slate-500">
+      Signed in as <span className="font-medium text-slate-700">{login ?? 'unknown'}</span>
+      {name && ` (${name})`}
+    </p>
+  );
+}
+
 function TokenDetails({ account: acc }: { account: Account }) {
   return (
     <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-      <dt className="text-slate-500">Token</dt>
+      <dt className="text-slate-500">{acc.kind === 'llm' ? 'Credential' : 'Token'}</dt>
       <dd className="font-mono text-slate-700">
         {acc.secretHint}{' '}
         {acc.identity.tokenType && (
@@ -192,11 +254,7 @@ function AccountCard({
             <Badge tone="indigo">{toolName}</Badge>
             <OwnerBadge account={acc} viewer={viewer} />
           </div>
-          <p className="mt-0.5 text-sm text-slate-500">
-            Signed in as{' '}
-            <span className="font-medium text-slate-700">{acc.identity.login ?? 'unknown'}</span>
-            {acc.identity.name && ` (${acc.identity.name})`}
-          </p>
+          <AccountIdentity account={acc} />
         </div>
         <Badge tone={sessions > 0 ? 'green' : 'slate'}>
           {sessions} active session{sessions === 1 ? '' : 's'}
@@ -245,16 +303,21 @@ function AccountModal({
   api,
   data,
   viewer,
+  title,
+  tools,
 }: {
   editing: Editing;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  title: string;
+  /** The tools this modal connects accounts for (one kind). */
+  tools: Tool[];
 } & Pick<PanelProps, 'api' | 'data' | 'refresh' | 'viewer'>) {
   const existing = editing?.mode === 'edit' ? editing.account : null;
   return (
     <Modal
       open={editing !== null}
-      title={existing ? `Edit “${existing.label}”` : 'Connect a tool account'}
+      title={existing ? `Edit “${existing.label}”` : title}
       onClose={onClose}
     >
       {existing ? (
@@ -268,7 +331,7 @@ function AccountModal({
       ) : (
         <ConnectAccount
           api={api}
-          tools={data.tools}
+          tools={tools}
           onSaved={onSaved}
           onCancel={onClose}
           refresh={refresh}

@@ -282,7 +282,14 @@ export function LaunchForm({
         </Field>
       )}
       {ambiguous.map((x) => (
-        <Field key={x.tool} label={`${x.tool} account`}>
+        <Field
+          key={x.tool}
+          label={
+            x.options[0]?.kind === 'llm'
+              ? `Model provider account (${x.tool})`
+              : `${x.tool} account`
+          }
+        >
           <Select
             value={picked[x.tool] ?? x.options[0]?.id}
             onChange={(e) => {

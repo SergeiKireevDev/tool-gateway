@@ -58,6 +58,8 @@ export interface Account {
   tool: string;
   label: string;
   identity: Record<string, string>;
+  /** `tool` (GitHub, Slack…) or `llm` (a model provider). */
+  kind: 'tool' | 'llm';
   secretHint: string;
   /** Connected by signing in (the gateway refreshes it) rather than with a pasted token. */
   signedIn: boolean;

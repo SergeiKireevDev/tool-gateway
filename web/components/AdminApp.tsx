@@ -27,6 +27,7 @@ import type {
   TemplateSummary,
   Tool,
 } from '@/lib/types';
+import { type AccountKind, kindOf } from '@/lib/grants';
 import { AccountsPanel } from './AccountsPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { LaunchpadSettingsPanel } from './launchpad/LaunchpadSettingsPanel';
@@ -66,15 +67,24 @@ interface TabDef {
   render: (props: PanelProps) => ReactNode;
 }
 
+const accountsOf = (data: GatewayData, kind: AccountKind): number =>
+  data.accounts.filter((a) => kindOf(data.tools, a.tool) === kind).length;
+
 const activeCount = (data: GatewayData): number =>
   data.sessions.filter((s) => s.status === 'active').length;
 
 const ADMIN_TABS: TabDef[] = [
   {
     id: 'accounts',
-    label: 'Accounts',
-    count: (d) => d.accounts.length,
-    render: (p) => <AccountsPanel {...p} />,
+    label: 'Tool accounts',
+    count: (d) => accountsOf(d, 'tool'),
+    render: (p) => <AccountsPanel {...p} kind="tool" />,
+  },
+  {
+    id: 'models',
+    label: 'Model providers',
+    count: (d) => accountsOf(d, 'llm'),
+    render: (p) => <AccountsPanel {...p} kind="llm" />,
   },
   {
     id: 'templates',
@@ -119,9 +129,15 @@ const MEMBER_TABS: TabDef[] = [
   },
   {
     id: 'accounts',
-    label: 'My accounts',
-    count: (d) => d.accounts.length,
-    render: (p) => <AccountsPanel {...p} />,
+    label: 'My tools',
+    count: (d) => accountsOf(d, 'tool'),
+    render: (p) => <AccountsPanel {...p} kind="tool" />,
+  },
+  {
+    id: 'models',
+    label: 'My model providers',
+    count: (d) => accountsOf(d, 'llm'),
+    render: (p) => <AccountsPanel {...p} kind="llm" />,
   },
   { id: 'templates', label: 'My templates', render: (p) => <MyTemplatesPanel {...p} /> },
 ];

@@ -66,7 +66,18 @@ beforeEach(async () => {
 describe('LLM accounts', () => {
   it('verifies API keys against the provider', async () => {
     await adminPost('/accounts', { tool: 'anthropic', label: 'x', secret: 'bad-key' }).expect(422);
-    await adminPost('/accounts', { tool: 'gemini', label: 'x', secret: 'AIza-ok' }).expect(201);
+    const gemini = await adminPost('/accounts', {
+      tool: 'gemini',
+      label: 'x',
+      secret: 'AIza-ok',
+    }).expect(201);
+    expect(gemini.body.kind).toBe('llm');
+    const github = await adminPost('/accounts', {
+      tool: 'github',
+      label: 'g',
+      secret: 'ghp_x',
+    }).expect(201);
+    expect(github.body.kind).toBe('tool');
   });
 
   it('lists LLM providers in the catalog with model allowlists', async () => {
