@@ -13,6 +13,18 @@ export interface GoogleSignInConfig {
   adminEmails: string[];
 }
 
+export interface LaunchpadConfig {
+  /**
+   * `firecracker`: microVMs through `vmd` (production). `local-unsafe`: the runner as a plain
+   * child process, without any isolation (development only).
+   */
+  driver: 'firecracker' | 'local-unsafe';
+  /** `vmd`'s unix socket. */
+  vmdSocket: string;
+  /** Runner bundle the local driver executes. */
+  runnerScript: string;
+}
+
 export interface GatewayConfig {
   host: string;
   port: number;
@@ -25,6 +37,8 @@ export interface GatewayConfig {
    * Only the proxy and `/api/session` are served there.
    */
   vmHost: string | null;
+  /** Agent launchpad: how runs are booted, or null when launching agents is off. */
+  launchpad: LaunchpadConfig | null;
   /** Raw 256-bit master key used to encrypt the store. Kept outside the data dir by default. */
   keyFile: string;
   /** Public base URL of the gateway, used to rewrite pagination links and for OAuth redirects. */
@@ -75,6 +89,7 @@ export function loadConfig(env: Env = process.env): GatewayConfig {
     storeFile: path.join(dataDir, 'store.enc'),
     dbFile: path.join(dataDir, 'gateway.sqlite'),
     vmHost: readVmHost(env),
+    launchpad: readLaunchpad(env, readVmHost(env)),
     keyFile: path.resolve(
       read(env, 'GATEWAY_KEY_FILE') ?? path.join(homedir(), '.local-gateway', 'master.key'),
     ),
@@ -89,6 +104,22 @@ function readVmHost(env: Env): string | null {
     throw new Error(`Invalid GATEWAY_VM_HOST (an IPv4 address): ${vmHost}`);
   }
   return vmHost;
+}
+
+function readLaunchpad(env: Env, vmHost: string | null): LaunchpadConfig | null {
+  const driver = read(env, 'LAUNCHPAD_VM_DRIVER');
+  if (driver === undefined) return null;
+  if (driver !== 'firecracker' && driver !== 'local-unsafe') {
+    throw new Error(`Invalid LAUNCHPAD_VM_DRIVER (firecracker or local-unsafe): ${driver}`);
+  }
+  if (driver === 'firecracker' && vmHost === null) {
+    throw new Error('LAUNCHPAD_VM_DRIVER=firecracker needs GATEWAY_VM_HOST (the VM bridge IP)');
+  }
+  return {
+    driver,
+    vmdSocket: read(env, 'LAUNCHPAD_VMD_SOCKET') ?? '/run/launchpad/vmd.sock',
+    runnerScript: path.resolve(read(env, 'LAUNCHPAD_RUNNER_SCRIPT') ?? 'guest/dist/runner.js'),
+  };
 }
 
 /** Base URL agent microVMs use to reach the gateway on the VM bridge. */

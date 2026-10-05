@@ -1014,6 +1014,29 @@ export class Gateway {
     );
   }
 
+  /** A member by id, or null when it is gone or expired. */
+  activeMember(memberId: string): Member | null {
+    const member = this.store.read().members.find((m) => m.id === memberId);
+    return member && !this.memberExpired(member) ? member : null;
+  }
+
+  /**
+   * Checks, without issuing anything, that a member could get a key for this template (and these
+   * accounts). Returns the template and the account picked for each of its tools.
+   */
+  planMemberSession(
+    member: Member,
+    templateId: string,
+    accountIds: readonly string[],
+  ): { template: Template; accountIds: string[] } {
+    const template = member.templateIds.includes(templateId)
+      ? this.store.read().templates.find((t) => t.id === templateId)
+      : undefined;
+    if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
+    const bound = this.pickAccounts(template, [...new Set(accountIds)], { kind: 'member', member });
+    return { template, accountIds: bound.map((b) => b.account.id) };
+  }
+
   /** The member's current key generation, or null when it is gone or expired. */
   memberKeyGeneration(memberId: string): number | null {
     const member = this.store.read().members.find((m) => m.id === memberId);

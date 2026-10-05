@@ -16,12 +16,16 @@ import { created, h, param } from './handlers.js';
 import { memberPortalRoutes } from './memberPortalRoutes.js';
 import { memberRoutes } from './memberRoutes.js';
 import { proxyHandler } from './proxy.js';
+import type { Launchpad } from '../launchpad/launchpad.js';
+import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
 
 export interface AppOptions {
   /** Used for upstream calls; injectable for tests. */
   fetch?: typeof fetch;
   /** Overrides the Google sign-in built from `config.google` (tests). */
   googleSignIn?: GoogleSignIn | null;
+  /** The agent launchpad; its routes are off when absent. */
+  launchpad?: Launchpad | null;
 }
 
 export function createApp(
@@ -34,6 +38,7 @@ export function createApp(
   app.set('trust proxy', false);
 
   mountSessionKeyRoutes(app, gateway, config, options.fetch);
+  if (options.launchpad) app.use('/runner', runnerRoutes(options.launchpad));
 
   // ------------------------------------------------------------------ admin API
   const google =
@@ -167,9 +172,10 @@ export function createApp(
     '/activity',
     h(() => gateway.activity.recent()),
   );
+  if (options.launchpad) admin.use('/launchpad', adminLaunchRoutes(options.launchpad, gateway));
 
   app.use('/api/admin', admin);
-  app.use('/api/me', memberPortalRoutes(gateway));
+  app.use('/api/me', memberPortalRoutes(gateway, options.launchpad ?? null));
   app.use('/api', memberRoutes(gateway));
   app.use('/api', (_req, _res, next) => {
     next(notFound('Not found'));
@@ -186,12 +192,13 @@ export function createApp(
 export function createVmApp(
   gateway: Gateway,
   config: GatewayConfig,
-  options: Pick<AppOptions, 'fetch'> = {},
+  options: Pick<AppOptions, 'fetch' | 'launchpad'> = {},
 ): express.Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', false);
   mountSessionKeyRoutes(app, gateway, config, options.fetch);
+  if (options.launchpad) app.use('/runner', runnerRoutes(options.launchpad));
   app.use((_req, _res, next) => {
     next(notFound('Not found'));
   });
