@@ -23,7 +23,7 @@ export interface LaunchContext {
   config: RunnerConfig;
   /** The agent's home directory. */
   home: string;
-  /** Where the runner's helper scripts are (`mcp.js`, `pi-extension.js`). */
+  /** Where the runner's helper scripts are (`mcp.js`, `pi-extension.mjs`). */
   guestDir: string;
   /** Node binary, to start the MCP server. */
   nodeBin: string;
@@ -37,6 +37,8 @@ export interface HarnessLaunch {
   env: Record<string, string>;
   /** Config files to write (as the agent) before starting. */
   files: { path: string; content: string }[];
+  /** Directories to create (as the agent) before starting. */
+  dirs: string[];
 }
 
 export interface HarnessAdapter {
@@ -182,6 +184,7 @@ export const claudeCode: HarnessAdapter = {
         DISABLE_ERROR_REPORTING: '1',
       },
       files: [],
+      dirs: [],
     };
   },
 
@@ -284,6 +287,7 @@ export const codex: HarnessAdapter = {
       ],
       env: { ...baseEnv(ctx), CODEX_HOME: path.join(ctx.home, '.codex') },
       files: [],
+      dirs: [path.join(ctx.home, '.codex')],
     };
   },
 
@@ -318,7 +322,8 @@ export const codex: HarnessAdapter = {
 export const gemini: HarnessAdapter = {
   launch(ctx) {
     const { config } = ctx;
-    const settingsPath = path.join(ctx.home, '.gemini-system-settings.json');
+    // User settings: Gemini CLI ignores system settings in directories not owned by root.
+    const settingsPath = path.join(ctx.home, '.gemini', 'settings.json');
     const settings = {
       security: { auth: { selectedType: 'gemini-api-key' } },
       mcpServers: {
@@ -349,9 +354,9 @@ export const gemini: HarnessAdapter = {
         ...baseEnv(ctx),
         GEMINI_API_KEY: config.sessionKey,
         GOOGLE_GEMINI_BASE_URL: proxy(ctx, 'gemini'),
-        GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsPath,
       },
       files: [{ path: settingsPath, content: JSON.stringify(settings) }],
+      dirs: [],
     };
   },
 
@@ -457,16 +462,16 @@ export const pi: HarnessAdapter = {
         'json',
         '--no-session',
         '-e',
-        path.join(ctx.guestDir, 'pi-extension.js'),
+        path.join(ctx.guestDir, 'pi-extension.mjs'),
         '--append-system-prompt',
         config.systemPrompt,
-        ...(config.llm.model
-          ? ['--model', `${provider.id}/${config.llm.model}`]
-          : ['--provider', provider.id]),
+        // Without a model, pi picks its default for the only provider it has a key for.
+        ...(config.llm.model ? ['--model', `${provider.id}/${config.llm.model}`] : []),
         config.prompt,
       ],
       env: { ...baseEnv(ctx), PI_CODING_AGENT_DIR: agentDir, [provider.keyEnv]: config.sessionKey },
       files: [{ path: path.join(agentDir, 'models.json'), content: JSON.stringify(models) }],
+      dirs: [],
     };
   },
 

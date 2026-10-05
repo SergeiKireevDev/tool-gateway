@@ -21,6 +21,9 @@ const DROP_RESPONSE_HEADERS = new Set([
   'strict-transport-security',
 ]);
 
+/** Upstream statuses meaning the gateway's credential was refused. */
+const UPSTREAM_AUTH_ERRORS = new Set<number>([HTTP.UNAUTHORIZED, HTTP.FORBIDDEN]);
+
 const rawBody = express.raw({ type: () => true, limit: '50mb' });
 /** Largest upstream response a tool may inspect (it is buffered instead of streamed). */
 const MAX_OBSERVED_RESPONSE_MIB = 50;
@@ -117,21 +120,12 @@ async function forward(
     upstream.status,
     decision.detail ? `${decision.permission} · ${decision.detail}` : decision.permission,
   );
-  const meter = decision.meter?.(upstream.headers.get('content-type') ?? '');
+  if (await refusedCredential(tool, upstream, res)) return;
   await relay(upstream, req, res, {
     rewriteHeader: (name, value) =>
       tool.rewriteResponseHeader?.(name, value, `${config.publicUrl}${prefix}`) ?? value,
     observe: decision.observeResponse,
-    meter: meter && {
-      write: (chunk) => {
-        meter.write(chunk);
-      },
-      // Also on aborted streams: the tokens of a partial answer are spent too.
-      end: () => {
-        const usage = meter.end();
-        if (usage) gateway.llmUsage.record(session.id, tool.id, usage);
-      },
-    },
+    meter: usageMeter(gateway, session.id, tool.id, decision, upstream),
   });
 }
 
@@ -172,6 +166,48 @@ async function fetchUpstream(
     logError(message);
     throw badGateway(`Upstream request failed: ${message}`);
   }
+}
+
+/** Records the LLM tokens a response used, also for aborted streams (they are spent too). */
+function usageMeter(
+  gateway: Gateway,
+  sessionId: string,
+  toolId: string,
+  decision: AuthzAllowed,
+  upstream: globalThis.Response,
+): { write: (chunk: Uint8Array) => void; end: () => void } | undefined {
+  const meter = decision.meter?.(upstream.headers.get('content-type') ?? '');
+  if (!meter) return undefined;
+  return {
+    write: (chunk) => {
+      meter.write(chunk);
+    },
+    end: () => {
+      const usage = meter.end();
+      if (usage) gateway.llmUsage.record(sessionId, toolId, usage);
+    },
+  };
+}
+
+/**
+ * An LLM provider's auth error is about the gateway's own credential (and can echo part of it):
+ * answer with the gateway's explanation instead. Returns whether it answered.
+ */
+async function refusedCredential(
+  tool: ToolProvider,
+  upstream: globalThis.Response,
+  res: Response,
+): Promise<boolean> {
+  if (tool.kind !== 'llm' || !UPSTREAM_AUTH_ERRORS.has(upstream.status)) return false;
+  await upstream.body?.cancel();
+  res
+    .status(HTTP.BAD_GATEWAY)
+    .set('x-gateway-upstream-auth', 'failed')
+    .json({
+      error: 'upstream_auth',
+      message: `${tool.name} rejected the gateway's ${tool.name} account (HTTP ${upstream.status}). Ask the gateway admin to check or reconnect it.`,
+    });
+  return true;
 }
 
 /** A session key sent the way the tool's own clients send their API key (e.g. `x-api-key`). */

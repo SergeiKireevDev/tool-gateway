@@ -225,6 +225,26 @@ describe('Gemini', () => {
   });
 });
 
+describe('upstream auth errors', () => {
+  it('never relays the provider’s auth error (it can echo the gateway’s key)', async () => {
+    connected.add('openai');
+    await adminPost('/accounts', {
+      tool: 'openai',
+      label: 'revoked',
+      secret: 'sk-proj-revoked-key',
+    }).expect(201);
+    const key = await keyFor('openai');
+    const res = await request(app)
+      .post('/proxy/openai/v1/responses')
+      .set('authorization', `Bearer ${key}`)
+      .send({ model: 'gpt-5', input: 'hi' })
+      .expect(502);
+    expect(res.headers['x-gateway-upstream-auth']).toBe('failed');
+    expect(res.body.message).toContain('OpenAI rejected the gateway');
+    expect(JSON.stringify(res.body)).not.toContain('revoked');
+  });
+});
+
 describe('usage', () => {
   it('sums usage per model for a set of sessions', async () => {
     const key = await keyFor('anthropic');

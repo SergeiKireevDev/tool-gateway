@@ -88,14 +88,20 @@ function setupNetwork(config: RunnerConfig): void {
 }
 
 function writeOwned(file: string, content: string, ids: { uid: number; gid: number } | null): void {
-  mkdirSync(path.dirname(file), { recursive: true });
+  makeDir(path.dirname(file), ids);
   writeFileSync(file, content, { mode: 0o600 });
   if (ids) chownSync(file, ids.uid, ids.gid);
 }
 
+/** Creates a directory (and missing parents), all owned by the agent when running as root. */
 function makeDir(dir: string, ids: { uid: number; gid: number } | null): void {
-  mkdirSync(dir, { recursive: true });
-  if (ids) chownSync(dir, ids.uid, ids.gid);
+  const first = mkdirSync(dir, { recursive: true });
+  if (!ids) return;
+  if (first === undefined) {
+    chownSync(dir, ids.uid, ids.gid);
+    return;
+  }
+  for (let d = dir; d.startsWith(first); d = path.dirname(d)) chownSync(d, ids.uid, ids.gid);
 }
 
 async function* walk(dir: string, base = dir): AsyncGenerator<string> {
@@ -154,6 +160,7 @@ function runHarness(
     nodeBin: process.execPath,
     extraPath: process.env.LAUNCHPAD_HARNESS_PATH ?? null,
   });
+  for (const dir of launch.dirs) makeDir(dir, ids);
   for (const file of launch.files) writeOwned(file.path, file.content, ids);
   const workDir = path.join(home, 'work');
   const child: ChildProcess = spawn(launch.command, launch.args, {

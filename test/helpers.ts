@@ -169,6 +169,10 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
       headers.get('x-api-key') ?? headers.get('x-goog-api-key') ?? headers.get('authorization');
     if (key?.endsWith('bad-key')) return Promise.resolve(new Response('{}', { status: 401 }));
     if ((init.method ?? 'GET') === 'GET') return Promise.resolve(Response.json({ data: [] }));
+    // A key revoked after it was connected: providers echo part of it in their error.
+    if (key?.endsWith('revoked-key')) {
+      return Promise.resolve(Response.json({ error: `Incorrect API key ${key}` }, { status: 401 }));
+    }
     const body = JSON.parse(Buffer.from(init.body as Buffer).toString('utf8')) as Record<
       string,
       unknown
