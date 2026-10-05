@@ -3,11 +3,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ActivityLog } from '../src/server/activity.js';
 import { Database, IN_MEMORY } from '../src/server/db/database.js';
+import { LlmUsageLog } from '../src/server/llmUsage.js';
 import type { GatewayConfig } from '../src/server/config.js';
 import { Gateway } from '../src/server/gateway.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
 import { EncryptedStore } from '../src/server/store/store.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
+import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
+import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
+import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
 import { createSlackProvider } from '../src/server/tools/slack.js';
@@ -99,13 +103,93 @@ export function fakeSlackFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+/** Usage every fake LLM answer reports: 100 input, 50 output, 10 cache reads, 5 cache writes. */
+export const FAKE_LLM_TOTAL = 165;
+
+const sse = (events: object[]): Response =>
+  new Response(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''), {
+    headers: { 'content-type': 'text/event-stream' },
+  });
+
+function fakeLlmAnswer(url: string, body: Record<string, unknown>): Response {
+  const stream = body.stream === true || url.includes(':streamGenerateContent');
+  if (url.startsWith('https://api.anthropic.com/')) {
+    const usage = {
+      input_tokens: 100,
+      cache_read_input_tokens: 10,
+      cache_creation_input_tokens: 5,
+    };
+    if (!stream) return Response.json({ type: 'message', usage: { ...usage, output_tokens: 50 } });
+    return sse([
+      { type: 'message_start', message: { usage: { ...usage, output_tokens: 1 } } },
+      { type: 'content_block_delta', delta: { text: 'hi' } },
+      { type: 'message_delta', usage: { output_tokens: 50 } },
+    ]);
+  }
+  if (url.startsWith('https://api.openai.com/v1/responses')) {
+    const usage = {
+      input_tokens: 110,
+      input_tokens_details: { cached_tokens: 10 },
+      output_tokens: 55,
+    };
+    if (!stream) return Response.json({ usage });
+    return sse([
+      { type: 'response.output_text.delta' },
+      { type: 'response.completed', response: { usage } },
+    ]);
+  }
+  if (url.startsWith('https://api.openai.com/')) {
+    const usage = {
+      prompt_tokens: 110,
+      prompt_tokens_details: { cached_tokens: 10 },
+      completion_tokens: 55,
+    };
+    return stream ? sse([{ choices: [] }, { choices: [], usage }]) : Response.json({ usage });
+  }
+  const usageMetadata = {
+    promptTokenCount: 115,
+    cachedContentTokenCount: 10,
+    candidatesTokenCount: 40,
+    thoughtsTokenCount: 10,
+  };
+  return stream
+    ? sse([{ usageMetadata: { ...usageMetadata, candidatesTokenCount: 1 } }, { usageMetadata }])
+    : Response.json({ usageMetadata });
+}
+
+/** Fake Anthropic / OpenAI / Gemini: rejects key `bad-key`, answers with fixed token usage. */
+export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    const headers = new Headers(init.headers);
+    const key =
+      headers.get('x-api-key') ?? headers.get('x-goog-api-key') ?? headers.get('authorization');
+    if (key?.endsWith('bad-key')) return Promise.resolve(new Response('{}', { status: 401 }));
+    if ((init.method ?? 'GET') === 'GET') return Promise.resolve(Response.json({ data: [] }));
+    const body = JSON.parse(Buffer.from(init.body as Buffer).toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    return Promise.resolve(fakeLlmAnswer(url, body));
+  };
+}
+
+const LLM_HOSTS = [
+  'https://api.anthropic.com/',
+  'https://api.openai.com/',
+  'https://generativelanguage.googleapis.com/',
+];
+
 /** Routes upstream calls to the fake API of the tool they are for. */
 function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const github = fakeGitHubFetch(calls);
   const monday = fakeMondayFetch(calls);
   const slack = fakeSlackFetch(calls);
+  const llm = fakeLlmFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+    if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
     return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);
   };
@@ -184,6 +268,7 @@ export async function createHarness(): Promise<Harness> {
   const fetch = fakeUpstreams(upstreamCalls);
   const crypto = await CryptoBox.fromKeyFile(config.keyFile);
   const store = await EncryptedStore.open(config.storeFile, crypto);
+  const db = Database.open(IN_MEMORY);
   const clock = { now: new Date('2026-01-01T00:00:00Z') };
   const gateway = new Gateway(
     store,
@@ -192,8 +277,12 @@ export async function createHarness(): Promise<Harness> {
       createGitHubProvider(fetch),
       createMondayProvider(fetch),
       createSlackProvider(fetch),
+      createAnthropicProvider(fetch),
+      createOpenAIProvider(fetch),
+      createGeminiProvider(fetch),
     ]),
-    new ActivityLog(Database.open(IN_MEMORY)),
+    new ActivityLog(db),
+    new LlmUsageLog(db),
     () => clock.now,
   );
   return { gateway, config, clock, fetch, upstreamCalls };

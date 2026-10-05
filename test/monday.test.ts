@@ -25,6 +25,7 @@ const authz = (
     monday.authorize({ method, segments, search, headers: new Headers(), body }, grant, {
       sessionId,
       secret: 'tok',
+      tokensRemaining: null,
     }),
   );
 

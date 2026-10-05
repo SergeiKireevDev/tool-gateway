@@ -140,6 +140,31 @@ refused). Methods that can't name a channel (`conversations.open`, `conversation
 `search.messages`) need an unrestricted template. Listing channels and users is not limited by the
 allowlist.
 
+## LLM providers (Anthropic, OpenAI, Gemini)
+
+Agents launched by the gateway call their model through it too, so the VM only ever holds a
+session key. Connect an API key as an account (**Accounts → Connect account → Anthropic / OpenAI /
+Gemini**) and grant `llm:invoke` in a template. The resource allowlist is a list of **model
+patterns** (`claude-sonnet-*`, `gpt-5*`; empty = any model).
+
+| Provider    | Proxy URL          | Endpoints                                                                               | Session key header               |
+| ----------- | ------------------ | --------------------------------------------------------------------------------------- | -------------------------------- |
+| `anthropic` | `/proxy/anthropic` | `POST /v1/messages`, `/v1/messages/count_tokens` (`?beta=true` allowed)                 | `x-api-key` or `Authorization`   |
+| `openai`    | `/proxy/openai`    | `POST /v1/responses`, `/v1/chat/completions`                                            | `Authorization: Bearer`          |
+| `gemini`    | `/proxy/gemini`    | `POST /v1beta/models/<model>:generateContent`, `:streamGenerateContent`, `:countTokens` | `x-goog-api-key` (never `?key=`) |
+
+`models:read` allows listing models. Everything else is denied.
+
+- **Token budget.** A session key may carry a `tokenBudget` (`POST /api/sessions` …
+  `"tokenBudget": 2000000`). Every metered call counts input + output + cache-read + cache-write
+  tokens, read from the (streamed) response. The output limit of each call (`max_tokens`,
+  `max_output_tokens`, `maxOutputTokens`) is capped to what is left, and calls are refused once it
+  is spent. `GET /api/session` shows `tokensRemaining`. Usage lands in the `llm_usage` table.
+- **Server-side tools** (web search/fetch, code execution, remote MCP servers, Google Search…) run at
+  the provider and reach the internet from there. They need the extra `llm:server-tools`
+  permission, so an agent can't use them to get around its network lockdown.
+- Request bodies are parsed and re-serialized, so the provider reads exactly what was checked.
+
 ## Using a session key
 
 Issue a key in the UI (**Session keys → Issue session key**) and copy it. It is shown only once.

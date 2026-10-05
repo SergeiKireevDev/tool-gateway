@@ -3,7 +3,7 @@ import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import type { GatewayConfig } from '../config.js';
 import { badGateway, unauthorized } from '../errors.js';
-import type { Gateway } from '../gateway.js';
+import { SESSION_KEY_PREFIX, type Gateway } from '../gateway.js';
 import { HTTP } from '../httpStatus.js';
 import { parseSafePath } from '../tools/pathMatch.js';
 import { BYTES_PER_MIB } from '../units.js';
@@ -56,7 +56,7 @@ async function forward(
   const rawPath = match?.[1] ?? '/';
   const search = match?.[2] ?? '';
 
-  const key = proxyToken(req);
+  const key = proxyToken(req) ?? altKeyHeader(req, gateway.tools.get(toolId)?.sessionKeyHeaders);
   if (!key) throw unauthorized('Missing session key (Authorization: Bearer gws_…)');
   const session = gateway.resolveSession(key);
 
@@ -95,6 +95,7 @@ async function forward(
   const decision = await tool.authorize(toolRequest, grant, {
     sessionId: session.id,
     secret: account.secret,
+    tokensRemaining: gateway.tokensRemaining(session),
   });
   if (!decision.allowed) {
     deny(HTTP.FORBIDDEN, decision.reason);
@@ -116,10 +117,21 @@ async function forward(
     upstream.status,
     decision.detail ? `${decision.permission} · ${decision.detail}` : decision.permission,
   );
+  const meter = decision.meter?.(upstream.headers.get('content-type') ?? '');
   await relay(upstream, req, res, {
     rewriteHeader: (name, value) =>
       tool.rewriteResponseHeader?.(name, value, `${config.publicUrl}${prefix}`) ?? value,
     observe: decision.observeResponse,
+    meter: meter && {
+      write: (chunk) => {
+        meter.write(chunk);
+      },
+      // Also on aborted streams: the tokens of a partial answer are spent too.
+      end: () => {
+        const usage = meter.end();
+        if (usage) gateway.llmUsage.record(session.id, tool.id, usage);
+      },
+    },
   });
 }
 
@@ -162,6 +174,15 @@ async function fetchUpstream(
   }
 }
 
+/** A session key sent the way the tool's own clients send their API key (e.g. `x-api-key`). */
+function altKeyHeader(req: Request, headers: readonly string[] | undefined): string | null {
+  for (const name of headers ?? []) {
+    const value = req.get(name)?.trim();
+    if (value?.startsWith(SESSION_KEY_PREFIX)) return value;
+  }
+  return null;
+}
+
 function toolRequestOf(req: Request, segments: string[], search: string): ToolRequest {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
@@ -179,6 +200,7 @@ async function relay(
   opts: {
     rewriteHeader: (name: string, value: string) => string;
     observe: AuthzAllowed['observeResponse'];
+    meter: { write: (chunk: Uint8Array) => void; end: () => void } | undefined;
   },
 ): Promise<void> {
   res.status(upstream.status);
@@ -186,6 +208,7 @@ async function relay(
     if (!DROP_RESPONSE_HEADERS.has(name)) res.setHeader(name, opts.rewriteHeader(name, value));
   });
   if (!upstream.body || req.method === 'HEAD') {
+    opts.meter?.end();
     res.end();
     return;
   }
@@ -193,9 +216,22 @@ async function relay(
     res.end(await observed(upstream, opts.observe));
     return;
   }
-  Readable.fromWeb(upstream.body as NodeReadableStream<Uint8Array>)
-    .on('error', () => res.destroy())
-    .pipe(res);
+  const body = Readable.fromWeb(upstream.body as NodeReadableStream<Uint8Array>);
+  const { meter } = opts;
+  if (meter) {
+    let ended = false;
+    const finish = (): void => {
+      if (ended) return;
+      ended = true;
+      meter.end();
+    };
+    body.on('data', (chunk: Uint8Array) => {
+      meter.write(chunk);
+    });
+    body.on('end', finish);
+    body.on('close', finish);
+  }
+  body.on('error', () => res.destroy()).pipe(res);
 }
 
 /** Buffers a response so the tool can inspect it, then returns the bytes to forward unchanged. */
