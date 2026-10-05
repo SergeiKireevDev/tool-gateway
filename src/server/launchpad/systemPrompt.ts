@@ -32,6 +32,16 @@ function describeGrant(g: PromptGrant): string {
   return [`- **${g.name}** — tool \`${gatewayToolName(g.tool)}\``, ...perms, scope].join('\n');
 }
 
+function gitSection(grants: PromptGrant[]): string {
+  const github = grants.find((g) => g.tool === 'github');
+  const ids = new Set(github?.permissions.map((p) => p.id));
+  if (!ids.has('contents:read')) return '';
+  const push = ids.has('contents:write')
+    ? ' You can push new branches (`git push origin HEAD:refs/heads/<branch>`), but not to the default branch and not tags: open a pull request with the GitHub tool instead.'
+    : ' Pushing is not allowed for this run.';
+  return `git works for the allowed GitHub repositories: \`git clone https://github.com/<owner>/<repo>\` goes through the gateway (already configured).${push}\n\n`;
+}
+
 /**
  * The system prompt every launched agent gets: how to reach tools through the gateway, what it is
  * allowed to do, and how its run ends. The task itself is the user prompt.
@@ -52,7 +62,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 You reach these only through the gateway MCP tools below. Each call is checked against the permissions granted to this run and logged.
 ${tools}
 
-If a call is refused with HTTP 403 and an \`x-gateway-denied\` header, the gateway's policy forbids it. Don't retry it or look for a way around it: do what you can within your permissions and explain what you couldn't do.
+${gitSection(ctx.grants)}If a call is refused with HTTP 403 and an \`x-gateway-denied\` header, the gateway's policy forbids it. Don't retry it or look for a way around it: do what you can within your permissions and explain what you couldn't do.
 
 ## Results
 - End with a short final message: what you did, what you found, and anything left undone. It is shown to the person who launched you.

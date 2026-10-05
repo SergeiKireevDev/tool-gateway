@@ -60,7 +60,11 @@ async function forward(
   const search = match?.[2] ?? '';
 
   const key = proxyToken(req) ?? altKeyHeader(req, gateway.tools.get(toolId)?.sessionKeyHeaders);
-  if (!key) throw unauthorized('Missing session key (Authorization: Bearer gws_…)');
+  if (!key) {
+    // Lets clients that wait for a challenge (git) retry with their credentials.
+    res.set('www-authenticate', 'Basic realm="gateway"');
+    throw unauthorized('Missing session key (Authorization: Bearer gws_…)');
+  }
   const session = gateway.resolveSession(key);
 
   const log = (decision: 'allowed' | 'denied', status: number, detail: string): void => {
@@ -152,21 +156,32 @@ async function fetchUpstream(
   });
 
   try {
-    return await fetchImpl(
-      `${tool.upstreamBaseUrl}${rawPath}${decision.search ?? request.search}`,
-      {
-        method: decision.method ?? request.method,
-        headers: tool.upstreamHeaders(secret, request.headers),
-        body,
-        redirect: 'manual',
-        signal: controller.signal,
-      },
-    );
+    const target = upstreamTarget(tool, decision, rawPath, request.search);
+    return await fetchImpl(target.url, {
+      method: decision.method ?? request.method,
+      headers: target.headers(secret, request.headers),
+      body,
+      redirect: 'manual',
+      signal: controller.signal,
+    });
   } catch (err) {
     const message = (err as Error).message;
     logError(message);
     throw badGateway(`Upstream request failed: ${message}`);
   }
+}
+
+/** Where an allowed request goes upstream, and with which headers (tools may override both). */
+function upstreamTarget(
+  tool: ToolProvider,
+  decision: AuthzAllowed,
+  rawPath: string,
+  search: string,
+): { url: string; headers: (secret: string, incoming: Headers) => Headers } {
+  return {
+    url: decision.upstreamUrl ?? `${tool.upstreamBaseUrl}${rawPath}${decision.search ?? search}`,
+    headers: decision.upstreamHeaders ?? tool.upstreamHeaders.bind(tool),
+  };
 }
 
 /** Records the LLM tokens a response used, also for aborted streams (they are spent too). */

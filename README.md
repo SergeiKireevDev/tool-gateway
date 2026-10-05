@@ -97,6 +97,16 @@ Anything not covered by a rule is denied. That includes GraphQL, repository sett
 Actions secrets, and deleting repositories. The gateway can never grant more than the underlying
 token allows, so a fine-grained PAT is recommended.
 
+**git over HTTP.** `/proxy/github/git/<owner>/<repo>.git` speaks git's smart HTTP protocol to
+github.com, so `git clone`, `fetch` and `push` work with a session key. Send the key as
+`Authorization: Bearer gws_…` (`git -c http.extraHeader=…`) or as the HTTP Basic password.
+
+- Fetching needs `contents:read` and pushing `contents:write`, within the repository allowlist.
+- The gateway reads every push before forwarding it. Only branches can be updated, never deleted,
+  and never the repository's default branch: push a branch and open a pull request.
+- Agent VMs are configured for this automatically: `https://github.com/…` URLs go through the
+  gateway.
+
 monday.com has a single GraphQL endpoint, so the gateway parses each document (with `graphql-js`)
 and maps every root field to a permission (see `src/server/tools/monday.ts`):
 
