@@ -457,8 +457,9 @@ export class Launchpad {
       await this.reapRun(run, now, vms);
     }
     if (vms) {
-      const owned = new Set(this.deps.runs.withStatus(ACTIVE_STATUSES).map((r) => r.vmId));
-      for (const vm of vms.filter((v) => !owned.has(v.vmId))) {
+      // By run, not VM id: a run only learns its VM id once the boot returns.
+      const active = new Set(this.deps.runs.withStatus(ACTIVE_STATUSES).map((r) => r.id));
+      for (const vm of vms.filter((v) => !active.has(v.runId))) {
         await this.deps.driver.destroy(vm.vmId).catch(() => undefined);
       }
     }

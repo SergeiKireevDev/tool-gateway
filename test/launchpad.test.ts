@@ -281,3 +281,20 @@ describe('admin settings', () => {
     expect(t.launchpad.runs.require(id).timeoutSeconds).toBe(1800);
   });
 });
+
+describe('reaping while a VM boots', () => {
+  it('never destroys the VM of a run that is still starting', async () => {
+    const alice = await t.member('alice');
+    // The VM exists in the driver before the run knows its id.
+    t.driver.vms.set('vm-booting', { vmId: 'vm-booting', runId: 'pending-run', running: true });
+    const res = await t.portal(alice.cookie, 'post', '/runs').send(launchBody()).expect(201);
+    t.driver.vms.set('vm-booting', {
+      vmId: 'vm-booting',
+      runId: res.body.id as string,
+      running: true,
+    });
+    t.launchpad.runs.update(res.body.id as string, { status: 'provisioning', vmId: null });
+    await t.launchpad.reap();
+    expect(t.driver.destroyed).not.toContain('vm-booting');
+  });
+});
