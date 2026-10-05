@@ -15,7 +15,7 @@ const SCHEDULER_INTERVAL_MS = 30_000;
 async function main(): Promise<void> {
   loadEnvFile();
   const config = loadConfig();
-  const { gateway, db, launchpad, scheduler } = await openGateway(config);
+  const { gateway, db, launchpad, scheduler, webhooks } = await openGateway(config);
 
   if (!gateway.hasAdminToken()) {
     const token = await gateway.rotateAdminToken();
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   await web.prepare();
   const handleWeb = web.getRequestHandler();
 
-  const app = createApp(gateway, config, { launchpad, scheduler });
+  const app = createApp(gateway, config, { launchpad, scheduler, webhooks });
   // Everything not handled by the gateway (admin UI pages, assets) goes to Next.js.
   app.all('/{*splat}', (req, res) => void handleWeb(req, res));
 

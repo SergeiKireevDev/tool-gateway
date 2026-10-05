@@ -37,6 +37,7 @@ import { MyTemplatesPanel } from './MyTemplatesPanel';
 import { MembersPanel } from './MembersPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { TemplatesPanel } from './TemplatesPanel';
+import { WebhooksPanel } from './WebhooksPanel';
 import { ErrorBanner } from './ui';
 
 export interface GatewayData {
@@ -110,6 +111,7 @@ const ADMIN_TABS: TabDef[] = [
     render: (p) => <RunsWorkspace api={p.api} base={ADMIN_API} admin accounts={p.data.accounts} />,
   },
   { id: 'launchpad', label: 'Launchpad', render: (p) => <LaunchpadSettingsPanel api={p.api} /> },
+  { id: 'webhooks', label: 'Webhooks', render: (p) => <WebhooksPanel {...p} /> },
   { id: 'activity', label: 'Activity', render: (p) => <ActivityPanel api={p.api} /> },
 ];
 
@@ -140,6 +142,7 @@ const MEMBER_TABS: TabDef[] = [
     render: (p) => <AccountsPanel {...p} kind="llm" />,
   },
   { id: 'templates', label: 'My templates', render: (p) => <MyTemplatesPanel {...p} /> },
+  { id: 'webhooks', label: 'Webhooks', render: (p) => <WebhooksPanel {...p} /> },
 ];
 
 async function loadAdminData(api: Api): Promise<GatewayData> {
@@ -353,7 +356,7 @@ function Workspace({
             </button>
           </div>
         </div>
-        <nav className="mx-auto flex max-w-6xl gap-1 px-6" aria-label="Sections">
+        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-6" aria-label="Sections">
           {tabs.map((t) => (
             <button
               key={t.id}
@@ -362,7 +365,7 @@ function Workspace({
                 setTabId(t.id);
               }}
               aria-current={t.id === tab?.id ? 'page' : undefined}
-              className={`-mb-px flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition ${
+              className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium whitespace-nowrap transition ${
                 t.id === tab?.id
                   ? 'border-indigo-600 text-indigo-700'
                   : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'

@@ -18,6 +18,7 @@ import { createSlackProvider } from '../src/server/tools/slack.js';
 
 export interface Harness {
   gateway: Gateway;
+  store: EncryptedStore;
   db: Database;
   crypto: CryptoBox;
   config: GatewayConfig;
@@ -321,5 +322,5 @@ export async function createHarness(): Promise<Harness> {
     new LlmUsageLog(db),
     () => clock.now,
   );
-  return { gateway, db, crypto, config, clock, fetch, upstreamCalls };
+  return { gateway, store, db, crypto, config, clock, fetch, upstreamCalls };
 }

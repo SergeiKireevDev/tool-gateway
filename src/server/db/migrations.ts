@@ -122,4 +122,16 @@ export const MIGRATIONS: readonly string[] = [
    );
    CREATE INDEX schedules_member ON schedules (member_id);
    CREATE INDEX schedules_due ON schedules (enabled, next_run_at);`,
+
+  // 5: inbound webhook deliveries (accepted and rejected)
+  `CREATE TABLE webhook_events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     webhook_id TEXT NOT NULL,
+     at TEXT NOT NULL,
+     accepted INTEGER NOT NULL,
+     reason TEXT,
+     event_type TEXT,
+     payload TEXT
+   );
+   CREATE INDEX webhook_events_hook ON webhook_events (webhook_id, id);`,
 ];
