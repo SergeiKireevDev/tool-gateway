@@ -84,6 +84,7 @@ export class VmManager {
       await this.host.tryRun('ip', ['link', 'del', this.tapName(index)]);
     }
     await this.host.remove(path.join(this.config.jailBase, 'firecracker'));
+    await this.host.mkdir(this.config.jailBase);
     await this.host.mkdir(this.config.logDir);
   }
 
@@ -188,8 +189,9 @@ export class VmManager {
     );
     vm.process = proc;
     vm.exited = new Promise((resolve) => {
-      proc.onExit(() => {
+      proc.onExit((code) => {
         vm.running = false;
+        console.info(`vmd: VM ${vm.vmId} (run ${vm.runId}) exited with code ${String(code)}`);
         resolve();
       });
     });
