@@ -1,0 +1,13 @@
+#!/bin/sh
+# PID 1 of an agent VM: minimal mounts, then the runner under tini (reaps the agent's processes).
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
+hostname agent
+ip link set lo up
+exec /usr/bin/tini -s -- /usr/local/bin/node /opt/launchpad/runner.js --poweroff

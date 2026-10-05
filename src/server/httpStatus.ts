@@ -10,9 +10,11 @@ export const HTTP = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
   UNPROCESSABLE_ENTITY: 422,
   INTERNAL_SERVER_ERROR: 500,
   BAD_GATEWAY: 502,
+  SERVICE_UNAVAILABLE: 503,
 } as const;
 
 export const isClientError = (status: number): boolean =>
