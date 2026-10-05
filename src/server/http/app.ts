@@ -17,6 +17,7 @@ import { memberPortalRoutes } from './memberPortalRoutes.js';
 import { memberRoutes } from './memberRoutes.js';
 import { proxyHandler } from './proxy.js';
 import type { Launchpad } from '../launchpad/launchpad.js';
+import type { Scheduler } from '../launchpad/scheduler.js';
 import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
 
 export interface AppOptions {
@@ -26,6 +27,7 @@ export interface AppOptions {
   googleSignIn?: GoogleSignIn | null;
   /** The agent launchpad; its routes are off when absent. */
   launchpad?: Launchpad | null;
+  scheduler?: Scheduler | null;
 }
 
 export function createApp(
@@ -172,10 +174,18 @@ export function createApp(
     '/activity',
     h(() => gateway.activity.recent()),
   );
-  if (options.launchpad) admin.use('/launchpad', adminLaunchRoutes(options.launchpad, gateway));
+  if (options.launchpad) {
+    admin.use(
+      '/launchpad',
+      adminLaunchRoutes(options.launchpad, gateway, options.scheduler ?? null),
+    );
+  }
 
   app.use('/api/admin', admin);
-  app.use('/api/me', memberPortalRoutes(gateway, options.launchpad ?? null));
+  app.use(
+    '/api/me',
+    memberPortalRoutes(gateway, options.launchpad ?? null, options.scheduler ?? null),
+  );
   app.use('/api', memberRoutes(gateway));
   app.use('/api', (_req, _res, next) => {
     next(notFound('Not found'));

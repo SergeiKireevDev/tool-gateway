@@ -10,11 +10,12 @@ const createNext = nextModule as unknown as typeof nextModule.default;
 
 const FLUSH_INTERVAL_MS = 15_000;
 const LAUNCHPAD_REAP_INTERVAL_MS = 60_000;
+const SCHEDULER_INTERVAL_MS = 30_000;
 
 async function main(): Promise<void> {
   loadEnvFile();
   const config = loadConfig();
-  const { gateway, db, launchpad } = await openGateway(config);
+  const { gateway, db, launchpad, scheduler } = await openGateway(config);
 
   if (!gateway.hasAdminToken()) {
     const token = await gateway.rotateAdminToken();
@@ -39,7 +40,7 @@ async function main(): Promise<void> {
   await web.prepare();
   const handleWeb = web.getRequestHandler();
 
-  const app = createApp(gateway, config, { launchpad });
+  const app = createApp(gateway, config, { launchpad, scheduler });
   // Everything not handled by the gateway (admin UI pages, assets) goes to Next.js.
   app.all('/{*splat}', (req, res) => void handleWeb(req, res));
 
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
   if (launchpad) {
     await launchpad.recover();
     launchpad.startTimers(LAUNCHPAD_REAP_INTERVAL_MS);
+    scheduler?.startTimer(SCHEDULER_INTERVAL_MS);
     console.info(`  agent launchpad: on (${launchpad.driverName})`);
     if (launchpad.driverName === 'local-unsafe') {
       console.warn(
@@ -87,6 +89,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     clearInterval(timer);
     launchpad?.stopTimers();
+    scheduler?.stopTimer();
     server.close();
     vmServer?.close();
     void gateway.flush().finally(() => {

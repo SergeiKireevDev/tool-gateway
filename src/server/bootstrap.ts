@@ -5,6 +5,7 @@ import { Gateway } from './gateway.js';
 import { Launchpad } from './launchpad/launchpad.js';
 import { LocalProcessDriver } from './launchpad/localDriver.js';
 import { RunStore } from './launchpad/runStore.js';
+import { Scheduler } from './launchpad/scheduler.js';
 import { VmdDriver } from './launchpad/vmdDriver.js';
 import { CryptoBox } from './store/crypto.js';
 import { EncryptedStore } from './store/store.js';
@@ -21,6 +22,7 @@ export interface Services {
   gateway: Gateway;
   db: Database;
   launchpad: Launchpad | null;
+  scheduler: Scheduler | null;
 }
 
 export async function openGateway(config: GatewayConfig): Promise<Services> {
@@ -37,7 +39,14 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
   ]);
   const gateway = new Gateway(store, crypto, tools, new ActivityLog(db), new LlmUsageLog(db));
   gateway.setAdminEmails(config.google?.adminEmails ?? []);
-  return { gateway, db, launchpad: openLaunchpad(config, gateway, db, crypto) };
+  const launchpad = openLaunchpad(config, gateway, db, crypto);
+  const scheduler = launchpad && new Scheduler(db, gateway, launchpad);
+  if (launchpad && scheduler) {
+    launchpad.onFinished((run) => {
+      scheduler.onRunFinished(run);
+    });
+  }
+  return { gateway, db, launchpad, scheduler };
 }
 
 function openLaunchpad(

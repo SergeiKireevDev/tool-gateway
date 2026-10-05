@@ -69,6 +69,17 @@ export interface LaunchOptions {
 
 export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
 
+/** A validated launch: what the run will use. */
+export interface LaunchPlan {
+  prompt: string;
+  harness: Harness;
+  model: string | null;
+  template: Template;
+  accountIds: string[];
+  timeoutSeconds: number;
+  tokenBudget: number;
+}
+
 export interface LaunchpadDeps {
   gateway: Gateway;
   runs: RunStore;
@@ -77,8 +88,6 @@ export interface LaunchpadDeps {
   /** Gateway base URL as seen from inside the VMs. */
   vmGatewayUrl: string;
   now?: () => Date;
-  /** Called after a run reached a final state (the scheduler keeps memory from it). */
-  onFinished?: (run: Run) => void;
 }
 
 /** Which model API a template gives a harness, and the model to use by default. */
@@ -97,9 +106,15 @@ export class Launchpad {
   private readonly now: () => Date;
   private pumping: Promise<void> = Promise.resolve();
   private timer: NodeJS.Timeout | null = null;
+  private readonly finishedListeners: ((run: Run) => void)[] = [];
 
   constructor(private readonly deps: LaunchpadDeps) {
     this.now = deps.now ?? (() => new Date());
+  }
+
+  /** Called after a run reached a final state (the scheduler keeps memory from it). */
+  onFinished(listener: (run: Run) => void): void {
+    this.finishedListeners.push(listener);
   }
 
   get runs(): RunStore {
@@ -126,7 +141,11 @@ export class Launchpad {
     });
   }
 
-  launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
+  /**
+   * Checks that the member may launch this agent now (launch rights, template, accounts, model
+   * access for the harness, a key TTL long enough) and resolves what the run will use.
+   */
+  plan(member: Member, input: unknown): LaunchPlan {
     const req = launchSchema.parse(input);
     const settings = this.deps.runs.settings();
     if (!this.deps.runs.memberLaunch(member.id).launchEnabled) {
@@ -135,11 +154,11 @@ export class Launchpad {
     const plan = this.deps.gateway.planMemberSession(member, req.templateId, req.accountIds);
     const choice = this.harnessChoices(plan.template).find((c) => c.harness === req.harness);
     if (!choice) {
+      const needs = HARNESS_PROVIDERS[req.harness].join(' or ');
       throw badRequest(
-        `Template "${plan.template.name}" gives no ${HARNESS_PROVIDERS[req.harness].join(' or ')} access, which ${req.harness} needs`,
+        `Template "${plan.template.name}" gives no ${needs} access, which ${req.harness} needs`,
       );
     }
-    const model = this.pickModel(plan.template, choice, req.model);
     const timeoutSeconds = Math.min(
       settings.defaultTimeoutSeconds,
       settings.maxTimeoutSeconds,
@@ -150,24 +169,38 @@ export class Launchpad {
         `Template "${plan.template.name}" keys last too little for an agent run (max TTL ${plan.template.maxTtlSeconds}s)`,
       );
     }
+    return {
+      prompt: req.prompt,
+      harness: req.harness,
+      model: this.pickModel(plan.template, choice, req.model),
+      template: plan.template,
+      accountIds: plan.accountIds,
+      timeoutSeconds,
+      tokenBudget: settings.tokenBudgetPerRun,
+    };
+  }
+
+  launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
+    const plan = this.plan(member, input);
     const run = this.deps.runs.insert({
       id: randomId(),
       memberId: member.id,
       memberName: member.name,
       scheduleId: opts.scheduleId ?? null,
-      harness: req.harness,
-      model,
-      prompt: req.prompt,
+      harness: plan.harness,
+      model: plan.model,
+      prompt: plan.prompt,
       templateId: plan.template.id,
       templateName: plan.template.name,
       accountIds: plan.accountIds,
-      timeoutSeconds,
-      tokenBudget: settings.tokenBudgetPerRun,
+      timeoutSeconds: plan.timeoutSeconds,
+      tokenBudget: plan.tokenBudget,
       keyGeneration: opts.keyGeneration ?? null,
       memoryIn: opts.memoryIn ?? null,
       createdAt: this.now().toISOString(),
     });
-    this.log(run, `Member "${member.name}" launched a ${req.harness} agent`);
+    const how = opts.scheduleId ? 'Schedule launched' : `Member "${member.name}" launched`;
+    this.log(run, `${how} a ${plan.harness} agent`);
     void this.pump();
     return this.deps.runs.require(run.id);
   }
@@ -371,10 +404,12 @@ export class Launchpad {
     await this.cleanup(run);
     const reason = run.statusReason ? `: ${run.statusReason}` : '';
     this.log(run, `Run ${status}${reason}`);
-    try {
-      this.deps.onFinished?.(run);
-    } catch (err) {
-      console.error('Launchpad: onFinished hook failed', err);
+    for (const listener of this.finishedListeners) {
+      try {
+        listener(run);
+      } catch (err) {
+        console.error('Launchpad: onFinished listener failed', err);
+      }
     }
     void this.pump();
   }

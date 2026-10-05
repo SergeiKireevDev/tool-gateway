@@ -7,6 +7,7 @@ import { created, h, param } from '../http/handlers.js';
 import type { Member } from '../store/types.js';
 import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
 import type { Actor, Launchpad } from './launchpad.js';
+import type { Schedule, Scheduler } from './scheduler.js';
 import { HARNESSES, RUNNER_LIMITS } from './protocol.js';
 import { RUN_STATUSES, type LaunchSettings, type Run, type RunFilter } from './runStore.js';
 
@@ -21,6 +22,8 @@ const MIN_MEM_MIB = 256;
 const MAX_RETENTION_DAYS = 3650;
 const MAX_TOKEN_BUDGET = 1e10;
 const RUN_ID = 'id';
+const SCHEDULES_PATH = '/schedules';
+const SCHEDULE_PATH = '/schedules/:sid';
 
 const timeoutSeconds = z
   .number()
@@ -172,8 +175,47 @@ function runReadRoutes(
   );
 }
 
+/** A schedule with its next runs, as the API returns it. */
+function scheduleView(scheduler: Scheduler, schedule: Schedule) {
+  return { ...schedule, nextRuns: scheduler.preview(schedule) };
+}
+
+const enabledSchema = z.object({ enabled: z.boolean() });
+
+/** Schedule routes shared by the member portal (own schedules) and the admin (all). */
+function scheduleRoutes(
+  router: Router,
+  scheduler: Scheduler,
+  actorOf: (res: Response) => Actor,
+): void {
+  router.get(
+    SCHEDULE_PATH,
+    h((req, res) => scheduleView(scheduler, scheduler.visible(actorOf(res), param(req, 'sid')))),
+  );
+  router.patch(
+    SCHEDULE_PATH,
+    h((req, res) => {
+      const { enabled } = enabledSchema.parse(req.body);
+      return scheduleView(
+        scheduler,
+        scheduler.setEnabled(actorOf(res), param(req, 'sid'), enabled),
+      );
+    }),
+  );
+  router.delete(
+    SCHEDULE_PATH,
+    h((req, res) => {
+      scheduler.delete(actorOf(res), param(req, 'sid'));
+    }),
+  );
+}
+
 /** Member portal: launch agents and follow their own runs (mounted under `/api/me/launchpad`). */
-export function memberLaunchRoutes(launchpad: Launchpad, gateway: Gateway): Router {
+export function memberLaunchRoutes(
+  launchpad: Launchpad,
+  gateway: Gateway,
+  scheduler: Scheduler | null,
+): Router {
   const router = express.Router();
   const memberOf = (res: Response): Member => res.locals.member as Member;
   const actorOf = (res: Response): Actor => ({ kind: 'member', member: memberOf(res) });
@@ -212,13 +254,35 @@ export function memberLaunchRoutes(launchpad: Launchpad, gateway: Gateway): Rout
     created((req, res) => runView(launchpad, gateway, launchpad.launch(memberOf(res), req.body))),
   );
   runReadRoutes(router, launchpad, gateway, actorOf);
+  if (scheduler) {
+    router.get(
+      SCHEDULES_PATH,
+      h((_req, res) => scheduler.list(memberOf(res).id).map((x) => scheduleView(scheduler, x))),
+    );
+    router.post(
+      SCHEDULES_PATH,
+      created((req, res) => scheduleView(scheduler, scheduler.create(memberOf(res), req.body))),
+    );
+    scheduleRoutes(router, scheduler, actorOf);
+  }
   return router;
 }
 
 /** Admin: every run, settings and per-member launch rights (mounted under `/api/admin/launchpad`). */
-export function adminLaunchRoutes(launchpad: Launchpad, gateway: Gateway): Router {
+export function adminLaunchRoutes(
+  launchpad: Launchpad,
+  gateway: Gateway,
+  scheduler: Scheduler | null,
+): Router {
   const router = express.Router();
   const actorOf = (): Actor => ({ kind: 'admin' });
+  if (scheduler) {
+    router.get(
+      SCHEDULES_PATH,
+      h(() => scheduler.list().map((x) => scheduleView(scheduler, x))),
+    );
+    scheduleRoutes(router, scheduler, actorOf);
+  }
 
   router.get(
     '/runs',
