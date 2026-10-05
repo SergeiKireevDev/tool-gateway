@@ -165,6 +165,16 @@ patterns** (`claude-sonnet-*`, `gpt-5*`; empty = any model).
   permission, so an agent can't use them to get around its network lockdown.
 - Request bodies are parsed and re-serialized, so the provider reads exactly what was checked.
 
+## Agent launchpad
+
+Members can launch AI agents (Claude Code, Codex, Gemini CLI, pi) from the **Agents** tab. They
+run once or on a schedule, each in a disposable Firecracker microVM that can only reach the
+gateway. Every tool and model call goes through the gateway with a session key scoped by the
+template the member picked, and has a token budget. The run's transcript, its gateway calls,
+output files and `MEMORY.md` are kept and shown per run. Admins see every run under
+**Agent runs** and set limits under **Launchpad**. Off unless `LAUNCHPAD_VM_DRIVER` is set: see
+[docs/launchpad.md](docs/launchpad.md) for the host setup and the security model.
+
 ## Using a session key
 
 Issue a key in the UI (**Session keys → Issue session key**) and copy it. It is shown only once.
@@ -224,8 +234,11 @@ In the member portal a member can:
   admin you see them (with the owner's name) and can re-verify or remove them, but not change them
   or issue your own keys with them.
 - issue, list and revoke their session keys (their templates × their accounts + granted shared ones)
-- see and rotate their **member key** (`gwm_…`), which lets scripts, agents and CI jobs do the
-  same through the API below.
+- launch agents (see [Agent launchpad](#agent-launchpad)).
+
+Members never see their **member key** (`gwm_…`): the admin creates and rotates it and hands it to
+scripts or CI jobs, which use it through the API below. Each rotation also stops the member's
+scheduled agents.
 
 Rotating a member key revokes the session keys that member issued. Deleting a member also deletes
 the accounts it connected and revokes every key that could use them. A member key cannot call
@@ -291,17 +304,18 @@ Limitations for now:
 
 ## Configuration
 
-| Variable               | Default                                                                            |
-| ---------------------- | ---------------------------------------------------------------------------------- |
-| `GATEWAY_HOST`         | `127.0.0.1`                                                                        |
-| `GATEWAY_PORT`         | `7420`                                                                             |
-| `GATEWAY_DATA_DIR`     | `./data`                                                                           |
-| `GATEWAY_KEY_FILE`     | `~/.local-gateway/master.key`                                                      |
-| `GATEWAY_PUBLIC_URL`   | `http://<host>:<port>`                                                             |
-| `GATEWAY_VM_HOST`      | unset (agent VMs off). The VM bridge IP; serves only `/proxy/*` and `/api/session` |
-| `GOOGLE_CLIENT_ID`     | unset (Google sign-in off)                                                         |
-| `GOOGLE_CLIENT_SECRET` | unset                                                                              |
-| `GATEWAY_ADMIN_EMAILS` | empty (nobody can use Google sign-in)                                              |
+| Variable               | Default                                                                                         |
+| ---------------------- | ----------------------------------------------------------------------------------------------- |
+| `GATEWAY_HOST`         | `127.0.0.1`                                                                                     |
+| `GATEWAY_PORT`         | `7420`                                                                                          |
+| `GATEWAY_DATA_DIR`     | `./data`                                                                                        |
+| `GATEWAY_KEY_FILE`     | `~/.local-gateway/master.key`                                                                   |
+| `GATEWAY_PUBLIC_URL`   | `http://<host>:<port>`                                                                          |
+| `GATEWAY_VM_HOST`      | unset (agent VMs off). The VM bridge IP; serves only `/proxy/*` and `/api/session`              |
+| `LAUNCHPAD_VM_DRIVER`  | unset (launchpad off). `firecracker`, or `local-unsafe` for development (see docs/launchpad.md) |
+| `GOOGLE_CLIENT_ID`     | unset (Google sign-in off)                                                                      |
+| `GOOGLE_CLIENT_SECRET` | unset                                                                                           |
+| `GATEWAY_ADMIN_EMAILS` | empty (nobody can use Google sign-in)                                                           |
 
 Variables are read from `.env` in the working directory (see `.env.example`), then overridden by
 the real environment.
