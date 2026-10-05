@@ -39,7 +39,16 @@ export class LocalProcessDriver implements VmDriver {
       [this.runnerScript, '--config', configFile, '--home', dir],
       {
         stdio: ['ignore', 'inherit', 'inherit'],
-        env: { NODE_ENV: 'production', PATH: process.env.PATH ?? '', HOME: dir, ...this.env },
+        env: {
+          NODE_ENV: 'production',
+          PATH: process.env.PATH ?? '',
+          HOME: dir,
+          // Development: where to find (fake or local) harness CLIs.
+          ...(process.env.LAUNCHPAD_HARNESS_PATH
+            ? { LAUNCHPAD_HARNESS_PATH: process.env.LAUNCHPAD_HARNESS_PATH }
+            : {}),
+          ...this.env,
+        },
       },
     );
     const killTimer = setTimeout(

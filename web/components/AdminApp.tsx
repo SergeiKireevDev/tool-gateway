@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  ADMIN_API,
   createApi,
   fetchWebUser,
   MEMBER_API,
@@ -28,6 +29,8 @@ import type {
 } from '@/lib/types';
 import { AccountsPanel } from './AccountsPanel';
 import { ActivityPanel } from './ActivityPanel';
+import { LaunchpadSettingsPanel } from './launchpad/LaunchpadSettingsPanel';
+import { RunsWorkspace } from './launchpad/RunsWorkspace';
 import { LoginScreen } from './LoginScreen';
 import { MyTemplatesPanel } from './MyTemplatesPanel';
 import { MembersPanel } from './MembersPanel';
@@ -91,10 +94,23 @@ const ADMIN_TABS: TabDef[] = [
     count: (d) => d.members.length,
     render: (p) => <MembersPanel {...p} />,
   },
+  {
+    id: 'runs',
+    label: 'Agent runs',
+    render: (p) => <RunsWorkspace api={p.api} base={ADMIN_API} admin accounts={p.data.accounts} />,
+  },
+  { id: 'launchpad', label: 'Launchpad', render: (p) => <LaunchpadSettingsPanel api={p.api} /> },
   { id: 'activity', label: 'Activity', render: (p) => <ActivityPanel api={p.api} /> },
 ];
 
 const MEMBER_TABS: TabDef[] = [
+  {
+    id: 'agents',
+    label: 'Agents',
+    render: (p) => (
+      <RunsWorkspace api={p.api} base={MEMBER_API} admin={false} accounts={p.data.accounts} />
+    ),
+  },
   {
     id: 'sessions',
     label: 'Session keys',
@@ -244,7 +260,7 @@ function MemberPortal({
       tabs={MEMBER_TABS}
       load={loadMemberData}
       title={`${user.memberName} · Local Gateway`}
-      subtitle="Your accounts and short-lived keys"
+      subtitle="Your agents, accounts and short-lived keys"
       identity={user.email}
       onSignOut={onSignOut}
     />
