@@ -92,3 +92,19 @@ export async function fetchAuthConfig(): Promise<{ google: boolean }> {
 export async function signOutGoogle(): Promise<void> {
   await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-gateway-request': '1' } });
 }
+
+/** Downloads a file from the API (bearer token or session cookie) and saves it in the browser. */
+export async function downloadFile(base: string, path: string, filename: string): Promise<void> {
+  const token = tokenStore.get();
+  const res = await fetch(`${base}${path}`, {
+    headers: { 'x-gateway-request': '1', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new ApiError(res.status, `Download failed (HTTP ${res.status})`);
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}

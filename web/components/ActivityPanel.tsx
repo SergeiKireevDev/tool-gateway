@@ -39,7 +39,7 @@ export function ActivityPanel({ api }: { api: Api }) {
     <section>
       <SectionHeader
         title="Activity"
-        description="Recent admin actions and proxied requests since the gateway started (kept in memory, refreshed every few seconds)."
+        description="Recent admin, member and launchpad actions and proxied requests (stored in the gateway database, refreshed every few seconds)."
       />
       <div className="mb-4">
         <ErrorBanner message={error} />
@@ -77,7 +77,7 @@ export function ActivityPanel({ api }: { api: Api }) {
                   </td>
                   <td className="px-4 py-2.5">
                     {e.kind !== 'proxy' ? (
-                      <Badge tone={e.kind === 'member' ? 'indigo' : 'slate'}>{e.kind}</Badge>
+                      <Badge tone={e.kind === 'admin' ? 'slate' : 'indigo'}>{e.kind}</Badge>
                     ) : (
                       <span className="flex items-center gap-2">
                         <Badge tone={e.decision === 'denied' ? 'red' : 'green'}>

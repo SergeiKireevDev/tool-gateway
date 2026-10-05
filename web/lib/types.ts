@@ -24,6 +24,8 @@ export interface ToolExample {
 export interface Tool {
   id: string;
   name: string;
+  /** `llm`: a model API agents call themselves (Anthropic, OpenAI, Gemini). */
+  kind: 'tool' | 'llm';
   credentialHelp: string;
   credentialPlaceholder: string;
   resourceHelp: string;
