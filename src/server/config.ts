@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { isIPv4 } from 'node:net';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -17,6 +18,13 @@ export interface GatewayConfig {
   port: number;
   /** Encrypted state file (accounts, templates, sessions). */
   storeFile: string;
+  /** SQLite database: activity, agent runs, transcripts, LLM usage. No secrets. */
+  dbFile: string;
+  /**
+   * Address of the bridge agent microVMs reach the gateway on, or null when agents are off.
+   * Only the proxy and `/api/session` are served there.
+   */
+  vmHost: string | null;
   /** Raw 256-bit master key used to encrypt the store. Kept outside the data dir by default. */
   keyFile: string;
   /** Public base URL of the gateway, used to rewrite pagination links and for OAuth redirects. */
@@ -65,10 +73,26 @@ export function loadConfig(env: Env = process.env): GatewayConfig {
     host,
     port,
     storeFile: path.join(dataDir, 'store.enc'),
+    dbFile: path.join(dataDir, 'gateway.sqlite'),
+    vmHost: readVmHost(env),
     keyFile: path.resolve(
       read(env, 'GATEWAY_KEY_FILE') ?? path.join(homedir(), '.local-gateway', 'master.key'),
     ),
     publicUrl,
     google: clientId && clientSecret ? { clientId, clientSecret, adminEmails } : null,
   };
+}
+
+function readVmHost(env: Env): string | null {
+  const vmHost = read(env, 'GATEWAY_VM_HOST') ?? null;
+  if (vmHost !== null && !isIPv4(vmHost)) {
+    throw new Error(`Invalid GATEWAY_VM_HOST (an IPv4 address): ${vmHost}`);
+  }
+  return vmHost;
+}
+
+/** Base URL agent microVMs use to reach the gateway on the VM bridge. */
+export function vmPublicUrl(config: Pick<GatewayConfig, 'vmHost' | 'port'>): string {
+  if (!config.vmHost) throw new Error('GATEWAY_VM_HOST is not set');
+  return `http://${config.vmHost}:${config.port}`;
 }

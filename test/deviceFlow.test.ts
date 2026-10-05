@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ActivityLog } from '../src/server/activity.js';
+import { Database, IN_MEMORY } from '../src/server/db/database.js';
 import { Gateway } from '../src/server/gateway.js';
 import { createApp } from '../src/server/http/app.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
@@ -50,7 +51,7 @@ async function setup(tokenResponses: object[]) {
     store,
     crypto,
     new ToolRegistry([createGitHubProvider(github.fetchImpl)]),
-    new ActivityLog(),
+    new ActivityLog(Database.open(IN_MEMORY)),
     () => clock.now,
   );
   const admin = await gateway.rotateAdminToken();

@@ -1,8 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import nextModule from 'next';
 import { openGateway } from './bootstrap.js';
-import { loadConfig, loadEnvFile } from './config.js';
-import { createApp } from './http/app.js';
+import { loadConfig, loadEnvFile, vmPublicUrl } from './config.js';
+import { createApp, createVmApp } from './http/app.js';
 
 // `next` is CommonJS: at runtime the default import *is* the factory, but its typings
 // model it as an ES module with a `default` export.
@@ -13,7 +13,7 @@ const FLUSH_INTERVAL_MS = 15_000;
 async function main(): Promise<void> {
   loadEnvFile();
   const config = loadConfig();
-  const gateway = await openGateway(config);
+  const { gateway, db } = await openGateway(config);
 
   if (!gateway.hasAdminToken()) {
     const token = await gateway.rotateAdminToken();
@@ -55,6 +55,17 @@ async function main(): Promise<void> {
     }
   });
 
+  // Agent microVMs reach the gateway on the VM bridge, where only the proxy is served.
+  const vmServer = config.vmHost
+    ? createVmApp(gateway, { ...config, publicUrl: vmPublicUrl(config) }).listen(
+        config.port,
+        config.vmHost,
+        () => {
+          console.info(`  agent VMs: ${vmPublicUrl(config)} (proxy only)`);
+        },
+      )
+    : null;
+
   const timer = setInterval(() => {
     gateway.flush().catch((err: unknown) => {
       console.error('Failed to flush usage stats', err);
@@ -64,7 +75,11 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     clearInterval(timer);
     server.close();
-    void gateway.flush().finally(() => process.exit(0));
+    vmServer?.close();
+    void gateway.flush().finally(() => {
+      db.close();
+      process.exit(0);
+    });
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

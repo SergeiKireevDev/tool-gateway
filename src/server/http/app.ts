@@ -33,32 +33,7 @@ export function createApp(
   app.disable('x-powered-by');
   app.set('trust proxy', false);
 
-  // ------------------------------------------------------------------ proxy (session keys)
-  app.all(['/proxy/:tool', '/proxy/:tool/*rest'], proxyHandler(gateway, config, options.fetch));
-
-  app.get(
-    '/api/session',
-    h((req) => {
-      const key = bearerToken(req);
-      if (!key) throw unauthorized('Missing session key');
-      const session = gateway.resolveSession(key);
-      return {
-        id: session.id,
-        template: session.templateName,
-        expiresAt: session.expiresAt,
-        grants: session.grants.map(({ tool, permissions, resources }) => {
-          const account = gateway.resolveGrant(session, tool)?.account;
-          return {
-            tool,
-            account: account && { label: account.label, identity: account.identity },
-            permissions,
-            resources,
-            proxyBaseUrl: `${config.publicUrl}/proxy/${tool}`,
-          };
-        }),
-      };
-    }),
-  );
+  mountSessionKeyRoutes(app, gateway, config, options.fetch);
 
   // ------------------------------------------------------------------ admin API
   const google =
@@ -202,6 +177,60 @@ export function createApp(
 
   app.use(errorHandler);
   return app;
+}
+
+/**
+ * The app agent microVMs talk to (bound on the VM bridge): the proxy and session introspection
+ * only. No UI, sign-in, admin or member routes, so a compromised agent can't reach them.
+ */
+export function createVmApp(
+  gateway: Gateway,
+  config: GatewayConfig,
+  options: Pick<AppOptions, 'fetch'> = {},
+): express.Express {
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', false);
+  mountSessionKeyRoutes(app, gateway, config, options.fetch);
+  app.use((_req, _res, next) => {
+    next(notFound('Not found'));
+  });
+  app.use(errorHandler);
+  return app;
+}
+
+/** Routes authenticated by a session key: the tool proxy and key introspection. */
+function mountSessionKeyRoutes(
+  app: express.Express,
+  gateway: Gateway,
+  config: GatewayConfig,
+  fetchImpl: typeof fetch | undefined,
+): void {
+  app.all(['/proxy/:tool', '/proxy/:tool/*rest'], proxyHandler(gateway, config, fetchImpl));
+
+  app.get(
+    '/api/session',
+    h((req) => {
+      const key = bearerToken(req);
+      if (!key) throw unauthorized('Missing session key');
+      const session = gateway.resolveSession(key);
+      return {
+        id: session.id,
+        template: session.templateName,
+        expiresAt: session.expiresAt,
+        grants: session.grants.map(({ tool, permissions, resources }) => {
+          const account = gateway.resolveGrant(session, tool)?.account;
+          return {
+            tool,
+            account: account && { label: account.label, identity: account.identity },
+            permissions,
+            resources,
+            proxyBaseUrl: `${config.publicUrl}/proxy/${tool}`,
+          };
+        }),
+      };
+    }),
+  );
 }
 
 export const errorHandler: ErrorRequestHandler = (err: unknown, _req, res, next) => {
