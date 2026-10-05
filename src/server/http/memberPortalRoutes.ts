@@ -3,6 +3,8 @@ import { forbidden, unauthorized } from '../errors.js';
 import type { Actor, Gateway } from '../gateway.js';
 import type { Member } from '../store/types.js';
 import { cookieIdentity, CSRF_HEADER } from './adminAuth.js';
+import type { Launchpad } from '../launchpad/launchpad.js';
+import { memberLaunchRoutes } from '../launchpad/routes.js';
 import { created, h, param } from './handlers.js';
 
 const memberOf = (res: Response): Member => res.locals.member as Member;
@@ -12,7 +14,7 @@ const actorOf = (res: Response): Actor => ({ kind: 'member', member: memberOf(re
  * The member portal API, for members signed in with Google (session cookie). Paths mirror the
  * admin API so the UI can reuse its screens; every operation is scoped to the signed-in member.
  */
-export function memberPortalRoutes(gateway: Gateway): Router {
+export function memberPortalRoutes(gateway: Gateway, launchpad: Launchpad | null): Router {
   const router = express.Router();
   router.use((req, res, next) => {
     const identity = cookieIdentity(gateway, req);
@@ -79,6 +81,8 @@ export function memberPortalRoutes(gateway: Gateway): Router {
       gateway.cancelDeviceFlow(param(req, 'id'), actorOf(res));
     }),
   );
+
+  if (launchpad) router.use('/launchpad', memberLaunchRoutes(launchpad, gateway));
 
   // Session keys issued by this member.
   router.get(
