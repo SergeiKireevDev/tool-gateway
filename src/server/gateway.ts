@@ -15,6 +15,7 @@ import type { EncryptedStore } from './store/store.js';
 import type {
   Account,
   Member,
+  StoreState,
   Session,
   SessionGrant,
   SessionIssuer,
@@ -57,6 +58,9 @@ const ACCOUNT_NOT_FOUND = 'Account not found';
 const TEMPLATE_NOT_FOUND = 'Template not found';
 const MEMBER_NOT_FOUND = 'Member not found';
 const SESSION_NOT_FOUND = 'Session not found';
+const MEMBER_NOT_VALID = 'Member is no longer valid';
+const TEMPLATE_NOT_AVAILABLE = 'This template is not available to you';
+const MEMBER_KEY_ROTATED = 'Member key was rotated';
 const ADMIN_ISSUER: SessionIssuer = { kind: 'admin' };
 
 const ttl = z.number().int().min(MIN_TTL).max(MAX_TTL);
@@ -716,6 +720,7 @@ export class Gateway {
       email: data.email,
       keyHash: this.crypto.hashToken(key),
       keyHint: key.slice(0, MEMBER_KEY_PREFIX.length + KEY_HINT_CHARS),
+      keyGeneration: 0,
       templateIds: data.templateIds,
       accountIds: data.accountIds,
       createdAt: ts,
@@ -764,6 +769,7 @@ export class Gateway {
       if (!m) throw notFound(MEMBER_NOT_FOUND);
       m.keyHash = this.crypto.hashToken(key);
       m.keyHint = key.slice(0, MEMBER_KEY_PREFIX.length + KEY_HINT_CHARS);
+      m.keyGeneration += 1;
       m.updatedAt = this.now().toISOString();
       return [m, this.revokeWhere(s.sessions, (x) => issuedByMember(x, id))] as const;
     });
@@ -833,9 +839,10 @@ export class Gateway {
     };
   }
 
+  /** Session keys issued by a member, or by the launchpad for its runs. */
   listMemberSessions(member: Member): PublicSession[] {
     return this.listSessions().filter(
-      (s) => s.issuedBy.kind === 'member' && s.issuedBy.memberId === member.id,
+      (s) => s.issuedBy.kind !== 'admin' && s.issuedBy.memberId === member.id,
     );
   }
 
@@ -952,16 +959,58 @@ export class Gateway {
     const template = member.templateIds.includes(req.templateId)
       ? this.store.read().templates.find((t) => t.id === req.templateId)
       : undefined;
-    if (!template) throw forbidden('This template is not available to you');
+    if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
     const accounts = this.pickAccounts(template, requestedAccounts(req), {
       kind: 'member',
       member,
     });
-    return this.issue(req, template, accounts, {
+    return this.issue(
+      req,
+      template,
+      accounts,
+      { kind: 'member', memberId: member.id, memberName: member.name },
+      member,
+    );
+  }
+
+  /**
+   * Issues a session key for an agent run the launchpad starts on a member's behalf: same limits
+   * as the member's own self-serve keys. `keyGeneration`, when given, must still be the member's
+   * current one (schedules stop once the member key was rotated).
+   */
+  async issueSessionForRun(
+    memberId: string,
+    runId: string,
+    input: unknown,
+    keyGeneration?: number,
+  ): Promise<{ key: string; session: PublicSession }> {
+    const member = this.store.read().members.find((m) => m.id === memberId);
+    if (!member || this.memberExpired(member)) throw unauthorized(MEMBER_NOT_VALID);
+    if (keyGeneration !== undefined && member.keyGeneration !== keyGeneration) {
+      throw unauthorized(MEMBER_KEY_ROTATED);
+    }
+    const req = sessionRequestSchema.parse(input);
+    const template = member.templateIds.includes(req.templateId)
+      ? this.store.read().templates.find((t) => t.id === req.templateId)
+      : undefined;
+    if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
+    const accounts = this.pickAccounts(template, requestedAccounts(req), {
       kind: 'member',
-      memberId: member.id,
-      memberName: member.name,
+      member,
     });
+    return this.issue(
+      req,
+      template,
+      accounts,
+      { kind: 'launchpad', memberId: member.id, memberName: member.name, runId },
+      member,
+    );
+  }
+
+  /** The member's current key generation, or null when it is gone or expired. */
+  memberKeyGeneration(memberId: string): number | null {
+    const member = this.store.read().members.find((m) => m.id === memberId);
+    return member && !this.memberExpired(member) ? member.keyGeneration : null;
   }
 
   /**
@@ -1018,6 +1067,8 @@ export class Gateway {
     template: Template,
     bound: BoundGrant[],
     issuedBy: SessionIssuer,
+    /** The member the request was authorized for, as it was then (member and launchpad keys). */
+    member?: Member,
   ): Promise<{ key: string; session: PublicSession }> {
     const ttlSeconds = req.ttlSeconds ?? template.defaultTtlSeconds;
     if (ttlSeconds > template.maxTtlSeconds) {
@@ -1047,13 +1098,15 @@ export class Gateway {
       issuedBy,
     };
     await this.store.update((s) => {
-      s.sessions.push(session);
-      if (issuedBy.kind === 'member') {
-        const member = s.members.find((m) => m.id === issuedBy.memberId);
-        if (member) member.lastUsedAt = session.createdAt;
+      // Re-checked inside the mutation: the request may have waited (slow body, queued run)
+      // while the member was rotated, narrowed, expired or deleted.
+      if (member) {
+        const current = this.checkMemberStillAllows(s, member, template, bound);
+        current.lastUsedAt = session.createdAt;
       }
+      s.sessions.push(session);
     });
-    const by = issuedBy.kind === 'member' ? `Member "${issuedBy.memberName}"` : 'Admin';
+    const by = issuerName(issuedBy);
     const on = bound.map(({ account }) => `"${account.label}"`).join(', ');
     this.activity.add({
       kind: issuedBy.kind,
@@ -1152,6 +1205,28 @@ export class Gateway {
     };
   }
 
+  /** Throws unless the member, unchanged since `snapshot`, may still issue this key. */
+  private checkMemberStillAllows(
+    s: StoreState,
+    snapshot: Member,
+    template: Template,
+    bound: BoundGrant[],
+  ): Member {
+    const member = s.members.find((m) => m.id === snapshot.id);
+    if (!member || this.memberExpired(member)) throw unauthorized(MEMBER_NOT_VALID);
+    if (member.keyHash !== snapshot.keyHash) throw unauthorized(MEMBER_KEY_ROTATED);
+    if (!member.templateIds.includes(template.id)) {
+      throw forbidden(TEMPLATE_NOT_AVAILABLE);
+    }
+    const usable = (a: Account): boolean =>
+      a.ownerMemberId === member.id || (isShared(a) && member.accountIds.includes(a.id));
+    for (const { account } of bound) {
+      const current = s.accounts.find((a) => a.id === account.id);
+      if (!current || !usable(current)) throw forbidden('This account is not available to you');
+    }
+    return member;
+  }
+
   private revokeWhere(sessions: Session[], pred: (s: Session) => boolean): number {
     let n = 0;
     const ts = this.now().toISOString();
@@ -1165,8 +1240,23 @@ export class Gateway {
   }
 }
 
+/** Keys a member issued itself, or the launchpad issued for the member's runs. */
 function issuedByMember(s: Session, memberId: string): boolean {
-  return s.issuedBy?.kind === 'member' && s.issuedBy.memberId === memberId;
+  return (
+    (s.issuedBy?.kind === 'member' || s.issuedBy?.kind === 'launchpad') &&
+    s.issuedBy.memberId === memberId
+  );
+}
+
+function issuerName(issuedBy: SessionIssuer): string {
+  switch (issuedBy.kind) {
+    case 'admin':
+      return 'Admin';
+    case 'member':
+      return `Member "${issuedBy.memberName}"`;
+    case 'launchpad':
+      return `Launchpad (run ${issuedBy.runId} of "${issuedBy.memberName}")`;
+  }
 }
 
 function usesAccount(s: Session, matches: (accountId: string) => boolean): boolean {

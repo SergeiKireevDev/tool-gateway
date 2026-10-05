@@ -2,6 +2,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/server/http/app.js';
 import { migrate } from '../src/server/store/migrate.js';
+import { STORE_VERSION } from '../src/server/store/types.js';
 import { createHarness, type Harness } from './helpers.js';
 
 let h: Harness;
@@ -264,7 +265,7 @@ describe('store migration', () => {
         },
       ],
     });
-    expect(state.version).toBe(2);
+    expect(state.version).toBe(STORE_VERSION);
     expect(state.members).toEqual([]);
     expect(state.templates[0]).toEqual({
       id: 't1',
@@ -280,5 +281,28 @@ describe('store migration', () => {
       { tool: 'github', accountId: 'a1', permissions: ['issues:read'], resources: ['o/r'] },
     ]);
     expect(state.sessions[0]).not.toHaveProperty('accountId');
+  });
+});
+
+describe('store migration to v3', () => {
+  it('gives existing members key generation 0', () => {
+    const state = migrate({
+      version: 2,
+      members: [
+        {
+          id: 'm1',
+          name: 'bot',
+          keyHash: 'h',
+          keyHint: 'gwm_x',
+          templateIds: [],
+          accountIds: [],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          expiresAt: null,
+          lastUsedAt: null,
+        },
+      ],
+    });
+    expect(state.members[0]?.keyGeneration).toBe(0);
   });
 });

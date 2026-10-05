@@ -196,8 +196,13 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
 }
 
 function IssuedBy({ issuer }: { issuer: SessionIssuer }) {
-  if (issuer.kind !== 'member') return null;
-  return <div className="text-xs text-indigo-600">by member {issuer.memberName}</div>;
+  if (issuer.kind === 'admin') return null;
+  const by = issuer.kind === 'member' ? 'by member' : 'agent run of';
+  return (
+    <div className="text-xs text-indigo-600">
+      {by} {issuer.memberName}
+    </div>
+  );
 }
 
 function IssueModal({

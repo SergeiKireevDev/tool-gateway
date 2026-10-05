@@ -1,4 +1,4 @@
-import { emptyState, type Session, type StoreState, type Template } from './types.js';
+import { emptyState, type Member, type Session, type StoreState, type Template } from './types.js';
 
 /** Version 1: templates and sessions covered a single tool. */
 interface SingleToolV1 {
@@ -9,21 +9,29 @@ interface SingleToolV1 {
 type TemplateV1 = Omit<Template, 'grants'> & SingleToolV1;
 type SessionV1 = Omit<Session, 'grants'> & SingleToolV1 & { accountId: string };
 
-type PersistedState = Omit<Partial<StoreState>, 'version' | 'templates' | 'sessions'> & {
+/** Version 2: members had no key generation counter. */
+type MemberV2 = Omit<Member, 'keyGeneration'> & { keyGeneration?: number };
+
+type PersistedState = Omit<
+  Partial<StoreState>,
+  'version' | 'templates' | 'sessions' | 'members'
+> & {
   version?: number;
   templates?: (Template | TemplateV1)[];
   sessions?: (Session | SessionV1)[];
+  members?: MemberV2[];
 };
 
 /** Brings a decrypted store up to the current shape. Already-current entries are kept as-is. */
 export function migrate(persisted: PersistedState): StoreState {
-  const { templates = [], sessions = [], ...rest } = persisted;
+  const { templates = [], sessions = [], members = [], ...rest } = persisted;
   return {
     ...emptyState(),
     ...rest,
     version: emptyState().version,
     templates: templates.map(migrateTemplate),
     sessions: sessions.map(migrateSession),
+    members: members.map((m) => ({ ...m, keyGeneration: m.keyGeneration ?? 0 })),
   };
 }
 
