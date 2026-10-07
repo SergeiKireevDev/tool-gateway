@@ -230,7 +230,7 @@ export function RunDetail({
       <button
         type="button"
         onClick={onBack}
-        className="mb-4 text-sm text-indigo-600 hover:underline"
+        className="mb-4 text-sm text-brand-600 hover:underline"
       >
         ← All runs
       </button>
@@ -279,7 +279,7 @@ export function RunDetail({
             aria-current={t === tab ? 'page' : undefined}
             className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
               t === tab
-                ? 'border-indigo-600 text-indigo-700'
+                ? 'border-brand-600 text-brand-700'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >

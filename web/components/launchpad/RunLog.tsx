@@ -9,7 +9,7 @@ const STYLE: Record<RunEventType, { label: string; className: string }> = {
   status: { label: 'status', className: MUTED },
   assistant_text: { label: 'agent', className: 'text-slate-900' },
   thinking: { label: 'thinking', className: 'text-slate-500 italic' },
-  tool_call: { label: 'tool call', className: 'text-indigo-700' },
+  tool_call: { label: 'tool call', className: 'text-brand-700' },
   tool_result: { label: 'result', className: 'text-slate-600' },
   usage: { label: 'usage', className: MUTED },
   log: { label: 'log', className: MUTED },
@@ -30,7 +30,7 @@ function EventText({ event }: { event: RunEvent }) {
       {long && (
         <button
           type="button"
-          className="ml-2 text-xs text-indigo-600 hover:underline"
+          className="ml-2 text-xs text-brand-600 hover:underline"
           onClick={() => {
             setOpen(!open);
           }}

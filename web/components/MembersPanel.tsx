@@ -414,12 +414,12 @@ function CheckList({
             <label
               key={item.id}
               className={`flex cursor-pointer gap-3 rounded-lg p-3 ring-1 transition ${
-                checked ? 'bg-indigo-50 ring-indigo-300' : 'ring-slate-200 hover:bg-slate-50'
+                checked ? 'bg-brand-50 ring-brand-300' : 'ring-slate-200 hover:bg-slate-50'
               }`}
             >
               <input
                 type="checkbox"
-                className="mt-0.5 size-4 accent-indigo-600"
+                className="mt-0.5 size-4 accent-brand-600"
                 checked={checked}
                 onChange={() => {
                   toggle(item.id);

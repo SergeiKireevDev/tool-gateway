@@ -38,7 +38,9 @@ import { MembersPanel } from './MembersPanel';
 import { SessionsPanel } from './SessionsPanel';
 import { TemplatesPanel } from './TemplatesPanel';
 import { WebhooksPanel } from './WebhooksPanel';
+import type { IconName } from './icons';
 import { ErrorBanner } from './ui';
+import { WorkspaceShell } from './WorkspaceShell';
 
 export interface GatewayData {
   tools: Tool[];
@@ -64,6 +66,9 @@ export interface PanelProps {
 interface TabDef {
   id: string;
   label: string;
+  /** Sidebar heading the section is listed under. */
+  group: string;
+  icon: IconName;
   count?: (data: GatewayData) => number;
   render: (props: PanelProps) => ReactNode;
 }
@@ -74,50 +79,85 @@ const accountsOf = (data: GatewayData, kind: AccountKind): number =>
 const activeCount = (data: GatewayData): number =>
   data.sessions.filter((s) => s.status === 'active').length;
 
+const ACCESS = 'Access';
+const AUTOMATION = 'Automation';
+
 const ADMIN_TABS: TabDef[] = [
   {
     id: 'accounts',
+    group: ACCESS,
+    icon: 'tools',
     label: 'Tool accounts',
     count: (d) => accountsOf(d, 'tool'),
     render: (p) => <AccountsPanel {...p} kind="tool" />,
   },
   {
     id: 'models',
+    group: ACCESS,
+    icon: 'models',
     label: 'Model providers',
     count: (d) => accountsOf(d, 'llm'),
     render: (p) => <AccountsPanel {...p} kind="llm" />,
   },
   {
     id: 'templates',
+    group: ACCESS,
+    icon: 'templates',
     label: 'Templates',
     count: (d) => d.templates.length,
     render: (p) => <TemplatesPanel {...p} />,
   },
   {
     id: 'sessions',
+    group: ACCESS,
+    icon: 'key',
     label: 'Session keys',
     count: activeCount,
     render: (p) => <SessionsPanel {...p} />,
   },
   {
     id: 'members',
+    group: ACCESS,
+    icon: 'members',
     label: 'Members',
     count: (d) => d.members.length,
     render: (p) => <MembersPanel {...p} />,
   },
   {
     id: 'runs',
+    group: AUTOMATION,
+    icon: 'runs',
     label: 'Agent runs',
     render: (p) => <RunsWorkspace api={p.api} base={ADMIN_API} admin accounts={p.data.accounts} />,
   },
-  { id: 'launchpad', label: 'Launchpad', render: (p) => <LaunchpadSettingsPanel api={p.api} /> },
-  { id: 'webhooks', label: 'Webhooks', render: (p) => <WebhooksPanel {...p} /> },
-  { id: 'activity', label: 'Activity', render: (p) => <ActivityPanel api={p.api} /> },
+  {
+    id: 'launchpad',
+    group: AUTOMATION,
+    icon: 'launchpad',
+    label: 'Launchpad',
+    render: (p) => <LaunchpadSettingsPanel api={p.api} />,
+  },
+  {
+    id: 'webhooks',
+    group: AUTOMATION,
+    icon: 'webhooks',
+    label: 'Webhooks',
+    render: (p) => <WebhooksPanel {...p} />,
+  },
+  {
+    id: 'activity',
+    group: 'Monitoring',
+    icon: 'activity',
+    label: 'Activity',
+    render: (p) => <ActivityPanel api={p.api} />,
+  },
 ];
 
 const MEMBER_TABS: TabDef[] = [
   {
     id: 'agents',
+    group: 'Workspace',
+    icon: 'runs',
     label: 'Agents',
     render: (p) => (
       <RunsWorkspace api={p.api} base={MEMBER_API} admin={false} accounts={p.data.accounts} />
@@ -125,24 +165,42 @@ const MEMBER_TABS: TabDef[] = [
   },
   {
     id: 'sessions',
+    group: ACCESS,
+    icon: 'key',
     label: 'Session keys',
     count: activeCount,
     render: (p) => <SessionsPanel {...p} />,
   },
   {
     id: 'accounts',
+    group: ACCESS,
+    icon: 'tools',
     label: 'My tools',
     count: (d) => accountsOf(d, 'tool'),
     render: (p) => <AccountsPanel {...p} kind="tool" />,
   },
   {
     id: 'models',
+    group: ACCESS,
+    icon: 'models',
     label: 'My model providers',
     count: (d) => accountsOf(d, 'llm'),
     render: (p) => <AccountsPanel {...p} kind="llm" />,
   },
-  { id: 'templates', label: 'My templates', render: (p) => <MyTemplatesPanel {...p} /> },
-  { id: 'webhooks', label: 'Webhooks', render: (p) => <WebhooksPanel {...p} /> },
+  {
+    id: 'templates',
+    group: ACCESS,
+    icon: 'templates',
+    label: 'My templates',
+    render: (p) => <MyTemplatesPanel {...p} />,
+  },
+  {
+    id: 'webhooks',
+    group: AUTOMATION,
+    icon: 'webhooks',
+    label: 'Webhooks',
+    render: (p) => <WebhooksPanel {...p} />,
+  },
 ];
 
 async function loadAdminData(api: Api): Promise<GatewayData> {
@@ -230,6 +288,27 @@ export function AdminApp() {
   return <LoginScreen onTokenLogin={tokenStore.set} />;
 }
 
+const currentHash = (): string => window.location.hash.slice(1);
+
+/** The selected section, kept in the URL hash so it survives reloads and can be linked to. */
+function useSectionHash(): [string, (id: string) => void] {
+  const [section, setSection] = useState(currentHash);
+  useEffect(() => {
+    const onHashChange = () => {
+      setSection(currentHash());
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, []);
+  const select = useCallback((id: string) => {
+    window.history.pushState(null, '', `#${id}`);
+    setSection(id);
+  }, []);
+  return [section, select];
+}
+
 const ADMIN_VIEWER: Viewer = { role: 'admin' };
 
 function AdminWorkspace({
@@ -305,7 +384,7 @@ function Workspace({
   identity: string;
   onSignOut: () => void;
 }) {
-  const [tabId, setTabId] = useState(tabs[0]?.id ?? '');
+  const [tabId, setTabId] = useSectionHash();
   const [data, setData] = useState<GatewayData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -329,63 +408,26 @@ function Workspace({
   }, [refresh]);
 
   const tab = tabs.find((t) => t.id === tabId) ?? tabs[0];
+  const items = tabs.map(({ id, label, group, icon, count }) => ({
+    id,
+    label,
+    group,
+    icon,
+    count: data && count ? count(data) : undefined,
+  }));
 
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="grid size-9 place-items-center rounded-lg bg-indigo-600 font-bold text-white">
-              G
-            </div>
-            <div>
-              <h1 className="leading-tight font-semibold">{title}</h1>
-              <p className="text-xs text-slate-500">{subtitle}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 text-sm">
-            <span className="text-slate-500">
-              Signed in as <span className="font-medium text-slate-700">{identity}</span>
-            </span>
-            <button
-              type="button"
-              onClick={onSignOut}
-              className="text-slate-500 hover:text-slate-900"
-            >
-              Sign out
-            </button>
-          </div>
-        </div>
-        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-6" aria-label="Sections">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                setTabId(t.id);
-              }}
-              aria-current={t.id === tab?.id ? 'page' : undefined}
-              className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium whitespace-nowrap transition ${
-                t.id === tab?.id
-                  ? 'border-indigo-600 text-indigo-700'
-                  : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
-              }`}
-            >
-              {t.label}
-              {data && t.count && (
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                  {t.count(data)}
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      <main className="mx-auto max-w-6xl px-6 py-8">
-        <ErrorBanner message={error} />
-        {data && tab?.render({ api, data, refresh, viewer })}
-      </main>
-    </div>
+    <WorkspaceShell
+      items={items}
+      activeId={tab?.id ?? ''}
+      onSelect={setTabId}
+      title={title}
+      subtitle={subtitle}
+      identity={identity}
+      onSignOut={onSignOut}
+    >
+      <ErrorBanner message={error} />
+      {data && tab?.render({ api, data, refresh, viewer })}
+    </WorkspaceShell>
   );
 }

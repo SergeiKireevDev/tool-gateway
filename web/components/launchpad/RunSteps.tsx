@@ -52,7 +52,7 @@ function buildSteps(events: RunEvent[]): Step[] {
 
 const DOT: Record<Step['kind'], string> = {
   say: 'bg-slate-400',
-  tool: 'bg-indigo-600',
+  tool: 'bg-brand-600',
   error: 'bg-red-600',
   final: 'bg-emerald-600',
 };

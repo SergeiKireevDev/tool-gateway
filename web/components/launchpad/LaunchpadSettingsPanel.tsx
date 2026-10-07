@@ -81,7 +81,7 @@ function SettingsForm({
   return (
     <Card className="p-5">
       <p className="mb-4 text-sm text-slate-600">
-        VM driver: <Badge tone={driver === 'local-unsafe' ? 'red' : 'indigo'}>{driver}</Badge>
+        VM driver: <Badge tone={driver === 'local-unsafe' ? 'red' : 'brand'}>{driver}</Badge>
         {driver === 'local-unsafe' && ' — agents run without isolation: development only.'}
       </p>
       <div className="grid gap-4 sm:grid-cols-2">

@@ -94,7 +94,7 @@ export function SessionsPanel({ api, data, refresh, viewer }: PanelProps) {
         <label className="ml-auto flex items-center gap-2 text-sm text-slate-600">
           <input
             type="checkbox"
-            className="size-4 accent-indigo-600"
+            className="size-4 accent-brand-600"
             checked={showInactive}
             onChange={(e) => {
               setShowInactive(e.target.checked);
@@ -199,7 +199,7 @@ function IssuedBy({ issuer }: { issuer: SessionIssuer }) {
   if (issuer.kind === 'admin') return null;
   const by = issuer.kind === 'member' ? 'by member' : 'agent run of';
   return (
-    <div className="text-xs text-indigo-600">
+    <div className="text-xs text-brand-600">
       {by} {issuer.memberName}
     </div>
   );

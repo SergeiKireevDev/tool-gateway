@@ -345,7 +345,7 @@ function WebhookCard({
         <div>
           <div className="flex items-center gap-2">
             <span className="font-semibold">{w.name}</span>
-            <Badge tone="indigo">{SOURCES[w.source]}</Badge>
+            <Badge tone="brand">{SOURCES[w.source]}</Badge>
             <Badge>{AUTH_LABELS[w.auth]}</Badge>
           </div>
           <p className="mt-1 text-xs text-slate-500">

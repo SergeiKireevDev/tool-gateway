@@ -75,7 +75,7 @@ export function TemplatesPanel({ api, data, refresh }: PanelProps) {
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="font-semibold">{tpl.name}</h3>
                     {tpl.grants.map((g) => (
-                      <Badge key={g.tool} tone="indigo">
+                      <Badge key={g.tool} tone="brand">
                         {toolName(data.tools, g.tool)}
                       </Badge>
                     ))}
@@ -347,12 +347,12 @@ function GrantEditor({
   const incomplete = draft.enabled && draft.permissions.length === 0;
 
   return (
-    <div className={`rounded-lg ring-1 ${draft.enabled ? 'ring-indigo-300' : 'ring-slate-200'}`}>
+    <div className={`rounded-lg ring-1 ${draft.enabled ? 'ring-brand-300' : 'ring-slate-200'}`}>
       <div className="flex items-center gap-3 px-3 py-2">
         <label className="flex shrink-0 cursor-pointer items-center gap-2.5">
           <input
             type="checkbox"
-            className="size-4 accent-indigo-600"
+            className="size-4 accent-brand-600"
             checked={draft.enabled}
             onChange={(e) => {
               onChange({ ...draft, enabled: e.target.checked });
@@ -415,12 +415,12 @@ function GrantFields({
               key={p.id}
               title={p.description}
               className={`flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-sm ring-1 transition ${
-                checked ? 'bg-indigo-50 ring-indigo-300' : 'ring-slate-200 hover:bg-slate-50'
+                checked ? 'bg-brand-50 ring-brand-300' : 'ring-slate-200 hover:bg-slate-50'
               }`}
             >
               <input
                 type="checkbox"
-                className="size-4 shrink-0 accent-indigo-600"
+                className="size-4 shrink-0 accent-brand-600"
                 checked={checked}
                 onChange={() => {
                   togglePermission(p.id);
