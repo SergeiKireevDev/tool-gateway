@@ -13,6 +13,12 @@ export interface GoogleSignInConfig {
   adminEmails: string[];
 }
 
+/** OAuth client ("Desktop app") for "Sign in with Google" on Gmail accounts. */
+export interface GmailOAuthConfig {
+  clientId: string;
+  clientSecret: string;
+}
+
 export interface LaunchpadConfig {
   /**
    * `firecracker`: microVMs through `vmd` (production). `local-unsafe`: the runner as a plain
@@ -45,6 +51,8 @@ export interface GatewayConfig {
   publicUrl: string;
   /** Admin sign-in with Google; null when not configured. */
   google: GoogleSignInConfig | null;
+  /** Gmail sign-in; null when not configured (Gmail tokens can still be pasted). */
+  gmail: GmailOAuthConfig | null;
 }
 
 /** Loads `.env` from the working directory if present; real environment variables win. */
@@ -95,7 +103,17 @@ export function loadConfig(env: Env = process.env): GatewayConfig {
     ),
     publicUrl,
     google: clientId && clientSecret ? { clientId, clientSecret, adminEmails } : null,
+    gmail: readGmail(env),
   };
+}
+
+function readGmail(env: Env): GmailOAuthConfig | null {
+  const clientId = read(env, 'GMAIL_CLIENT_ID');
+  const clientSecret = read(env, 'GMAIL_CLIENT_SECRET');
+  if (Boolean(clientId) !== Boolean(clientSecret)) {
+    throw new Error('Set both GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET (or neither)');
+  }
+  return clientId && clientSecret ? { clientId, clientSecret } : null;
 }
 
 function readVmHost(env: Env): string | null {

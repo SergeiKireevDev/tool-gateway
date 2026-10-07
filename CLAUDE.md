@@ -21,6 +21,7 @@
   root fields need a rule (with their board/item scope) in `src/server/tools/monday.ts`, new nested
   object fields an entry in `TRAVERSALS`, each with a test in `test/monday.test.ts`. Slack Web API
   methods need a rule (permission + channel scope) in `src/server/tools/slack.ts` and a test in
-  `test/slack.test.ts`.
+  `test/slack.test.ts`. Gmail endpoints need a rule in `src/server/tools/gmail.ts` (anything that
+  sends mail must check its recipients) and a test in `test/gmail.test.ts`.
 - Tools are interchangeable providers (`src/server/tools/types.ts`); keep tool specifics out of the
   gateway, proxy and UI (the UI reads names, hints and examples from `/api/admin/tools`).
