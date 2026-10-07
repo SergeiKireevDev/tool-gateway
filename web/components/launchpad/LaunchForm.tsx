@@ -10,6 +10,7 @@ import {
   type Run,
   type Schedule,
   type Trigger,
+  type TriggerFilters,
   type WebhookOption,
   WEEKDAYS,
 } from '@/lib/launchpad';
@@ -146,19 +147,86 @@ function splitList(value: string): string[] {
     .filter(Boolean);
 }
 
-/** Which of the member's webhooks launches the agent, and on which event types. */
+/** A trigger's deterministic filters, as typed: comma-separated lists. */
+type FilterDraft = Record<keyof TriggerFilters, string>;
+const NO_FILTERS: FilterDraft = { contains: '', statusChangedTo: '', assignedTo: '' };
+
+interface FilterField {
+  key: keyof TriggerFilters;
+  label: string;
+  hint: string;
+  placeholder: string;
+}
+
+const FILTER_FIELDS: FilterField[] = [
+  {
+    key: 'contains',
+    label: 'Contains',
+    hint: 'Only events whose payload contains one of these keywords.',
+    placeholder: 'crash, urgent',
+  },
+  {
+    key: 'statusChangedTo',
+    label: 'Status changed to',
+    hint: 'Only events that move an item to one of these statuses.',
+    placeholder: 'Todo, merged',
+  },
+  {
+    key: 'assignedTo',
+    label: 'Assigned to',
+    hint: 'Only events that assign an item to one of these people (name, email, login or id).',
+    placeholder: 'octocat, ada@example.com',
+  },
+];
+
+const toFilters = (f: FilterDraft): TriggerFilters => ({
+  contains: splitList(f.contains),
+  statusChangedTo: splitList(f.statusChangedTo),
+  assignedTo: splitList(f.assignedTo),
+});
+
+/** Optional conditions on the event, checked before an agent is launched. */
+function FilterFields({
+  filters,
+  setFilters,
+}: {
+  filters: FilterDraft;
+  setFilters: (v: FilterDraft) => void;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {FILTER_FIELDS.map((f) => (
+        <Field key={f.key} label={f.label} hint={`${f.hint} Comma-separated; empty: any.`}>
+          <Input
+            value={filters[f.key]}
+            onChange={(e) => {
+              setFilters({ ...filters, [f.key]: e.target.value });
+            }}
+            placeholder={f.placeholder}
+          />
+        </Field>
+      ))}
+    </div>
+  );
+}
+
+/** Which of the member's webhooks launches the agent, on which event types and filters. */
 function TriggerFields({
   webhooks,
   webhookId,
   setWebhookId,
   eventTypes,
   setEventTypes,
+  filters,
+  setFilters,
 }: {
   webhooks: WebhookOption[];
   webhookId: string;
   setWebhookId: (v: string) => void;
   eventTypes: string;
   setEventTypes: (v: string) => void;
+  filters: FilterDraft;
+  setFilters: (v: FilterDraft) => void;
 }) {
   if (webhooks.length === 0) {
     return (
@@ -168,33 +236,36 @@ function TriggerFields({
     );
   }
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      <Field label="Webhook">
-        <Select
-          value={webhookId}
-          onChange={(e) => {
-            setWebhookId(e.target.value);
-          }}
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Webhook">
+          <Select
+            value={webhookId}
+            onChange={(e) => {
+              setWebhookId(e.target.value);
+            }}
+          >
+            {webhooks.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name} ({w.source})
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field
+          label="Event types"
+          hint="Comma-separated. issues also matches issues.opened. Empty: every event."
         >
-          {webhooks.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name} ({w.source})
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Field
-        label="Event types"
-        hint="Comma-separated. issues also matches issues.opened. Empty: every event."
-      >
-        <Input
-          value={eventTypes}
-          onChange={(e) => {
-            setEventTypes(e.target.value);
-          }}
-          placeholder="issues.opened, Issue.create"
-        />
-      </Field>
+          <Input
+            value={eventTypes}
+            onChange={(e) => {
+              setEventTypes(e.target.value);
+            }}
+            placeholder="issues.opened, Issue.create"
+          />
+        </Field>
+      </div>
+      <FilterFields filters={filters} setFilters={setFilters} />
     </div>
   );
 }
@@ -250,6 +321,7 @@ interface Draft {
   timezone: string;
   webhookId: string;
   eventTypes: string;
+  filters: FilterDraft;
 }
 
 const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
@@ -276,6 +348,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
         instructions: d.prompt,
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
+        filters: toFilters(d.filters),
       },
     };
   }
@@ -329,6 +402,7 @@ export function LaunchForm({
   const [timezone, setTimezone] = useState(browserTimeZone);
   const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
   const [eventTypes, setEventTypes] = useState('');
+  const [filters, setFilters] = useState(NO_FILTERS);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -362,6 +436,7 @@ export function LaunchForm({
       timezone,
       webhookId,
       eventTypes,
+      filters,
     });
     try {
       const sent = await api<Run | Schedule | Trigger>('POST', request.path, request.body);
@@ -484,6 +559,8 @@ export function LaunchForm({
           setWebhookId={setWebhookId}
           eventTypes={eventTypes}
           setEventTypes={setEventTypes}
+          filters={filters}
+          setFilters={setFilters}
         />
       )}
       {isPreset(when) && (

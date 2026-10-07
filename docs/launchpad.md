@@ -65,6 +65,7 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
   "name": "Triage new issues",
   "webhookId": "<webhook id>",
   "eventTypes": ["issues.opened"],
+  "filters": { "contains": ["crash"], "assignedTo": ["octocat"] },
   "instructions": "Label the issue and post a short summary in #triage.",
   "templateId": "<template id>",
   "harness": "claude-code"
@@ -79,6 +80,17 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
   (`issues.opened`). Event types are those shown in the webhook's log: monday.com's `event.type`,
   Linear's `type.action` (`Issue.create`), GitHub's `X-GitHub-Event` + `action`
   (`pull_request.opened`), or a generic `type` / `event` field.
+- **Filters.** Optional, deterministic conditions on the payload, checked before an agent is
+  launched (a delivery that fails them launches nothing). Each is a list of values, any of which
+  matches, case-insensitively; every filter that is set must match:
+  - `contains`: one of the keywords appears in one of the payload's text values (not its keys).
+  - `statusChangedTo`: the event moves an item to one of these statuses: a Linear issue update
+    that changes its state (the state's name, e.g. `Todo`), a GitHub issue or pull request
+    `closed` (and `merged`) or `reopened` (`open`), a GitHub project item's field set to an
+    option (`In review`), or a monday.com status column set to a label.
+  - `assignedTo`: the event assigns an item to one of these people: a Linear issue created with,
+    or updated to, an assignee (id, name or email), GitHub's `assigned` action (login or id), or
+    people added to a monday.com people column (user id).
 - **Permissions.** The template, accounts, harness and model are checked like a launch when the
   trigger is created and resumed, and again on each launch. Only the member's own webhooks can
   trigger their agents.

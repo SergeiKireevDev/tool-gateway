@@ -160,4 +160,7 @@ export const MIGRATIONS: readonly string[] = [
    CREATE INDEX triggers_webhook ON triggers (webhook_id, enabled);
    ALTER TABLE runs ADD COLUMN trigger_id TEXT;
    ALTER TABLE runs ADD COLUMN instructions TEXT;`,
+
+  // 7: deterministic trigger filters (contains / status changed to / assigned to)
+  `ALTER TABLE triggers ADD COLUMN filters TEXT NOT NULL DEFAULT '{}';`,
 ];

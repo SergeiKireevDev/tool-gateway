@@ -129,6 +129,23 @@ export interface Schedule {
   lastRunId: string | null;
 }
 
+/** Deterministic conditions on a delivery's payload (any value of a list; every list set). */
+export interface TriggerFilters {
+  contains: string[];
+  statusChangedTo: string[];
+  assignedTo: string[];
+}
+
+/** "contains crash · status → Todo", or null without filters. */
+export function describeFilters(f: TriggerFilters): string | null {
+  const parts = [
+    f.contains.length > 0 ? `contains ${f.contains.join(' / ')}` : null,
+    f.statusChangedTo.length > 0 ? `status → ${f.statusChangedTo.join(' / ')}` : null,
+    f.assignedTo.length > 0 ? `assigned to ${f.assignedTo.join(' / ')}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 /** An agent launched by every matching delivery on one of the member's webhooks. */
 export interface Trigger {
   id: string;
@@ -139,6 +156,7 @@ export interface Trigger {
   /** Null once the webhook is deleted. */
   webhookName: string | null;
   eventTypes: string[];
+  filters: TriggerFilters;
   instructions: string;
   harness: Harness;
   model: string | null;

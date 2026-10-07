@@ -239,8 +239,9 @@ admin creates webhooks under **Webhooks**, and members create their own.
 - **Agent triggers:** with the [launchpad](#agent-launchpad) on, a member can have each delivery
   on one of their webhooks launch an agent (**Agents → New agent → On a webhook event**). The
   trigger holds the agent's instructions, permission template, harness and model; the
-  instructions go into the agent's system prompt and the (redacted) payload is its task. See
-  [docs/launchpad.md](docs/launchpad.md#webhook-triggers).
+  instructions go into the agent's system prompt and the (redacted) payload is its task. Event
+  types and deterministic filters (payload contains a keyword, status changed to, assigned to)
+  pick the deliveries that launch it. See [docs/launchpad.md](docs/launchpad.md#webhook-triggers).
 
 ## Connecting Linear
 

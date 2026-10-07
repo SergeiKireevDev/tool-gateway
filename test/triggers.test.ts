@@ -63,6 +63,7 @@ describe('webhook triggers', () => {
       enabled: true,
       webhookName: 'issues',
       eventTypes: ['Issue'],
+      filters: { contains: [], statusChangedTo: [], assignedTo: [] },
       model: 'claude-sonnet-5',
     });
 
@@ -92,6 +93,42 @@ describe('webhook triggers', () => {
     ]);
     const trigger = await t.portal(alice.cookie, 'get', `/triggers/${id}`).expect(200);
     expect(trigger.body.lastRunId).toBe(runs.body[0].id as string);
+  });
+
+  it('launches only for deliveries that pass its filters', async () => {
+    const alice = await t.member('alice');
+    const hook = await webhookOf(alice.cookie);
+    const filters = { contains: ['crash'], statusChangedTo: ['Todo'] };
+    const created = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id, { filters }))
+      .expect(201);
+    expect(created.body.filters).toEqual({
+      contains: ['crash'],
+      statusChangedTo: ['Todo'],
+      assignedTo: [],
+    });
+
+    const update = (title: string, updatedFrom: object) => ({
+      type: 'Issue',
+      action: 'update',
+      updatedFrom,
+      data: { title, state: { name: 'Todo' } },
+    });
+    await deliver(hook.path, update('Crash on start', { title: 'old' }));
+    await deliver(hook.path, update('Typo in docs', { stateId: 's-0' }));
+    expect(t.driver.specs).toHaveLength(0);
+    await deliver(hook.path, update('Crash on start', { stateId: 's-0' }));
+    expect(t.driver.specs).toHaveLength(1);
+  });
+
+  it('rejects malformed filters', async () => {
+    const alice = await t.member('alice');
+    const hook = await webhookOf(alice.cookie);
+    await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id, { filters: { contains: 'crash' } }))
+      .expect(400);
   });
 
   it(`skips deliveries while ${MAX_ACTIVE_RUNS_PER_TRIGGER} of its runs are going`, async () => {
