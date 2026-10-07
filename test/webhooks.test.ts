@@ -195,7 +195,7 @@ describe('signed bodies (Linear, GitHub)', () => {
     const events = (await asAdmin('get', `/${hook.id}/events`).expect(200)).body as {
       eventType: string | null;
     }[];
-    expect(events.at(-1)?.eventType).toBe('pull_request');
+    expect(events.at(-1)?.eventType).toBe('pull_request.opened');
   });
 
   it('can be given its signing secret after creation (Linear shows it only then)', async () => {

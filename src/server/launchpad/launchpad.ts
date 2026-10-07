@@ -44,7 +44,7 @@ const PROVISION_TIMEOUT_MS = PROVISION_TIMEOUT_MINUTES * SECONDS_PER_MINUTE * MS
 /** A VM gets this long to report back after exiting before its run is failed. */
 const EXIT_REPORT_GRACE_SECONDS = 30;
 const EXIT_REPORT_GRACE_MS = EXIT_REPORT_GRACE_SECONDS * MS_PER_SECOND;
-const MAX_PROMPT_LENGTH = 50_000;
+export const MAX_PROMPT_LENGTH = 50_000;
 const MAX_MODEL_LENGTH = 100;
 const MAX_ACCOUNTS = 20;
 const MAX_OUTPUT_PATH = 200;
@@ -63,6 +63,9 @@ export type LaunchInput = z.infer<typeof launchSchema>;
 
 export interface LaunchOptions {
   scheduleId?: string;
+  triggerId?: string;
+  /** A trigger's instructions, added to the system prompt. */
+  instructions?: string;
   memoryIn?: string | null;
   /** The schedule's recorded member key generation: the run fails if it changed. */
   keyGeneration?: number;
@@ -196,9 +199,11 @@ export class Launchpad {
       memberId: member.id,
       memberName: member.name,
       scheduleId: opts.scheduleId ?? null,
+      triggerId: opts.triggerId ?? null,
       harness: plan.harness,
       model: plan.model,
       prompt: plan.prompt,
+      instructions: opts.instructions ?? null,
       templateId: plan.template.id,
       templateName: plan.template.name,
       accountIds: plan.accountIds,
@@ -208,8 +213,7 @@ export class Launchpad {
       memoryIn: opts.memoryIn ?? null,
       createdAt: this.now().toISOString(),
     });
-    const how = opts.scheduleId ? 'Schedule launched' : `Member "${member.name}" launched`;
-    this.log(run, `${how} a ${plan.harness} agent`);
+    this.log(run, `${launchedBy(member, opts)} a ${plan.harness} agent`);
     void this.pump();
     return this.deps.runs.require(run.id);
   }
@@ -330,6 +334,7 @@ export class Launchpad {
         grants,
         deadline,
         hasMemory: run.memoryIn !== null,
+        instructions: run.instructions,
       }),
       memory: run.memoryIn,
       deadline,
@@ -536,6 +541,12 @@ function runToolScope(harness: Harness): RunToolScope {
     drop: LLM_PROVIDERS.filter((p) => !providers.includes(p)),
     optional: providers.length > 1 ? providers : [],
   };
+}
+
+function launchedBy(member: Member, opts: LaunchOptions): string {
+  if (opts.scheduleId) return 'Schedule launched';
+  if (opts.triggerId) return 'Webhook trigger launched';
+  return `Member "${member.name}" launched`;
 }
 
 function reasonOf(err: unknown): string {

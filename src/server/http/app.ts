@@ -18,6 +18,7 @@ import { memberRoutes } from './memberRoutes.js';
 import { proxyHandler } from './proxy.js';
 import type { Launchpad } from '../launchpad/launchpad.js';
 import type { Scheduler } from '../launchpad/scheduler.js';
+import type { Triggers } from '../launchpad/triggers.js';
 import type { Webhooks } from '../webhooks.js';
 import { webhookReceiver, webhookRoutes } from './webhookRoutes.js';
 import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
@@ -30,6 +31,8 @@ export interface AppOptions {
   /** The agent launchpad; its routes are off when absent. */
   launchpad?: Launchpad | null;
   scheduler?: Scheduler | null;
+  /** Agents launched by webhook deliveries (needs the launchpad and webhooks). */
+  triggers?: Triggers | null;
   /** Inbound webhooks; their routes are off when absent. */
   webhooks?: Webhooks | null;
 }
@@ -196,7 +199,12 @@ export function createApp(
   if (options.launchpad) {
     admin.use(
       '/launchpad',
-      adminLaunchRoutes(options.launchpad, gateway, options.scheduler ?? null),
+      adminLaunchRoutes(
+        options.launchpad,
+        gateway,
+        options.scheduler ?? null,
+        options.triggers ?? null,
+      ),
     );
   }
 
@@ -213,6 +221,7 @@ export function createApp(
       options.launchpad ?? null,
       options.scheduler ?? null,
       options.webhooks ?? null,
+      options.triggers ?? null,
     ),
   );
   app.use('/api', memberRoutes(gateway));

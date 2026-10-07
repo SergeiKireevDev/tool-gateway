@@ -134,4 +134,30 @@ export const MIGRATIONS: readonly string[] = [
      payload TEXT
    );
    CREATE INDEX webhook_events_hook ON webhook_events (webhook_id, id);`,
+
+  // 6: agents launched by webhook deliveries
+  `CREATE TABLE triggers (
+     id TEXT PRIMARY KEY,
+     member_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     name TEXT NOT NULL,
+     webhook_id TEXT NOT NULL,
+     event_types TEXT NOT NULL,
+     instructions TEXT NOT NULL,
+     harness TEXT NOT NULL,
+     model TEXT,
+     template_id TEXT NOT NULL,
+     account_ids TEXT NOT NULL,
+     key_generation INTEGER NOT NULL,
+     enabled INTEGER NOT NULL,
+     stopped_reason TEXT,
+     last_run_id TEXT,
+     last_fired_at TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX triggers_member ON triggers (member_id);
+   CREATE INDEX triggers_webhook ON triggers (webhook_id, enabled);
+   ALTER TABLE runs ADD COLUMN trigger_id TEXT;
+   ALTER TABLE runs ADD COLUMN instructions TEXT;`,
 ];

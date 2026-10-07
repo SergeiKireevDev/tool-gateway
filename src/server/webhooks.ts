@@ -91,6 +91,15 @@ export interface WebhookEvent {
   payload: unknown;
 }
 
+/** An accepted delivery, as given to delivery listeners (agent triggers). */
+export interface AcceptedDelivery {
+  webhook: PublicWebhook;
+  eventId: number;
+  eventType: string | null;
+  /** The payload, redacted like the logged one (but not size-capped). */
+  payload: unknown;
+}
+
 /** The answer to give the sender. */
 export interface Delivery {
   status: number;
@@ -177,8 +186,16 @@ function eventTypeOf(payload: unknown): string | null {
   return typeof payload.type === 'string' ? payload.type : null;
 }
 
+/** GitHub names the event in `X-GitHub-Event` and its action in the body: `issues.opened`. */
+function githubEventType(event: string, payload: unknown): string {
+  return isRecord(payload) && typeof payload.action === 'string'
+    ? `${event}.${payload.action}`
+    : event;
+}
+
 export class Webhooks {
   private readonly rate = new Map<string, { windowStart: number; count: number }>();
+  private readonly deliveryListeners: ((delivery: AcceptedDelivery) => void)[] = [];
 
   constructor(
     private readonly store: EncryptedStore,
@@ -188,6 +205,17 @@ export class Webhooks {
     private readonly publicUrl: string,
     private readonly now: () => Date = () => new Date(),
   ) {}
+
+  /** Called after each accepted delivery (agent triggers launch from it). */
+  onDelivery(listener: (delivery: AcceptedDelivery) => void): void {
+    this.deliveryListeners.push(listener);
+  }
+
+  /** A webhook the actor may see, or null. */
+  visible(id: string, actor: Actor): PublicWebhook | null {
+    const w = this.store.read().webhooks.find((x) => x.id === id && this.visibleTo(x, actor));
+    return w ? this.toPublic(w) : null;
+  }
 
   // ---------------------------------------------------------------- management
 
@@ -340,8 +368,23 @@ export class Webhooks {
       if (err instanceof Rejected) return this.reject(webhook, err);
       throw err;
     }
-    this.record(webhook.id, true, null, header('x-github-event') ?? eventTypeOf(payload), payload);
+    const github = header('x-github-event');
+    const eventType = github ? githubEventType(github, payload) : eventTypeOf(payload);
+    const redacted = payload === null ? null : redactDeep(payload);
+    const eventId = this.record(webhook.id, true, null, eventType, redacted);
+    this.notify({ webhook: this.toPublic(webhook), eventId, eventType, payload: redacted });
     return { status: HTTP.OK, body: { ok: true } };
+  }
+
+  /** A failing listener never changes the sender's answer: the delivery is already logged. */
+  private notify(delivery: AcceptedDelivery): void {
+    for (const listener of this.deliveryListeners) {
+      try {
+        listener(delivery);
+      } catch (err) {
+        console.error('Webhooks: delivery listener failed', err);
+      }
+    }
   }
 
   /** The sender's HMAC-SHA256 of the raw body, and for Linear a fresh `webhookTimestamp`. */
@@ -414,9 +457,9 @@ export class Webhooks {
     reason: string | null,
     eventType: string | null,
     payload: unknown,
-  ): void {
+  ): number {
     const json = payload === null ? null : JSON.stringify(redactDeep(payload));
-    this.db.sql
+    const result = this.db.sql
       .prepare(
         'INSERT INTO webhook_events (webhook_id, at, accepted, reason, event_type, payload) VALUES (?, ?, ?, ?, ?, ?)',
       )
@@ -430,6 +473,7 @@ export class Webhooks {
           ? JSON.stringify({ truncated: true })
           : json,
       );
+    return Number(result.lastInsertRowid);
   }
 
   private byToken(token: string): Webhook | undefined {

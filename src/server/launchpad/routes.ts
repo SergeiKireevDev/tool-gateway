@@ -8,6 +8,7 @@ import type { Member } from '../store/types.js';
 import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
 import type { Actor, Launchpad } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
+import type { Triggers } from './triggers.js';
 import { HARNESSES, RUNNER_LIMITS } from './protocol.js';
 import { RUN_STATUSES, type LaunchSettings, type Run, type RunFilter } from './runStore.js';
 
@@ -24,6 +25,8 @@ const MAX_TOKEN_BUDGET = 1e10;
 const RUN_ID = 'id';
 const SCHEDULES_PATH = '/schedules';
 const SCHEDULE_PATH = '/schedules/:sid';
+const TRIGGERS_PATH = '/triggers';
+const TRIGGER_PATH = '/triggers/:tid';
 
 const timeoutSeconds = z
   .number()
@@ -101,6 +104,8 @@ function runFilter(req: Request): RunFilter {
   if (before) filter.before = before;
   const scheduleId = queryString(req, 'scheduleId');
   if (scheduleId) filter.scheduleId = scheduleId;
+  const triggerId = queryString(req, 'triggerId');
+  if (triggerId) filter.triggerId = triggerId;
   if (limit) filter.limit = Number(limit);
   return filter;
 }
@@ -210,11 +215,37 @@ function scheduleRoutes(
   );
 }
 
+/** Trigger routes shared by the member portal (own triggers) and the admin (all). */
+function triggerRoutes(
+  router: Router,
+  triggers: Triggers,
+  actorOf: (res: Response) => Actor,
+): void {
+  router.get(
+    TRIGGER_PATH,
+    h((req, res) => triggers.view(triggers.visible(actorOf(res), param(req, 'tid')))),
+  );
+  router.patch(
+    TRIGGER_PATH,
+    h((req, res) => {
+      const { enabled } = enabledSchema.parse(req.body);
+      return triggers.view(triggers.setEnabled(actorOf(res), param(req, 'tid'), enabled));
+    }),
+  );
+  router.delete(
+    TRIGGER_PATH,
+    h((req, res) => {
+      triggers.delete(actorOf(res), param(req, 'tid'));
+    }),
+  );
+}
+
 /** Member portal: launch agents and follow their own runs (mounted under `/api/me/launchpad`). */
 export function memberLaunchRoutes(
   launchpad: Launchpad,
   gateway: Gateway,
   scheduler: Scheduler | null,
+  triggers: Triggers | null = null,
 ): Router {
   const router = express.Router();
   const memberOf = (res: Response): Member => res.locals.member as Member;
@@ -265,6 +296,17 @@ export function memberLaunchRoutes(
     );
     scheduleRoutes(router, scheduler, actorOf);
   }
+  if (triggers) {
+    router.get(
+      TRIGGERS_PATH,
+      h((_req, res) => triggers.list(memberOf(res).id).map((x) => triggers.view(x))),
+    );
+    router.post(
+      TRIGGERS_PATH,
+      created((req, res) => triggers.view(triggers.create(memberOf(res), req.body))),
+    );
+    triggerRoutes(router, triggers, actorOf);
+  }
   return router;
 }
 
@@ -273,6 +315,7 @@ export function adminLaunchRoutes(
   launchpad: Launchpad,
   gateway: Gateway,
   scheduler: Scheduler | null,
+  triggers: Triggers | null = null,
 ): Router {
   const router = express.Router();
   const actorOf = (): Actor => ({ kind: 'admin' });
@@ -282,6 +325,13 @@ export function adminLaunchRoutes(
       h(() => scheduler.list().map((x) => scheduleView(scheduler, x))),
     );
     scheduleRoutes(router, scheduler, actorOf);
+  }
+  if (triggers) {
+    router.get(
+      TRIGGERS_PATH,
+      h(() => triggers.list().map((x) => triggers.view(x))),
+    );
+    triggerRoutes(router, triggers, actorOf);
   }
 
   router.get(

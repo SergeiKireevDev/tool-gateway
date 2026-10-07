@@ -21,9 +21,13 @@ export interface Run {
   memberId: string;
   memberName: string;
   scheduleId: string | null;
+  /** The webhook trigger that launched the run, if any. */
+  triggerId: string | null;
   harness: Harness;
   model: string | null;
   prompt: string;
+  /** A trigger's instructions, added to the system prompt (the prompt is then the event). */
+  instructions: string | null;
   templateId: string;
   templateName: string;
   accountIds: string[];
@@ -51,9 +55,11 @@ export type NewRun = Pick<
   | 'memberId'
   | 'memberName'
   | 'scheduleId'
+  | 'triggerId'
   | 'harness'
   | 'model'
   | 'prompt'
+  | 'instructions'
   | 'templateId'
   | 'templateName'
   | 'accountIds'
@@ -79,6 +85,7 @@ export interface RunFilter {
   memberId?: string;
   status?: RunStatus;
   scheduleId?: string;
+  triggerId?: string;
   harness?: Harness;
   /** Runs created before this ISO time (paging, newest first). */
   before?: string;
@@ -124,9 +131,11 @@ interface RunRow {
   member_id: string;
   member_name: string;
   schedule_id: string | null;
+  trigger_id: string | null;
   harness: Harness;
   model: string | null;
   prompt: string;
+  instructions: string | null;
   template_id: string;
   template_name: string;
   account_ids: string;
@@ -168,9 +177,11 @@ function toRun(r: RunRow): Run {
     memberId: r.member_id,
     memberName: r.member_name,
     scheduleId: r.schedule_id,
+    triggerId: r.trigger_id,
     harness: r.harness,
     model: r.model,
     prompt: r.prompt,
+    instructions: r.instructions,
     templateId: r.template_id,
     templateName: r.template_name,
     accountIds: JSON.parse(r.account_ids) as string[],
@@ -230,19 +241,21 @@ export class RunStore {
   insert(run: NewRun): Run {
     this.db.sql
       .prepare(
-        `INSERT INTO runs (id, member_id, member_name, schedule_id, harness, model, prompt, template_id,
-           template_name, account_ids, run_token_hash, status, timeout_seconds, token_budget, key_generation,
-           memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, harness, model, prompt,
+           instructions, template_id, template_name, account_ids, run_token_hash, status, timeout_seconds,
+           token_budget, key_generation, memory_in, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
         run.memberId,
         run.memberName,
         run.scheduleId,
+        run.triggerId,
         run.harness,
         run.model,
         redact(run.prompt),
+        run.instructions === null ? null : redact(run.instructions),
         run.templateId,
         run.templateName,
         JSON.stringify(run.accountIds),
@@ -316,6 +329,7 @@ export class RunStore {
     add('member_id = ?', filter.memberId);
     add('status = ?', filter.status);
     add('schedule_id = ?', filter.scheduleId);
+    add('trigger_id = ?', filter.triggerId);
     add('harness = ?', filter.harness);
     add('created_at < ?', filter.before);
     const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, filter.limit ?? DEFAULT_LIST_LIMIT));
@@ -339,6 +353,16 @@ export class RunStore {
       memberId ? ' AND member_id = ?' : ''
     }`;
     const row = this.db.sql.prepare(sql).get(...(memberId ? [memberId] : [])) as { n: number };
+    return row.n;
+  }
+
+  /** Runs a trigger launched that haven't finished yet (queued ones included). */
+  countActiveForTrigger(triggerId: string): number {
+    const row = this.db.sql
+      .prepare(
+        `SELECT COUNT(*) AS n FROM runs WHERE trigger_id = ? AND status IN ('queued', 'provisioning', 'running')`,
+      )
+      .get(triggerId) as { n: number };
     return row.n;
   }
 

@@ -177,6 +177,25 @@ function UsageTable({ usage }: { usage: ModelUsage[] }) {
   );
 }
 
+/** The task; for a webhook-triggered run, the trigger's instructions and then the event. */
+function RunPrompt({ run }: { run: Run }) {
+  return (
+    <>
+      <p className="mt-2 text-sm whitespace-pre-wrap text-slate-800">
+        {run.instructions ?? run.prompt}
+      </p>
+      {run.instructions !== null && (
+        <details className="mt-2 text-sm">
+          <summary className="cursor-pointer text-slate-500">Webhook event</summary>
+          <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-slate-50 p-3 text-xs whitespace-pre-wrap ring-1 ring-slate-200">
+            {run.prompt}
+          </pre>
+        </details>
+      )}
+    </>
+  );
+}
+
 /** One run: status, live log, steps, every gateway call, and its result. */
 export function RunDetail({
   api,
@@ -225,9 +244,10 @@ export function RunDetail({
                 {run.model && ` · ${run.model}`} · {run.templateName}
                 {showMember && ` · ${run.memberName}`}
                 {run.scheduleId && ' · scheduled'}
+                {run.triggerId && ' · webhook'}
               </span>
             </div>
-            <p className="mt-2 text-sm whitespace-pre-wrap text-slate-800">{run.prompt}</p>
+            <RunPrompt run={run} />
             <p className="mt-2 text-xs text-slate-500">
               Launched {formatDateTime(run.createdAt)} · ran {runDuration(run, now)}
               {run.deadline &&

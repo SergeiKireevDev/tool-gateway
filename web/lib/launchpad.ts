@@ -20,9 +20,12 @@ export interface Run {
   memberId: string;
   memberName: string;
   scheduleId: string | null;
+  triggerId: string | null;
   harness: Harness;
   model: string | null;
   prompt: string;
+  /** A webhook trigger's instructions (the prompt is then the event). */
+  instructions: string | null;
   templateId: string;
   templateName: string;
   status: RunStatus;
@@ -124,6 +127,33 @@ export interface Schedule {
   nextRunAt: string | null;
   nextRuns: string[];
   lastRunId: string | null;
+}
+
+/** An agent launched by every matching delivery on one of the member's webhooks. */
+export interface Trigger {
+  id: string;
+  memberId: string;
+  memberName: string;
+  name: string;
+  webhookId: string;
+  /** Null once the webhook is deleted. */
+  webhookName: string | null;
+  eventTypes: string[];
+  instructions: string;
+  harness: Harness;
+  model: string | null;
+  templateId: string;
+  enabled: boolean;
+  stoppedReason: string | null;
+  lastRunId: string | null;
+  lastFiredAt: string | null;
+}
+
+/** A webhook a trigger can listen to (see `GET /webhooks`). */
+export interface WebhookOption {
+  id: string;
+  name: string;
+  source: string;
 }
 
 export interface LaunchSettings {

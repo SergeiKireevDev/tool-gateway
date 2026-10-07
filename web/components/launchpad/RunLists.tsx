@@ -7,6 +7,7 @@ import {
   HARNESS_LABELS,
   type Run,
   type Schedule,
+  type Trigger,
 } from '@/lib/launchpad';
 import { Badge, Button, Card, EmptyState, useNow } from '../ui';
 import { runDuration, StatusBadge } from './RunBits';
@@ -57,6 +58,7 @@ export function RunsTable({
                 <div className="text-xs text-slate-500">
                   {r.templateName}
                   {r.scheduleId && ' · scheduled'}
+                  {r.triggerId && ' · webhook'}
                 </div>
               </td>
               {showMember && <td className="px-4 py-3 text-slate-600">{r.memberName}</td>}
@@ -76,6 +78,55 @@ export function RunsTable({
         </tbody>
       </table>
     </Card>
+  );
+}
+
+/** Runs, pause or resume, delete: the actions on a schedule or a trigger. */
+function RowActions({
+  enabled,
+  canResume,
+  onShowRuns,
+  onToggle,
+  onDelete,
+}: {
+  enabled: boolean;
+  canResume: boolean;
+  onShowRuns: () => void;
+  onToggle: (enabled: boolean) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <span className="inline-flex gap-2">
+      <Button size="sm" variant="ghost" onClick={onShowRuns}>
+        Runs
+      </Button>
+      {enabled ? (
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            onToggle(false);
+          }}
+        >
+          Pause
+        </Button>
+      ) : (
+        canResume && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              onToggle(true);
+            }}
+          >
+            Resume
+          </Button>
+        )
+      )}
+      <Button size="sm" variant="danger" onClick={onDelete}>
+        Delete
+      </Button>
+    </span>
   );
 }
 
@@ -130,54 +181,103 @@ export function SchedulesTable({
                 )}
               </td>
               <td className="px-4 py-3 whitespace-nowrap text-right">
-                <span className="inline-flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      onShowRuns(s);
-                    }}
-                  >
-                    Runs
-                  </Button>
-                  {s.enabled ? (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => {
-                        onToggle(s, false);
-                      }}
-                    >
-                      Pause
-                    </Button>
-                  ) : (
-                    canResume && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          onToggle(s, true);
-                        }}
-                      >
-                        Resume
-                      </Button>
-                    )
-                  )}
-                  <Button
-                    size="sm"
-                    variant="danger"
-                    onClick={() => {
-                      onDelete(s);
-                    }}
-                  >
-                    Delete
-                  </Button>
-                </span>
+                <RowActions
+                  enabled={s.enabled}
+                  canResume={canResume}
+                  onShowRuns={() => {
+                    onShowRuns(s);
+                  }}
+                  onToggle={(enabled) => {
+                    onToggle(s, enabled);
+                  }}
+                  onDelete={() => {
+                    onDelete(s);
+                  }}
+                />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </Card>
+  );
+}
+
+export function TriggersTable({
+  triggers,
+  showMember,
+  canResume,
+  onToggle,
+  onDelete,
+  onShowRuns,
+}: {
+  triggers: Trigger[];
+  showMember: boolean;
+  canResume: boolean;
+  onToggle: (t: Trigger, enabled: boolean) => void;
+  onDelete: (t: Trigger) => void;
+  onShowRuns: (t: Trigger) => void;
+}) {
+  const now = useNow();
+  if (triggers.length === 0) return <EmptyState title="No webhook-triggered agents" />;
+  return (
+    <Card className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-slate-200 text-sm">
+        <thead className="bg-slate-50 text-left text-xs font-medium tracking-wide text-slate-500 uppercase">
+          <tr>
+            <th className="px-4 py-3">Trigger</th>
+            {showMember && <th className="px-4 py-3">Member</th>}
+            <th className="px-4 py-3">On</th>
+            <th className="px-4 py-3">Last run</th>
+            <th className="px-4 py-3" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {triggers.map((t) => (
+            <tr key={t.id}>
+              <td className="max-w-sm px-4 py-3">
+                <div className="truncate font-medium text-slate-800">{t.name}</div>
+                <div className="text-xs text-slate-500">{HARNESS_LABELS[t.harness]}</div>
+              </td>
+              {showMember && <td className="px-4 py-3 text-slate-600">{t.memberName}</td>}
+              <td className="px-4 py-3 text-slate-600">
+                <div>{t.webhookName ?? 'Deleted webhook'}</div>
+                <div className="text-xs text-slate-500">
+                  {t.eventTypes.length > 0 ? t.eventTypes.join(', ') : 'Every event'}
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <TriggerState trigger={t} now={now} />
+              </td>
+              <td className="px-4 py-3 whitespace-nowrap text-right">
+                <RowActions
+                  enabled={t.enabled}
+                  canResume={canResume}
+                  onShowRuns={() => {
+                    onShowRuns(t);
+                  }}
+                  onToggle={(enabled) => {
+                    onToggle(t, enabled);
+                  }}
+                  onDelete={() => {
+                    onDelete(t);
+                  }}
+                />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+function TriggerState({ trigger, now }: { trigger: Trigger; now: number }) {
+  if (!trigger.enabled) return <Badge tone="amber">⏸ {trigger.stoppedReason ?? 'Stopped'}</Badge>;
+  if (!trigger.lastFiredAt) return <span className="text-slate-500">Waiting for an event</span>;
+  return (
+    <span title={formatDateTime(trigger.lastFiredAt)} className="text-slate-600">
+      {formatRelative(trigger.lastFiredAt, now)}
+    </span>
   );
 }

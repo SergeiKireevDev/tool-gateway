@@ -208,7 +208,7 @@ Instead of an API key, an account can use a subscription:
 ## Agent launchpad
 
 Members can launch AI agents (Claude Code, Codex, Gemini CLI, pi) from the **Agents** tab. They
-run once or on a schedule, each in a disposable Firecracker microVM that can only reach the
+run once, on a schedule or on webhook events, each in a disposable Firecracker microVM that can only reach the
 gateway. Every tool and model call goes through the gateway with a session key scoped by the
 template the member picked, and has a token budget. The run's transcript, its gateway calls,
 output files and `MEMORY.md` are kept and shown per run. Admins see every run under
@@ -236,6 +236,11 @@ admin creates webhooks under **Webhooks**, and members create their own.
   reason). Accepted payloads are kept redacted and size-capped. Unknown addresses get 404 and are
   not logged. Each webhook takes at most 120 deliveries a minute (429 after that).
 - The VM listener does not serve `/hooks`.
+- **Agent triggers:** with the [launchpad](#agent-launchpad) on, a member can have each delivery
+  on one of their webhooks launch an agent (**Agents → New agent → On a webhook event**). The
+  trigger holds the agent's instructions, permission template, harness and model; the
+  instructions go into the agent's system prompt and the (redacted) payload is its task. See
+  [docs/launchpad.md](docs/launchpad.md#webhook-triggers).
 
 ## Connecting Linear
 

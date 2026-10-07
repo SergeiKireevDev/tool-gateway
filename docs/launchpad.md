@@ -22,7 +22,7 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
 ## What a run is
 
 1. **Launch.** A member picks a task (prompt), a template, a harness (Claude Code, Codex, Gemini
-   CLI or pi), and "now" or a schedule. The launchpad checks the following, then queues the run:
+   CLI or pi), and "now", a schedule or a webhook trigger. The launchpad checks the following, then queues the run:
    - the member may launch;
    - the template is theirs;
    - one account per tool is available;
@@ -53,6 +53,40 @@ Scheduled agents use Hourly, Daily, Weekly or Monthly presets in the member's ti
 - Each successful run's `MEMORY.md` is given to the next run.
 - A schedule **stops** when its member's key is rotated or revoked, or when the member is deleted
   or expired. The member can resume it; the admin can pause it.
+
+## Webhook triggers
+
+A trigger launches an agent for each accepted delivery on one of the member's own
+[webhooks](../README.md#webhooks) (**New agent → On a webhook event**, or
+`POST /api/me/launchpad/triggers`):
+
+```json
+{
+  "name": "Triage new issues",
+  "webhookId": "<webhook id>",
+  "eventTypes": ["issues.opened"],
+  "instructions": "Label the issue and post a short summary in #triage.",
+  "templateId": "<template id>",
+  "harness": "claude-code"
+}
+```
+
+- **Input.** The trigger's `instructions` are added to the agent's system prompt. The task (user
+  prompt) is the event: its type, the webhook, and the payload as JSON, redacted like the logged
+  one and capped to the prompt size. The system prompt tells the agent that the payload comes from
+  a third party and is data, not instructions.
+- **Event types.** Empty matches every delivery. `issues` matches `issues` and its sub-types
+  (`issues.opened`). Event types are those shown in the webhook's log: monday.com's `event.type`,
+  Linear's `type.action` (`Issue.create`), GitHub's `X-GitHub-Event` + `action`
+  (`pull_request.opened`), or a generic `type` / `event` field.
+- **Permissions.** The template, accounts, harness and model are checked like a launch when the
+  trigger is created and resumed, and again on each launch. Only the member's own webhooks can
+  trigger their agents.
+- **Limits.** A trigger has at most 3 runs queued or running; further deliveries are skipped (and
+  logged in Activity). The usual concurrency limits and token budget apply to each run.
+- **Stopping.** Like schedules, a trigger stops when its member's key is rotated or revoked, when the
+  member is deleted or expired, or when a launch fails. The member can resume it; the admin can
+  pause it. Deleting the webhook leaves the trigger without events.
 
 ## Guarantees and where they come from
 
