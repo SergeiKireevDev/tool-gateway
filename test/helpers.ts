@@ -8,6 +8,7 @@ import type { GatewayConfig } from '../src/server/config.js';
 import { Gateway } from '../src/server/gateway.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
 import { EncryptedStore } from '../src/server/store/store.js';
+import { createGmailProvider } from '../src/server/tools/gmail.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
 import { createLinearProvider } from '../src/server/tools/linear.js';
 import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
@@ -75,6 +76,21 @@ export function fakeGitHubFetch(calls: Harness['upstreamCalls']): typeof fetch {
         },
       ),
     );
+  };
+}
+
+/** Fake Gmail: profile identifies the mailbox; other methods echo their call. */
+export function fakeGmailFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (new Headers(init.headers).get('authorization') === 'Bearer bad-token') {
+      return Promise.resolve(Response.json({ error: 'invalid_token' }, { status: 401 }));
+    }
+    if (url === 'https://gmail.googleapis.com/gmail/v1/users/me/profile') {
+      return Promise.resolve(Response.json({ emailAddress: 'agent@example.com' }));
+    }
+    return Promise.resolve(Response.json({ url, method: init.method, body: init.body }));
   };
 }
 
@@ -327,10 +343,12 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const github = fakeGitHubFetch(calls);
   const monday = fakeMondayFetch(calls);
   const slack = fakeSlackFetch(calls);
+  const gmail = fakeGmailFetch(calls);
   const llm = fakeLlmFetch(calls);
   const linear = fakeLinearFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+    if (url.startsWith('https://gmail.googleapis.com/')) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
@@ -419,6 +437,7 @@ export async function createHarness(): Promise<Harness> {
     crypto,
     new ToolRegistry([
       createGitHubProvider(fetch),
+      createGmailProvider(fetch),
       createMondayProvider(fetch),
       createSlackProvider(fetch),
       createLinearProvider(fetch),

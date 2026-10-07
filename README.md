@@ -106,6 +106,41 @@ Permissions**, install it to your workspace, then paste its bot (`xoxb-…`) or 
 token in **Accounts → Connect account → Slack**. The gateway checks it with `auth.test` and shows
 the workspace, user and granted scopes.
 
+## Connecting Gmail
+
+Enable the **Gmail API** in your Google Cloud project and obtain a Google OAuth access token
+with Gmail scopes, for example through Google's OAuth 2.0 Playground using your own OAuth client.
+Paste the access token in **Tool accounts → Connect a tool account → Gmail**. API keys and app
+passwords are not supported. Verification reads the mailbox profile, so the token needs a scope
+such as `gmail.readonly`, `gmail.modify`, or `https://mail.google.com/` that permits `getProfile`.
+A send-only token cannot be connected; a gateway template can still grant only sending.
+
+Access tokens expire (typically after one hour). This provider accepts pasted access tokens and
+does not refresh them; reconnect the account with a fresh token when it expires.
+
+Use `https://<gateway>/proxy/gmail/gmail/v1/users/me` as the mailbox endpoint. Only `me` is allowed,
+so every account represents its connected mailbox. Leave the resource allowlist empty: label,
+recipient and other mailbox restrictions are not supported. All requests use JSON; sending uses
+a base64url-encoded RFC 2822 message in the `raw` field.
+
+| Permission        | Covers                                                   |
+| ----------------- | -------------------------------------------------------- |
+| `messages:read`   | Profile, messages, threads, attachments, drafts, history |
+| `messages:write`  | Modify labels, trash and restore messages and threads    |
+| `messages:send`   | Send messages or existing drafts                         |
+| `messages:delete` | Permanently delete messages and threads                  |
+| `drafts:write`    | Create, update and delete drafts                         |
+| `labels:read`     | List labels and read label details                       |
+| `labels:write`    | Create, update and delete labels                         |
+
+Settings, forwarding, delegation, watches, imports, uploads and multipart batch requests are
+denied. The underlying Google OAuth scopes may further restrict any permitted operation.
+
+```sh
+curl 'http://127.0.0.1:7420/proxy/gmail/gmail/v1/users/me/messages?q=is%3Aunread' \
+  -H "Authorization: Bearer $SESSION_KEY"
+```
+
 ## Concepts
 
 | Concept         | What it is                                                                                                                                                                                                                                                                                            |
