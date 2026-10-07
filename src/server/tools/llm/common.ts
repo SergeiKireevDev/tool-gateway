@@ -151,17 +151,23 @@ export function eventMeter(
   const decoder = new TextDecoder();
   if (contentType.includes('text/event-stream')) {
     let pending = '';
+    let data: string[] = [];
+    const dispatch = (): void => {
+      if (data.length === 0) return;
+      try {
+        handle(JSON.parse(data.join('\n')));
+      } catch {
+        // `[DONE]` markers and malformed events carry no usage.
+      }
+      data = [];
+    };
     const lines = (text: string): void => {
       pending += text;
       const parts = pending.split(/\r?\n/);
       pending = parts.pop() ?? '';
       for (const line of parts) {
-        if (!line.startsWith('data:')) continue;
-        try {
-          handle(JSON.parse(line.slice('data:'.length)));
-        } catch {
-          // `[DONE]` markers and partial garbage carry no usage.
-        }
+        if (line === '') dispatch();
+        else if (line.startsWith('data:')) data.push(line.slice('data:'.length));
       }
     };
     return {
@@ -170,6 +176,7 @@ export function eventMeter(
       },
       end: () => {
         lines(`${decoder.decode()}\n`);
+        dispatch();
         return seen ? usage : null;
       },
     };

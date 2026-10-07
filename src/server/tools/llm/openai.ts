@@ -54,12 +54,14 @@ function checkServerTools(body: Record<string, unknown>, grant: Grant): void {
   }
 }
 
-/** Responses API usage: `input_tokens` includes the cached ones. */
+/** Responses API input includes cache reads and cache writes; output includes reasoning. */
 function foldResponsesUsage(u: unknown, usage: TokenUsage): void {
   if (!isRecord(u)) return;
   const cached = count(u.input_tokens_details, 'cached_tokens');
+  const written = count(u.input_tokens_details, 'cache_write_tokens');
   usage.cacheRead = cached;
-  usage.input = Math.max(0, count(u, 'input_tokens') - cached);
+  usage.cacheWrite = written;
+  usage.input = Math.max(0, count(u, 'input_tokens') - cached - written);
   usage.output = count(u, 'output_tokens');
 }
 
