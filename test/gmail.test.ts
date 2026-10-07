@@ -235,11 +235,12 @@ describe('Gmail through the gateway', () => {
       redirect_uri: 'http://127.0.0.1:8765/',
     });
 
+    // Later, once the access token has expired
+    h.clock.now = new Date(h.clock.now.getTime() + 2 * 60 * 60 * 1000);
     const key = await session(done.body.id as string, {
       permissions: ['mail:send'],
       resources: ['*@acme.com'],
     });
-    h.clock.now = new Date(h.clock.now.getTime() + 2 * 60 * 60 * 1000);
     h.upstreamCalls.length = 0;
     const res = await request(app)
       .post(`/proxy/gmail${ME}/messages/send`)
@@ -250,7 +251,7 @@ describe('Gmail through the gateway', () => {
       url: `https://gmail.googleapis.com${ME}/messages/send`,
       method: 'POST',
     });
-    // The access token expired: refreshed with Google's refresh token, which is kept
+    // Refreshed with Google's refresh token, which is kept
     const sent = h.upstreamCalls.at(-1);
     expect(new Headers(sent?.init.headers).get('authorization')).toBe('Bearer ya29.refreshed');
 
