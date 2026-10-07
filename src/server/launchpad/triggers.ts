@@ -183,20 +183,16 @@ export class Triggers {
   }
 
   list(memberId?: string): Trigger[] {
-    const rows = (memberId
-      ? this.db.sql
-          .prepare('SELECT * FROM triggers WHERE member_id = ? ORDER BY created_at DESC')
-          .all(memberId)
-      : this.db.sql
-          .prepare('SELECT * FROM triggers ORDER BY created_at DESC')
-          .all()) as unknown as TriggerRow[];
+    const where = memberId ? 'WHERE member_id = ? ' : '';
+    const rows = this.db.sql
+      .prepare(`SELECT * FROM triggers ${where}ORDER BY created_at DESC`)
+      .all(...(memberId ? [memberId] : [])) as unknown as TriggerRow[];
     return rows.map(toTrigger);
   }
 
   get(id: string): Trigger | null {
-    const row = this.db.sql.prepare('SELECT * FROM triggers WHERE id = ?').get(id) as
-      TriggerRow | undefined;
-    return row ? toTrigger(row) : null;
+    const row = this.db.sql.prepare('SELECT * FROM triggers WHERE id = ?').get(id);
+    return row ? toTrigger(row as unknown as TriggerRow) : null;
   }
 
   private require(id: string): Trigger {
