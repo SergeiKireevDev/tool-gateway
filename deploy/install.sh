@@ -15,7 +15,8 @@
 #   --google-client-id ID       Google OAuth client for sign-in (optional; else admin token)
 #   --google-client-secret S
 #   --repo URL --branch NAME    where to clone the code from when not run from a checkout
-#   --no-launchpad              skip the agent launchpad (Firecracker, guest image)
+#   --launchpad                 require the agent launchpad (fail if KVM can't be enabled)
+#   --no-launchpad              skip the agent launchpad (KVM, Firecracker, guest image)
 #   --yes                       don't ask anything: use flags and defaults
 set -euo pipefail
 
@@ -53,9 +54,10 @@ while [ $# -gt 0 ]; do
     --google-client-secret) GOOGLE_CLIENT_SECRET=$2; shift 2 ;;
     --repo) REPO_URL=$2; shift 2 ;;
     --branch) BRANCH=$2; shift 2 ;;
+    --launchpad) LAUNCHPAD=required; shift ;;
     --no-launchpad) LAUNCHPAD=no; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) die "Unknown option: $1 (see --help)" ;;
   esac
 done
@@ -76,10 +78,6 @@ ask() {
 [ "$(id -u)" = 0 ] || die "Run as root (sudo $0)."
 command -v apt-get >/dev/null || die "Only Debian and Ubuntu (apt) are supported."
 [ "$(uname -m)" = x86_64 ] || die "Only x86_64 is supported."
-
-if [ "$LAUNCHPAD" = auto ]; then
-  if [ -e /dev/kvm ]; then LAUNCHPAD=yes; else LAUNCHPAD=no; warn "No /dev/kvm: installing without the agent launchpad."; fi
-fi
 
 EXISTING_ENV=0
 [ -f "$ENV_FILE" ] && EXISTING_ENV=1
@@ -112,7 +110,52 @@ fi
 say "Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg git rsync iproute2 nftables e2fsprogs procps >/dev/null
+apt-get install -y -qq ca-certificates curl gnupg git rsync iproute2 nftables e2fsprogs procps kmod >/dev/null
+
+# KVM is in the kernel: make /dev/kvm available (CPU support, module loaded now and at boot,
+# device permissions). Firecracker runs every agent VM on it.
+setup_kvm() {
+  local module
+  if grep -qw vmx /proc/cpuinfo; then
+    module=kvm_intel
+  elif grep -qw svm /proc/cpuinfo; then
+    module=kvm_amd
+  elif [ -e /dev/kvm ]; then
+    return 0
+  else
+    warn "This CPU exposes no hardware virtualization (Intel VT-x / AMD-V). Enable it in the"
+    warn "BIOS/UEFI, or on a cloud VM enable nested virtualization (or use a bare-metal instance)."
+    return 1
+  fi
+  if [ ! -e /dev/kvm ]; then
+    say "Enabling KVM ($module)"
+    if ! modprobe "$module" 2>/tmp/kvm-modprobe.err; then
+      warn "Could not load $module: $(cat /tmp/kvm-modprobe.err)"
+      warn "If the kernel log says 'disabled by bios', enable virtualization in the BIOS/UEFI."
+      return 1
+    fi
+    command -v udevadm >/dev/null && udevadm settle || true
+  fi
+  [ -e /dev/kvm ] || { warn "/dev/kvm did not appear after loading $module."; return 1; }
+  # Loaded at every boot too.
+  install -d /etc/modules-load.d
+  printf 'kvm\n%s\n' "$module" >/etc/modules-load.d/kvm.conf
+  getent group kvm >/dev/null || groupadd --system kvm
+  chgrp kvm /dev/kvm
+  chmod 0660 /dev/kvm
+}
+
+if [ "$LAUNCHPAD" != no ]; then
+  if setup_kvm; then
+    LAUNCHPAD=yes
+    say "KVM is available: installing the agent launchpad"
+  elif [ "$LAUNCHPAD" = required ]; then
+    die "KVM is required for the agent launchpad (--launchpad)."
+  else
+    LAUNCHPAD=no
+    warn "Installing without the agent launchpad (needs KVM). Re-run once KVM is available."
+  fi
+fi
 
 node_major() { node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/' || true; }
 if [ "$(node_major)" != "$NODE_MAJOR" ]; then
@@ -192,6 +235,16 @@ if [ "$EXISTING_ENV" = 0 ]; then
   chgrp "$SERVICE_USER" "$ENV_FILE"
   chmod 0640 "$ENV_FILE"
   umask 022
+fi
+
+# An earlier install without KVM: turn the launchpad on in the kept configuration.
+if [ "$LAUNCHPAD" = yes ] && ! grep -q '^LAUNCHPAD_VM_DRIVER=' "$ENV_FILE"; then
+  say "Enabling the agent launchpad in $ENV_FILE"
+  {
+    echo "GATEWAY_VM_HOST=$VM_HOST"
+    echo "LAUNCHPAD_VM_DRIVER=firecracker"
+    echo "LAUNCHPAD_VMD_SOCKET=/run/launchpad/vmd.sock"
+  } >>"$ENV_FILE"
 fi
 
 # The first admin token, shown once (the service would otherwise print it in the journal).

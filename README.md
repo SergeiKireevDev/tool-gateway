@@ -29,8 +29,16 @@ sudo deploy/install.sh
 It asks for the admin's email (the Google account that administers the gateway), the public URL,
 and optionally a Google OAuth client for sign-in. It then:
 
-- installs everything (Node.js 22, git, nftables…, plus Docker and Firecracker when `/dev/kvm`
-  exists, for the agent launchpad);
+- installs everything: Node.js 22, git, nftables…;
+- enables **KVM** for the agent launchpad:
+  - checks the CPU has Intel VT-x / AMD-V;
+  - loads `kvm_intel` / `kvm_amd`, now and at boot;
+  - sets `/dev/kvm` permissions;
+  - then installs Docker, Firecracker, the guest kernel and image.
+
+  Without hardware virtualization it explains why (BIOS setting, nested virtualization on cloud
+  VMs) and installs without the launchpad. `--launchpad` makes KVM required instead;
+
 - builds the gateway into `/opt/local-gateway`, with data and master key in
   `/var/lib/local-gateway` and configuration in `/etc/local-gateway/gateway.env`;
 - starts it as the `local-gateway` systemd service (plus `launchpad-vmd` with KVM);
