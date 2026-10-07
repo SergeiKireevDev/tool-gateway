@@ -96,9 +96,22 @@ describe('git smart HTTP policy', () => {
     expect(main.body.message).toContain('default branch');
     await git('post', '/git-receive-pack', pushBody(`${A} ${ZERO} refs/heads/feature`)).expect(403);
     await git('post', '/git-receive-pack', pushBody(`${ZERO} ${B} refs/tags/v1`)).expect(403);
-    await git('post', '/git-receive-pack', gzipSync(pushBody(`${A} ${B} refs/heads/main`)), {
+    // git gzips larger requests: the gateway reads (and forwards) them inflated.
+    const gzipped = await git(
+      'post',
+      '/git-receive-pack',
+      gzipSync(pushBody(`${A} ${B} refs/heads/main`)),
+      {
+        'content-encoding': 'gzip',
+      },
+    ).expect(403);
+    expect(gzipped.body.message).toContain('default branch');
+    await git('post', '/git-receive-pack', gzipSync(pushBody(`${A} ${B} refs/heads/feature`)), {
       'content-encoding': 'gzip',
-    }).expect(403);
+    }).expect(200);
+    const forwarded = h.upstreamCalls.at(-1);
+    expect(new Headers(forwarded?.init.headers).get('content-encoding')).toBeNull();
+    expect(Buffer.from(forwarded?.init.body as Buffer).toString()).toContain('refs/heads/feature');
   });
 
   it('needs contents:write to push, the allowlist, and known git endpoints', async () => {
