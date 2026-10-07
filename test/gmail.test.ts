@@ -96,9 +96,13 @@ describe('Gmail authorization', () => {
       expect(await authz('messages:write', 'POST', path)).toMatchObject({ allowed: false });
     }
     expect(await authz('messages:read', 'HEAD', 'messages')).toMatchObject({ allowed: false });
-    expect(await authz('messages:write', 'POST', 'messages/send')).toMatchObject({ allowed: false });
+    expect(await authz('messages:write', 'POST', 'messages/send')).toMatchObject({
+      allowed: false,
+    });
     expect(await authz('drafts:write', 'POST', 'drafts/send')).toMatchObject({ allowed: false });
-    expect(await authz('messages:write', 'DELETE', 'messages/abc')).toMatchObject({ allowed: false });
+    expect(await authz('messages:write', 'DELETE', 'messages/abc')).toMatchObject({
+      allowed: false,
+    });
   });
 
   it('only permits the connected mailbox and rejects resource restrictions', async () => {
@@ -166,7 +170,9 @@ describe('Gmail authorization', () => {
       headers: new Headers({ 'content-type': 'message/rfc822' }),
     });
     expect(mimeBody).toMatchObject({ allowed: false });
-    expect(await authz('messages:read', 'GET', 'messages', extra)).toMatchObject({ allowed: false });
+    expect(await authz('messages:read', 'GET', 'messages', extra)).toMatchObject({
+      allowed: false,
+    });
     expect(await authz('messages:delete', 'DELETE', 'messages/abc', extra)).toMatchObject({
       allowed: false,
     });

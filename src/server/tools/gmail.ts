@@ -7,6 +7,8 @@ const MAILBOX = 'gmail/v1/users/me';
 const JSON_TYPE = 'application/json';
 const MAILBOX_SEGMENTS = MAILBOX.split('/').length;
 const USER_AGENT = 'local-gateway';
+const DRAFT_PATH = 'drafts/:id';
+const LABEL_PATH = 'labels/:id';
 
 const PERM = {
   MESSAGES_READ: 'messages:read',
@@ -77,7 +79,7 @@ const RULES: readonly Rule[] = [
     'threads',
     'threads/:id',
     'drafts',
-    'drafts/:id',
+    DRAFT_PATH,
     'history',
   ]),
   ...rules('POST', PERM.MESSAGES_WRITE, [
@@ -93,13 +95,13 @@ const RULES: readonly Rule[] = [
   ...rules('DELETE', PERM.MESSAGES_DELETE, ['messages/:id', 'threads/:id']),
   ...rules('POST', PERM.MESSAGES_DELETE, ['messages/batchDelete']),
   ...rules('POST', PERM.DRAFTS_WRITE, ['drafts']),
-  ...rules('PUT', PERM.DRAFTS_WRITE, ['drafts/:id']),
-  ...rules('DELETE', PERM.DRAFTS_WRITE, ['drafts/:id']),
-  ...rules('GET', PERM.LABELS_READ, ['labels', 'labels/:id']),
+  ...rules('PUT', PERM.DRAFTS_WRITE, [DRAFT_PATH]),
+  ...rules('DELETE', PERM.DRAFTS_WRITE, [DRAFT_PATH]),
+  ...rules('GET', PERM.LABELS_READ, ['labels', LABEL_PATH]),
   ...rules('POST', PERM.LABELS_WRITE, ['labels']),
-  ...rules('PUT', PERM.LABELS_WRITE, ['labels/:id']),
-  ...rules('PATCH', PERM.LABELS_WRITE, ['labels/:id']),
-  ...rules('DELETE', PERM.LABELS_WRITE, ['labels/:id']),
+  ...rules('PUT', PERM.LABELS_WRITE, [LABEL_PATH]),
+  ...rules('PATCH', PERM.LABELS_WRITE, [LABEL_PATH]),
+  ...rules('DELETE', PERM.LABELS_WRITE, [LABEL_PATH]),
 ];
 
 /** Allow documented read parameters and harmless JSON response options, never method overrides. */
@@ -215,7 +217,8 @@ export function createGmailProvider(fetchImpl: typeof fetch = fetch): ToolProvid
       } catch {
         return {
           allowed: false,
-          reason: 'Invalid request body: use a JSON object for writes and no body for GET or DELETE',
+          reason:
+            'Invalid request body: use a JSON object for writes and no body for GET or DELETE',
         };
       }
     },
