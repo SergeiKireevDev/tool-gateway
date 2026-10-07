@@ -9,18 +9,29 @@ import {
   type Preset,
   type Run,
   type Schedule,
+  type Trigger,
+  type WebhookOption,
   WEEKDAYS,
 } from '@/lib/launchpad';
 import type { Account } from '@/lib/types';
 import { Button, ErrorBanner, Field, Input, Select, Textarea } from '../ui';
 
-type When = 'now' | Preset;
+type When = 'now' | Preset | 'webhook';
 const WHEN_LABELS: Record<When, string> = {
   now: 'Run once, now',
   hourly: 'Every hour',
   daily: 'Every day',
   weekly: 'Every week',
   monthly: 'Every month',
+  webhook: 'On a webhook event',
+};
+const SUBMIT_LABELS: Record<When, string> = {
+  now: 'Launch agent',
+  hourly: 'Create schedule',
+  daily: 'Create schedule',
+  weekly: 'Create schedule',
+  monthly: 'Create schedule',
+  webhook: 'Create trigger',
 };
 const LAST_DAY = 28;
 const DAYS = Array.from({ length: LAST_DAY }, (_, i) => i + 1);
@@ -124,19 +135,174 @@ function RecurrenceFields({
   );
 }
 
-/** Launch an agent now, or schedule it: prompt, permission template, harness, when. */
+/** "issues.opened, Issue" → ["issues.opened", "Issue"] */
+function splitList(value: string): string[] {
+  return value
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** Which of the member's webhooks launches the agent, and on which event types. */
+function TriggerFields({
+  webhooks,
+  webhookId,
+  setWebhookId,
+  eventTypes,
+  setEventTypes,
+}: {
+  webhooks: WebhookOption[];
+  webhookId: string;
+  setWebhookId: (v: string) => void;
+  eventTypes: string;
+  setEventTypes: (v: string) => void;
+}) {
+  if (webhooks.length === 0) {
+    return (
+      <p className="text-sm text-slate-600">
+        You have no webhooks yet. Create one under Webhooks first, then come back.
+      </p>
+    );
+  }
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <Field label="Webhook">
+        <Select
+          value={webhookId}
+          onChange={(e) => {
+            setWebhookId(e.target.value);
+          }}
+        >
+          {webhooks.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name} ({w.source})
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field
+        label="Event types"
+        hint="Comma-separated. issues also matches issues.opened. Empty: every event."
+      >
+        <Input
+          value={eventTypes}
+          onChange={(e) => {
+            setEventTypes(e.target.value);
+          }}
+          placeholder="issues.opened, Issue.create"
+        />
+      </Field>
+    </div>
+  );
+}
+
+/** The task field: the agent's task, or what a trigger's agent does with each event. */
+function TaskField({
+  trigger,
+  prompt,
+  setPrompt,
+}: {
+  trigger: boolean;
+  prompt: string;
+  setPrompt: (v: string) => void;
+}) {
+  return (
+    <Field
+      label={trigger ? 'Instructions' : 'Task'}
+      hint={
+        trigger
+          ? 'What the agent should do with each event. They go in its system prompt; the event payload is its task.'
+          : 'What the agent should do. It works alone: be specific about the expected result.'
+      }
+    >
+      <Textarea
+        required
+        rows={6}
+        value={prompt}
+        onChange={(e) => {
+          setPrompt(e.target.value);
+        }}
+        className="font-sans"
+        placeholder={
+          trigger
+            ? 'A new issue was opened: label it, and post a short summary in #triage.'
+            : 'Triage the open issues of octo-org/api: label them and post a summary in #triage.'
+        }
+      />
+    </Field>
+  );
+}
+
+/** What the form holds when it is sent. */
+interface Draft {
+  when: When;
+  prompt: string;
+  templateId: string;
+  harness: string;
+  accountIds: string[];
+  model: string;
+  time: string;
+  weekday: number;
+  day: number;
+  timezone: string;
+  webhookId: string;
+  eventTypes: string;
+}
+
+/** The request the form sends: a run now, a schedule, or a webhook trigger. */
+function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
+  const launch = {
+    templateId: d.templateId,
+    harness: d.harness,
+    accountIds: d.accountIds,
+    ...(d.model ? { model: d.model } : {}),
+  };
+  if (d.when === 'now') return { path: '/launchpad/runs', body: { ...launch, prompt: d.prompt } };
+  if (d.when === 'webhook') {
+    return {
+      path: '/launchpad/triggers',
+      body: {
+        ...launch,
+        instructions: d.prompt,
+        webhookId: d.webhookId,
+        eventTypes: splitList(d.eventTypes),
+      },
+    };
+  }
+  const { hour, minute } = parseTime(d.time);
+  return {
+    path: '/launchpad/schedules',
+    body: {
+      ...launch,
+      prompt: d.prompt,
+      preset: d.when,
+      hour,
+      minute,
+      weekday: d.weekday,
+      dayOfMonth: d.day,
+      timezone: d.timezone,
+    },
+  };
+}
+
+/** Launch an agent now, schedule it, or trigger it on webhook events. */
 export function LaunchForm({
   api,
   options,
   accounts,
+  webhooks,
   onLaunched,
   onScheduled,
+  onTriggered,
 }: {
   api: Api;
   options: LaunchOptions;
   accounts: Account[];
+  /** The member's webhooks, for triggers. */
+  webhooks: WebhookOption[];
   onLaunched: (run: Run) => void;
   onScheduled: (schedule: Schedule) => void;
+  onTriggered: (trigger: Trigger) => void;
 }) {
   const usable = options.templates.filter((t) => t.harnesses.length > 0);
   const [prompt, setPrompt] = useState('');
@@ -151,6 +317,9 @@ export function LaunchForm({
   const [weekday, setWeekday] = useState(1);
   const [day, setDay] = useState(1);
   const [timezone, setTimezone] = useState(browserTimeZone);
+  const [webhookId, setWebhookId] = useState('');
+  const [eventTypes, setEventTypes] = useState('');
+  const hookId = webhookId || (webhooks[0]?.id ?? '');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -171,16 +340,44 @@ export function LaunchForm({
   const submit = async (): Promise<void> => {
     setBusy(true);
     setError(null);
-    const body = {
+    const request = requestFor({
+      when,
       prompt,
       templateId,
       harness: choice?.harness ?? harness,
       accountIds: ambiguous.map((x) => picked[x.tool] ?? x.options[0]?.id ?? '').filter(Boolean),
-      ...(model ? { model } : {}),
-    };
+      model,
+      time,
+      weekday,
+      day,
+      timezone,
+      webhookId: hookId,
+      eventTypes,
+    });
+    try {
+      const sent = await api<Run | Schedule | Trigger>('POST', request.path, request.body);
+      if (when === 'now') onLaunched(sent as Run);
+      else if (when === 'webhook') onTriggered(sent as Trigger);
+      else onScheduled(sent as Schedule);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
     try {
       if (when === 'now') {
         onLaunched(await api<Run>('POST', '/launchpad/runs', body));
+      } else if (when === 'webhook') {
+        const { prompt: instructions, ...launch } = body;
+        onTriggered(
+          await api<Trigger>('POST', '/launchpad/triggers', {
+            ...launch,
+            instructions,
+            webhookId: hookId,
+            eventTypes: splitList(eventTypes),
+          }),
+        );
       } else {
         const { hour, minute } = parseTime(time);
         onScheduled(
@@ -210,21 +407,7 @@ export function LaunchForm({
         void submit();
       }}
     >
-      <Field
-        label="Task"
-        hint="What the agent should do. It works alone: be specific about the expected result."
-      >
-        <Textarea
-          required
-          rows={6}
-          value={prompt}
-          onChange={(e) => {
-            setPrompt(e.target.value);
-          }}
-          className="font-sans"
-          placeholder="Triage the open issues of octo-org/api: label them and post a summary in #triage."
-        />
-      </Field>
+      <TaskField trigger={when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
       <div className="grid gap-3 sm:grid-cols-2">
         <Field
           label="Permissions"
@@ -318,7 +501,16 @@ export function LaunchForm({
           ))}
         </Select>
       </Field>
-      {when !== 'now' && (
+      {when === 'webhook' && (
+        <TriggerFields
+          webhooks={webhooks}
+          webhookId={hookId}
+          setWebhookId={setWebhookId}
+          eventTypes={eventTypes}
+          setEventTypes={setEventTypes}
+        />
+      )}
+      {when !== 'now' && when !== 'webhook' && (
         <RecurrenceFields
           when={when}
           time={time}
@@ -337,8 +529,8 @@ export function LaunchForm({
           Runs in a disposable VM that can only reach the gateway. Stops after{' '}
           {formatDuration(options.defaultTimeoutSeconds)} at most.
         </p>
-        <Button type="submit" disabled={busy || !prompt.trim()}>
-          {when === 'now' ? 'Launch agent' : 'Create schedule'}
+        <Button type="submit" disabled={busy || !prompt.trim() || (when === 'webhook' && !hookId)}>
+          {SUBMIT_LABELS[when]}
         </Button>
       </div>
     </form>

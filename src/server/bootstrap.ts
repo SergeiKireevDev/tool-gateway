@@ -7,6 +7,7 @@ import { Launchpad } from './launchpad/launchpad.js';
 import { LocalProcessDriver } from './launchpad/localDriver.js';
 import { RunStore } from './launchpad/runStore.js';
 import { Scheduler } from './launchpad/scheduler.js';
+import { Triggers } from './launchpad/triggers.js';
 import { VmdDriver } from './launchpad/vmdDriver.js';
 import { CryptoBox } from './store/crypto.js';
 import { EncryptedStore } from './store/store.js';
@@ -26,6 +27,7 @@ export interface Services {
   launchpad: Launchpad | null;
   scheduler: Scheduler | null;
   webhooks: Webhooks;
+  triggers: Triggers | null;
 }
 
 export async function openGateway(config: GatewayConfig): Promise<Services> {
@@ -51,7 +53,13 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
     });
   }
   const webhooks = new Webhooks(store, crypto, db, gateway.activity, config.publicUrl);
-  return { gateway, db, launchpad, scheduler, webhooks };
+  const triggers = launchpad && new Triggers(db, gateway, launchpad, webhooks);
+  if (triggers) {
+    webhooks.onDelivery((delivery) => {
+      triggers.onDelivery(delivery);
+    });
+  }
+  return { gateway, db, launchpad, scheduler, webhooks, triggers };
 }
 
 function openLaunchpad(

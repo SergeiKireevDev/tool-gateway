@@ -5,6 +5,7 @@ import type { Member } from '../store/types.js';
 import { cookieIdentity, CSRF_HEADER } from './adminAuth.js';
 import type { Launchpad } from '../launchpad/launchpad.js';
 import type { Scheduler } from '../launchpad/scheduler.js';
+import type { Triggers } from '../launchpad/triggers.js';
 import type { Webhooks } from '../webhooks.js';
 import { webhookRoutes } from './webhookRoutes.js';
 import { memberLaunchRoutes } from '../launchpad/routes.js';
@@ -22,6 +23,7 @@ export function memberPortalRoutes(
   launchpad: Launchpad | null,
   scheduler: Scheduler | null,
   webhooks: Webhooks | null,
+  triggers: Triggers | null = null,
 ): Router {
   const router = express.Router();
   router.use((req, res, next) => {
@@ -104,7 +106,8 @@ export function memberPortalRoutes(
     }),
   );
 
-  if (launchpad) router.use('/launchpad', memberLaunchRoutes(launchpad, gateway, scheduler));
+  if (launchpad)
+    router.use('/launchpad', memberLaunchRoutes(launchpad, gateway, scheduler, triggers));
   if (webhooks) router.use('/webhooks', webhookRoutes(webhooks, actorOf));
 
   // Session keys issued by this member.

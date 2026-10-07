@@ -4,7 +4,9 @@ import { Launchpad } from '../src/server/launchpad/launchpad.js';
 import type { RunnerConfig } from '../src/server/launchpad/protocol.js';
 import { RunStore } from '../src/server/launchpad/runStore.js';
 import { Scheduler } from '../src/server/launchpad/scheduler.js';
+import { Triggers } from '../src/server/launchpad/triggers.js';
 import type { VmDriver, VmInfo, VmSpec } from '../src/server/launchpad/vmDriver.js';
+import { Webhooks } from '../src/server/webhooks.js';
 import { createHarness, type Harness } from './helpers.js';
 
 /** VM driver that boots nothing: records specs and lets tests stop VMs or make boots fail. */
@@ -50,6 +52,8 @@ export class FakeVmDriver implements VmDriver {
 export interface LaunchHarness extends Harness {
   launchpad: Launchpad;
   scheduler: Scheduler;
+  webhooks: Webhooks;
+  triggers: Triggers;
   driver: FakeVmDriver;
   app: ReturnType<typeof createApp>;
   vmApp: ReturnType<typeof createVmApp>;
@@ -60,6 +64,8 @@ export interface LaunchHarness extends Harness {
   /** Creates a member with a Google email and returns it with a portal cookie. */
   member(name: string, templateIds?: string[]): Promise<{ id: string; cookie: string }>;
   portal(cookie: string, method: 'get' | 'post' | 'patch' | 'delete', path: string): request.Test;
+  /** The member portal's webhook routes (`/api/me/webhooks`). */
+  hooks(cookie: string, method: 'get' | 'post', path: string): request.Test;
   admin(method: 'get' | 'post' | 'put' | 'patch', path: string): request.Test;
   runner(token: string, method: 'post' | 'put', path: string): request.Test;
 }
@@ -79,7 +85,25 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
   launchpad.onFinished((run) => {
     scheduler.onRunFinished(run);
   });
-  const app = createApp(h.gateway, h.config, { fetch: h.fetch, launchpad, scheduler });
+  const webhooks = new Webhooks(
+    h.store,
+    h.crypto,
+    h.db,
+    h.gateway.activity,
+    h.config.publicUrl,
+    () => h.clock.now,
+  );
+  const triggers = new Triggers(h.db, h.gateway, launchpad, webhooks, () => h.clock.now);
+  webhooks.onDelivery((delivery) => {
+    triggers.onDelivery(delivery);
+  });
+  const app = createApp(h.gateway, h.config, {
+    fetch: h.fetch,
+    launchpad,
+    scheduler,
+    webhooks,
+    triggers,
+  });
   const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
   const adminToken = await h.gateway.rotateAdminToken();
   const admin = (method: 'get' | 'post' | 'put' | 'patch', path: string) =>
@@ -121,6 +145,8 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     ...h,
     launchpad,
     scheduler,
+    webhooks,
+    triggers,
     driver,
     app,
     vmApp,
@@ -146,6 +172,11 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     portal: (cookie, method, path) =>
       request(app)
         [method](`/api/me/launchpad${path}`)
+        .set('cookie', cookie)
+        .set('x-gateway-request', '1'),
+    hooks: (cookie, method, path) =>
+      request(app)
+        [method](`/api/me/webhooks${path}`)
         .set('cookie', cookie)
         .set('x-gateway-request', '1'),
     runner: (token, method, path) =>
