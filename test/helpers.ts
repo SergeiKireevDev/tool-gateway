@@ -15,6 +15,7 @@ import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
+import { createGmailProvider } from '../src/server/tools/gmail.js';
 import { createSlackProvider } from '../src/server/tools/slack.js';
 
 export interface Harness {
@@ -313,6 +314,44 @@ export function fakeLinearFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+export const GMAIL_CLIENT = { clientId: 'gmail-client', clientSecret: 'gmail-secret' };
+
+/**
+ * Fake Google: the token endpoint (codes and refresh tokens starting with `good`), and Gmail's
+ * `profile` for any token but `ya29.bad`; other calls echo.
+ */
+export function fakeGmailFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (url === 'https://oauth2.googleapis.com/token') {
+      const form = new URLSearchParams(init.body as string);
+      const grant = form.get('code') ?? form.get('refresh_token') ?? '';
+      if (!grant.startsWith('good')) {
+        return Promise.resolve(Response.json({ error: 'invalid_grant' }, { status: 400 }));
+      }
+      const first = form.get('grant_type') === 'authorization_code';
+      return Promise.resolve(
+        Response.json({
+          access_token: first ? 'ya29.first' : 'ya29.refreshed',
+          expires_in: 3599,
+          ...(first ? { refresh_token: 'good-refresh' } : {}),
+        }),
+      );
+    }
+    const auth = new Headers(init.headers).get('authorization');
+    if (url.endsWith('/gmail/v1/users/me/profile')) {
+      if (auth === 'Bearer ya29.bad') {
+        return Promise.resolve(Response.json({ error: { code: 401 } }, { status: 401 }));
+      }
+      return Promise.resolve(Response.json({ emailAddress: 'ada@example.com', messagesTotal: 42 }));
+    }
+    return Promise.resolve(
+      Response.json({ url, method: init.method ?? 'GET', body: init.body ?? null }),
+    );
+  };
+}
+
 const LLM_HOSTS = [
   'https://auth.openai.com/',
   'https://chatgpt.com/',
@@ -322,6 +361,8 @@ const LLM_HOSTS = [
   'https://generativelanguage.googleapis.com/',
 ];
 
+const GOOGLE_HOSTS = ['https://gmail.googleapis.com/', 'https://oauth2.googleapis.com/'];
+
 /** Routes upstream calls to the fake API of the tool they are for. */
 function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const github = fakeGitHubFetch(calls);
@@ -329,8 +370,10 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const slack = fakeSlackFetch(calls);
   const llm = fakeLlmFetch(calls);
   const linear = fakeLinearFetch(calls);
+  const gmail = fakeGmailFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+    if (GOOGLE_HOSTS.some((host) => url.startsWith(host))) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
@@ -407,6 +450,7 @@ export async function createHarness(): Promise<Harness> {
     keyFile: path.join(dir, 'key', 'master.key'),
     publicUrl: 'http://gateway.test',
     google: null,
+    gmail: null,
   };
   const upstreamCalls: Harness['upstreamCalls'] = [];
   const fetch = fakeUpstreams(upstreamCalls);
@@ -422,6 +466,7 @@ export async function createHarness(): Promise<Harness> {
       createMondayProvider(fetch),
       createSlackProvider(fetch),
       createLinearProvider(fetch),
+      createGmailProvider(fetch, GMAIL_CLIENT),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),

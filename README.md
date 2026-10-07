@@ -5,17 +5,17 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API) and **Linear** (GraphQL API). Each tool is a provider
+Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API) and **Gmail** (REST API). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
 members and the proxy work identically for all of them.
 
 ```
-client ──(gws_… session key)──▶ gateway ──(your real token)──▶ api.github.com / api.monday.com / slack.com
+client ──(gws_… session key)──▶ gateway ──(your real token)──▶ api.github.com / api.monday.com / slack.com / gmail.googleapis.com
                                   │
                                   ├─ checks the key is active (TTL, not revoked)
                                   ├─ asks the tool whether the request is covered by the template's
-                                  │  permissions (GitHub: method + path; monday.com: the GraphQL document; Slack: method + arguments)
-                                  └─ … and by its resource allowlist (repositories / board IDs / channel IDs)
+                                  │  permissions (GitHub: method + path; monday.com: the GraphQL document; Slack: method + arguments; Gmail: method + path, and the recipients of sent mail)
+                                  └─ … and by its resource allowlist (repositories / board IDs / channel IDs / mail recipients)
 ```
 
 ## Install on a server
@@ -106,6 +106,18 @@ Permissions**, install it to your workspace, then paste its bot (`xoxb-…`) or 
 token in **Accounts → Connect account → Slack**. The gateway checks it with `auth.test` and shows
 the workspace, user and granted scopes.
 
+## Connecting Gmail
+
+The recommended way is **Sign in with Google**, which the gateway keeps refreshed. In Google Cloud
+Console, enable the Gmail API, then create an OAuth client ID of type **Desktop app** and set
+`GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` (an app in testing mode only lets its test users sign
+in). **Accounts → Connect account → Gmail → Sign in** then opens Google; after approving, paste the
+address of the `127.0.0.1` page your browser lands on. The gateway asks for the `gmail.modify`
+scope (read, organize, draft and send; not permanent deletion) and shows the mailbox's address.
+
+Without an OAuth client, an access token (`ya29.…`) can be pasted, but Google expires it within an
+hour.
+
 ## Concepts
 
 | Concept         | What it is                                                                                                                                                                                                                                                                                            |
@@ -171,6 +183,25 @@ method must name an allowed channel ID in `channel` (names like `#general` and u
 refused). Methods that can't name a channel (`conversations.open`, `conversations.create`,
 `search.messages`) need an unrestricted template. Listing channels and users is not limited by the
 allowlist.
+
+Gmail endpoints under `/gmail/v1/users/me/` are mapped to permissions in `src/server/tools/gmail.ts`:
+
+| Permission     | Covers                                                                  |
+| -------------- | ----------------------------------------------------------------------- |
+| `mail:read`    | messages, threads, attachments, history, labels                         |
+| `mail:modify`  | modify labels of messages and threads (read, starred, archived…), trash |
+| `labels:write` | create, update and delete labels                                        |
+| `drafts:read`  | list and read drafts                                                    |
+| `drafts:write` | create, update and delete drafts                                        |
+| `mail:send`    | `messages/send`; `drafts/send` (unrestricted templates only)            |
+
+Other mailboxes (`users/<email>`), settings (forwarding, filters, send-as, delegates), permanent
+deletes, imports, uploads and batch requests are denied, as are `access_token`/`key` query
+parameters. The resource allowlist lists who mail may be sent to (`ada@example.com` or
+`*@example.com`). With one, the gateway decodes every `messages/send` and checks each `To`, `Cc`
+and `Bcc` address. Messages with recipients it can't read unambiguously (groups, comments,
+`Resent-*` headers) are refused, and saved drafts can't be sent since their recipients could
+change after the check. Reading, labels and drafts are not limited by the allowlist.
 
 ## LLM providers (Anthropic, OpenAI, Gemini)
 
@@ -293,6 +324,14 @@ For Slack, use `http://127.0.0.1:7420/proxy/slack/api/` as the API URL (for exam
 curl -X POST http://127.0.0.1:7420/proxy/slack/api/chat.postMessage \
   -H "Authorization: Bearer $GATEWAY_SESSION_KEY" -H "Content-Type: application/json" \
   -d '{"channel":"C0123456789","text":"Deployed ✅"}'
+```
+
+For Gmail, use `http://127.0.0.1:7420/proxy/gmail/` as the API root (for example `rootUrl` with
+`googleapis`):
+
+```bash
+curl "http://127.0.0.1:7420/proxy/gmail/gmail/v1/users/me/messages?q=is:unread&maxResults=10" \
+  -H "Authorization: Bearer $GATEWAY_SESSION_KEY"
 ```
 
 ```bash
@@ -431,7 +470,7 @@ Layout:
 ```
 src/server/          Express server: admin API, proxy, gateway logic
   store/             libsodium crypto + encrypted store
-  tools/             tool providers (github.ts, monday.ts, slack.ts), path matching, GraphQL inspection
+  tools/             tool providers (github.ts, monday.ts, slack.ts, linear.ts, gmail.ts), path matching, GraphQL inspection
   http/              Express app, proxy handler
 web/                 Next.js 16 (App Router) + Tailwind CSS 4 admin UI
 test/                Vitest (unit, API/proxy e2e, live GitHub)
