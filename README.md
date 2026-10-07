@@ -18,7 +18,29 @@ client ──(gws_… session key)──▶ gateway ──(your real token)─�
                                   └─ … and by its resource allowlist (repositories / board IDs / channel IDs)
 ```
 
-## Quick start
+## Install on a server
+
+On a fresh Debian or Ubuntu (x86_64) machine, from a checkout:
+
+```bash
+sudo deploy/install.sh
+```
+
+It asks for the admin's email (the Google account that administers the gateway), the public URL,
+and optionally a Google OAuth client for sign-in. It then:
+
+- installs everything (Node.js 22, git, nftables…, plus Docker and Firecracker when `/dev/kvm`
+  exists, for the agent launchpad);
+- builds the gateway into `/opt/local-gateway`, with data and master key in
+  `/var/lib/local-gateway` and configuration in `/etc/local-gateway/gateway.env`;
+- starts it as the `local-gateway` systemd service (plus `launchpad-vmd` with KVM);
+- prints the first admin token once.
+
+Re-running it updates the code and keeps the data. `--help` lists the flags for unattended
+installs (`--admin-email … --yes`). It listens on 127.0.0.1 by default: put a TLS reverse proxy
+in front of the public URL.
+
+## Quick start (development)
 
 ```bash
 npm install

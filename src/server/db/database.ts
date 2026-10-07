@@ -1,7 +1,7 @@
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { PRIVATE_DIR_MODE } from '../units.js';
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from '../units.js';
 import { MIGRATIONS } from './migrations.js';
 
 export const IN_MEMORY = ':memory:';
@@ -17,6 +17,9 @@ export class Database {
     if (file !== IN_MEMORY)
       mkdirSync(path.dirname(file), { recursive: true, mode: PRIVATE_DIR_MODE });
     const sql = new DatabaseSync(file);
+    // Transcripts and activity are private to the gateway (SQLite gives its -wal/-shm files the
+    // same mode).
+    if (file !== IN_MEMORY) chmodSync(file, PRIVATE_FILE_MODE);
     sql.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     const db = new Database(sql);
     db.migrate();
