@@ -5,7 +5,7 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API), **monday.com** (GraphQL API) and **Slack** (Web API). Each tool is a provider
+Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API) and **Linear** (GraphQL API). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
 members and the proxy work identically for all of them.
 
@@ -193,6 +193,9 @@ admin creates webhooks under **Webhooks**, and members create their own.
 - **Hard-to-guess address.** Each webhook's address carries 256 random bits. It is shown once,
   only its keyed hash is stored, and **New address** rotates it.
 - **Authorization check (optional):**
+  - **Signed body** (Linear, GitHub): the HMAC-SHA256 of the raw body in `Linear-Signature` /
+    `X-Hub-Signature-256`. Linear deliveries must also be fresh (`webhookTimestamp`). The secret can
+    be set after creation (**Access control**), since Linear only shows it then.
   - **Signed token:** `Authorization: <JWT>` (or `Bearer <JWT>`) signed HS256 with a shared secret
     and not expired. This is what monday.com apps send, signed with the app's Signing Secret. The
     secret is stored encrypted.
@@ -203,6 +206,37 @@ admin creates webhooks under **Webhooks**, and members create their own.
   reason). Accepted payloads are kept redacted and size-capped. Unknown addresses get 404 and are
   not logged. Each webhook takes at most 120 deliveries a minute (429 after that).
 - The VM listener does not serve `/hooks`.
+
+## Connecting Linear
+
+Go to **Tool accounts → Connect a tool account → Linear** and paste a personal API key (Linear →
+Settings → Security & access → Personal API keys). The gateway checks it with a `viewer` query.
+Use `https://<gateway>/proxy/linear/graphql` as the GraphQL endpoint.
+
+Like monday.com, every root field of the document maps to a permission, and anything unknown is
+denied (webhooks, API keys, admin mutations…):
+
+| Permission       | Covers                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------- |
+| `issues:read`    | `issue`, `issues`, `comment`; `searchIssues`, `comments`, `attachments` (unrestricted only) |
+| `issues:write`   | `issueCreate`, `issueUpdate`, archive/unarchive/delete, add/remove labels, attachments      |
+| `comments:write` | `commentCreate`, `commentUpdate`, `commentDelete`                                           |
+| `projects:read`  | `project`, `projects`, `projectUpdates` (unrestricted only)                                 |
+| `projects:write` | `projectCreate`, `projectUpdate` (unrestricted only)                                        |
+| `workspace:read` | `viewer`, `users`, `teams`, `team`, `organization`, workflow states, labels                 |
+
+The resource allowlist is a list of **team keys** (`ENG`). On team-restricted templates:
+
+- every issue, comment or team a request names is looked up, and must be in an allowed team;
+- issue lists must filter on `team.key` (`eq` or `in`, no top-level `or`);
+- nested reads are limited to fields that stay with the issue (state, assignee, labels,
+  comments…), not `project`, `children` or `assignedIssues`.
+
+**Linear webhooks.** Create a webhook with sender **Linear**, paste its address in Linear
+(Settings → API → Webhooks), then set the signing secret Linear shows under **Access control →
+Signed body**. The gateway then checks `Linear-Signature` (HMAC-SHA256 of the body) and that
+`webhookTimestamp` is under a minute old. GitHub webhooks work the same way, with
+`X-Hub-Signature-256`.
 
 ## Using a session key
 
