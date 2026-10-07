@@ -15,7 +15,7 @@ export function webhookReceiver(webhooks: Webhooks): Router {
     (req, res, next) => {
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
       webhooks
-        .receive(param(req, 'token'), req.get('authorization'), body)
+        .receive(param(req, 'token'), (name) => req.get(name), body)
         .then((delivery) => {
           res.set('cache-control', 'no-store').status(delivery.status).json(delivery.body);
         })
@@ -40,6 +40,10 @@ export function webhookRoutes(webhooks: Webhooks, actorOf: (res: Response) => Ac
   router.post(
     `${WEBHOOK_PATH}/rotate`,
     h((req, res) => webhooks.rotate(param(req, 'id'), actorOf(res))),
+  );
+  router.put(
+    `${WEBHOOK_PATH}/auth`,
+    h((req, res) => webhooks.setAuth(param(req, 'id'), req.body, actorOf(res))),
   );
   router.delete(
     WEBHOOK_PATH,

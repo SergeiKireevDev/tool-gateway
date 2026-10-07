@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ActivityLog } from './activity.js';
 import type { Database } from './db/database.js';
 import { redactDeep } from './db/redact.js';
-import { notFound } from './errors.js';
+import { badRequest, notFound } from './errors.js';
 import type { Actor } from './gateway.js';
 import { HTTP } from './httpStatus.js';
 import {
@@ -13,7 +13,7 @@ import {
   verifyHmacSha256,
 } from './store/crypto.js';
 import type { EncryptedStore } from './store/store.js';
-import type { Webhook, WebhookAuth } from './store/types.js';
+import type { Webhook, WebhookAuth, WebhookSource } from './store/types.js';
 import { isRecord } from './tools/json.js';
 import { BYTES_PER_KIB, MS_PER_MINUTE, MS_PER_SECOND } from './units.js';
 
@@ -40,25 +40,40 @@ const JWT_LEEWAY_SECONDS = 60;
 const JWT_PARTS = 3;
 const WEBHOOK_NOT_FOUND = 'Webhook not found';
 
-export const webhookSchema = z.discriminatedUnion('auth', [
-  z.object({
-    name: z.string().trim().min(1).max(MAX_NAME),
-    source: z.enum(['monday', 'generic']),
-    auth: z.literal('url'),
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(MAX_NAME),
-    source: z.enum(['monday', 'generic']),
-    auth: z.literal('jwt'),
+const name = z.string().trim().min(1).max(MAX_NAME);
+const source = z.enum(['monday', 'linear', 'github', 'generic']);
+const signingSecret = z.string().trim().min(1).max(MAX_SIGNING_SECRET);
+
+export const webhookSchema = z
+  .discriminatedUnion('auth', [
+    z.object({ name, source, auth: z.literal('url') }),
     /** e.g. the Signing Secret of the monday.com app that creates the webhook. */
-    signingSecret: z.string().trim().min(1).max(MAX_SIGNING_SECRET),
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(MAX_NAME),
-    source: z.enum(['monday', 'generic']),
-    auth: z.literal('bearer'),
-  }),
+    z.object({ name, source, auth: z.literal('jwt'), signingSecret }),
+    z.object({ name, source, auth: z.literal('bearer') }),
+    /** The webhook's signing secret, as shown by Linear or set in GitHub. */
+    z.object({ name, source, auth: z.literal('hmac'), signingSecret }),
+  ])
+  .refine((w) => w.auth !== 'hmac' || w.source in SIGNATURE_HEADERS, {
+    message: 'Signed bodies are checked for Linear and GitHub webhooks',
+    path: ['auth'],
+  });
+
+/** Changing how a webhook checks deliveries (e.g. once Linear has shown its signing secret). */
+export const webhookAuthSchema = z.discriminatedUnion('auth', [
+  z.object({ auth: z.literal('url') }),
+  z.object({ auth: z.literal('jwt'), signingSecret }),
+  z.object({ auth: z.literal('bearer') }),
+  z.object({ auth: z.literal('hmac'), signingSecret }),
 ]);
+
+/** Where each sender puts the HMAC-SHA256 of the body, and how (hex, maybe prefixed). */
+const SIGNATURE_HEADERS: Partial<Record<WebhookSource, { header: string; prefix: string }>> = {
+  linear: { header: 'linear-signature', prefix: '' },
+  github: { header: 'x-hub-signature-256', prefix: 'sha256=' },
+};
+/** Linear deliveries carry `webhookTimestamp` (ms): older ones are replays. */
+const MAX_DELIVERY_AGE_MS = MS_PER_MINUTE;
+const HEX_RE = /^[0-9a-f]+$/i;
 
 export type PublicWebhook = Omit<Webhook, 'tokenHash' | 'auth'> & {
   auth: WebhookAuth['kind'];
@@ -147,9 +162,15 @@ export async function verifyJwt(
 const authorizationValue = (header: string | undefined): string =>
   (header ?? '').trim().replace(/^bearer\s+/i, '');
 
-/** The event's type, for the log: monday's `event.type`, or a generic `type` / `event` field. */
+/**
+ * The event's type, for the log: monday's `event.type`, Linear's `type` + `action`, or a
+ * generic `type` / `event` field.
+ */
 function eventTypeOf(payload: unknown): string | null {
   if (!isRecord(payload)) return null;
+  if (typeof payload.type === 'string' && typeof payload.action === 'string') {
+    return `${payload.type}.${payload.action}`;
+  }
   const event = payload.event;
   if (isRecord(event) && typeof event.type === 'string') return event.type;
   if (typeof event === 'string') return event;
@@ -174,12 +195,7 @@ export class Webhooks {
     const data = webhookSchema.parse(input);
     const token = randomToken('', TOKEN_BYTES);
     const bearerSecret = data.auth === 'bearer' ? randomToken(SECRET_PREFIX) : undefined;
-    const auth: WebhookAuth =
-      data.auth === 'jwt'
-        ? { kind: 'jwt', signingSecret: data.signingSecret }
-        : bearerSecret
-          ? { kind: 'bearer', secretHash: this.crypto.hashToken(bearerSecret) }
-          : { kind: 'url' };
+    const auth = this.authOf(data, bearerSecret);
     const webhook: Webhook = {
       id: randomId(),
       name: data.name,
@@ -198,6 +214,43 @@ export class Webhooks {
       url: this.url(token),
       ...(bearerSecret ? { bearerSecret } : {}),
     };
+  }
+
+  /** Sets how deliveries are checked; a new bearer secret is returned once. */
+  async setAuth(
+    id: string,
+    input: unknown,
+    actor: Actor,
+  ): Promise<{ webhook: PublicWebhook; bearerSecret?: string }> {
+    const data = webhookAuthSchema.parse(input);
+    const bearerSecret = data.auth === 'bearer' ? randomToken(SECRET_PREFIX) : undefined;
+    const auth = this.authOf(data, bearerSecret);
+    const updated = await this.store.update((s) => {
+      const w = s.webhooks.find((x) => x.id === id && this.visibleTo(x, actor));
+      if (!w) throw notFound(WEBHOOK_NOT_FOUND);
+      if (auth.kind === 'hmac' && !(w.source in SIGNATURE_HEADERS)) {
+        throw badRequest('Signed bodies are checked for Linear and GitHub webhooks');
+      }
+      w.auth = auth;
+      return w;
+    });
+    this.log(actor, `set access control of webhook "${updated.name}" to ${auth.kind}`);
+    return { webhook: this.toPublic(updated), ...(bearerSecret ? { bearerSecret } : {}) };
+  }
+
+  private authOf(
+    data: z.infer<typeof webhookAuthSchema>,
+    bearerSecret: string | undefined,
+  ): WebhookAuth {
+    switch (data.auth) {
+      case 'jwt':
+      case 'hmac':
+        return { kind: data.auth, signingSecret: data.signingSecret };
+      case 'bearer':
+        return { kind: 'bearer', secretHash: this.crypto.hashToken(bearerSecret ?? '') };
+      case 'url':
+        return { kind: 'url' };
+    }
   }
 
   list(actor: Actor): PublicWebhook[] {
@@ -254,7 +307,11 @@ export class Webhooks {
    * Handles `POST /hooks/<token>`. Unknown addresses get 404 (and are not logged: nothing to
    * attach them to); a known address with a failing Authorization check gets 401 and is logged.
    */
-  async receive(token: string, authorization: string | undefined, body: Buffer): Promise<Delivery> {
+  async receive(
+    token: string,
+    header: (name: string) => string | undefined,
+    body: Buffer,
+  ): Promise<Delivery> {
     const webhook = this.byToken(token);
     if (!webhook) return { status: HTTP.NOT_FOUND, body: { error: 'not_found' } };
     let payload: unknown;
@@ -273,14 +330,42 @@ export class Webhooks {
       return { status: HTTP.OK, body: { challenge: payload.challenge } };
     }
     try {
-      await this.checkAuthorization(webhook.auth, authorization);
+      if (webhook.auth.kind === 'hmac') {
+        await this.checkSignature(webhook, webhook.auth.signingSecret, header, body, payload);
+      } else {
+        await this.checkAuthorization(webhook.auth, header('authorization'));
+      }
       this.checkRate(webhook.id);
     } catch (err) {
       if (err instanceof Rejected) return this.reject(webhook, err);
       throw err;
     }
-    this.record(webhook.id, true, null, eventTypeOf(payload), payload);
+    this.record(webhook.id, true, null, header('x-github-event') ?? eventTypeOf(payload), payload);
     return { status: HTTP.OK, body: { ok: true } };
+  }
+
+  /** The sender's HMAC-SHA256 of the raw body, and for Linear a fresh `webhookTimestamp`. */
+  private async checkSignature(
+    webhook: Webhook,
+    secret: string,
+    header: (name: string) => string | undefined,
+    body: Buffer,
+    payload: unknown,
+  ): Promise<void> {
+    const scheme = SIGNATURE_HEADERS[webhook.source];
+    const value = scheme ? header(scheme.header)?.trim() : undefined;
+    if (!scheme || !value?.startsWith(scheme.prefix)) {
+      throw new Rejected(HTTP.UNAUTHORIZED, 'Missing body signature');
+    }
+    const hex = value.slice(scheme.prefix.length);
+    if (!HEX_RE.test(hex) || !(await verifyHmacSha256(secret, body, Buffer.from(hex, 'hex')))) {
+      throw new Rejected(HTTP.UNAUTHORIZED, 'Invalid body signature');
+    }
+    if (webhook.source !== 'linear') return;
+    const sent = isRecord(payload) ? payload.webhookTimestamp : undefined;
+    if (typeof sent !== 'number' || Math.abs(this.now().getTime() - sent) > MAX_DELIVERY_AGE_MS) {
+      throw new Rejected(HTTP.UNAUTHORIZED, 'Stale or missing webhookTimestamp');
+    }
   }
 
   private async checkAuthorization(auth: WebhookAuth, header: string | undefined): Promise<void> {
@@ -300,6 +385,9 @@ export class Webhooks {
         if (!value || !CryptoBox.equalHex(this.crypto.hashToken(value), auth.secretHash)) {
           throw new Rejected(HTTP.UNAUTHORIZED, 'Invalid or missing bearer secret');
         }
+        return;
+      case 'hmac':
+        throw new Rejected(HTTP.UNAUTHORIZED, 'This webhook checks a body signature');
     }
   }
 

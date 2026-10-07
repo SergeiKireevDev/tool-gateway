@@ -12,6 +12,7 @@ import { CryptoBox } from './store/crypto.js';
 import { EncryptedStore } from './store/store.js';
 import { LlmUsageLog } from './llmUsage.js';
 import { createGitHubProvider } from './tools/github.js';
+import { createLinearProvider } from './tools/linear.js';
 import { createAnthropicProvider } from './tools/llm/anthropic.js';
 import { createGeminiProvider } from './tools/llm/gemini.js';
 import { createOpenAIProvider } from './tools/llm/openai.js';
@@ -35,6 +36,7 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
     createGitHubProvider(),
     createMondayProvider(),
     createSlackProvider(),
+    createLinearProvider(),
     createAnthropicProvider(),
     createOpenAIProvider(),
     createGeminiProvider(),

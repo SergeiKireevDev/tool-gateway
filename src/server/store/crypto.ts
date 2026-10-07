@@ -167,7 +167,7 @@ export async function pkcePair(): Promise<{ verifier: string; challenge: string 
  */
 export async function verifyHmacSha256(
   key: string,
-  data: string,
+  data: string | Uint8Array,
   signature: Uint8Array,
 ): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -182,7 +182,7 @@ export async function verifyHmacSha256(
     'HMAC',
     cryptoKey,
     new Uint8Array(signature),
-    encoder.encode(data),
+    typeof data === 'string' ? encoder.encode(data) : new Uint8Array(data),
   );
 }
 

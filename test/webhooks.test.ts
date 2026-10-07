@@ -130,6 +130,97 @@ describe('Authorization checks', () => {
   });
 });
 
+describe('signed bodies (Linear, GitHub)', () => {
+  const sign = (secret: string, body: string) =>
+    createHmac('sha256', secret).update(body).digest('hex');
+  const post = (path: string, body: string, headers: Record<string, string>) => {
+    const req = request(app).post(path).set('content-type', 'application/json');
+    for (const [k, v] of Object.entries(headers)) req.set(k, v);
+    return req.send(body);
+  };
+
+  it('verifies Linear-Signature and a fresh webhookTimestamp', async () => {
+    const hook = await create({
+      name: 'linear',
+      source: 'linear',
+      auth: 'hmac',
+      signingSecret: 'lin_wh_secret',
+    });
+    const fresh = JSON.stringify({
+      type: 'Issue',
+      action: 'create',
+      webhookTimestamp: h.clock.now.getTime(),
+    });
+    await post(hook.path, fresh, { 'linear-signature': sign('lin_wh_secret', fresh) }).expect(200);
+    await post(hook.path, fresh, { 'linear-signature': sign('other', fresh) }).expect(401);
+    await post(hook.path, fresh, {}).expect(401);
+    const tampered = fresh.replace('create', 'remove');
+    await post(hook.path, tampered, { 'linear-signature': sign('lin_wh_secret', fresh) }).expect(
+      401,
+    );
+    const old = JSON.stringify({
+      type: 'Issue',
+      action: 'create',
+      webhookTimestamp: h.clock.now.getTime() - 120_000,
+    });
+    await post(hook.path, old, { 'linear-signature': sign('lin_wh_secret', old) }).expect(401);
+    const events = (await asAdmin('get', `/${hook.id}/events`).expect(200)).body as {
+      accepted: boolean;
+      eventType: string | null;
+      reason: string | null;
+    }[];
+    expect(events.find((e) => e.accepted)?.eventType).toBe('Issue.create');
+    expect(events.map((e) => e.reason)).toEqual(
+      expect.arrayContaining([
+        'Invalid body signature',
+        'Missing body signature',
+        'Stale or missing webhookTimestamp',
+      ]),
+    );
+  });
+
+  it('verifies X-Hub-Signature-256 and logs the GitHub event', async () => {
+    const hook = await create({
+      name: 'gh',
+      source: 'github',
+      auth: 'hmac',
+      signingSecret: 'gh-secret',
+    });
+    const body = JSON.stringify({ action: 'opened', number: 1 });
+    await post(hook.path, body, {
+      'x-hub-signature-256': `sha256=${sign('gh-secret', body)}`,
+      'x-github-event': 'pull_request',
+    }).expect(200);
+    await post(hook.path, body, { 'x-hub-signature-256': sign('gh-secret', body) }).expect(401);
+    const events = (await asAdmin('get', `/${hook.id}/events`).expect(200)).body as {
+      eventType: string | null;
+    }[];
+    expect(events.at(-1)?.eventType).toBe('pull_request');
+  });
+
+  it('can be given its signing secret after creation (Linear shows it only then)', async () => {
+    const hook = await create({ name: 'linear', source: 'linear', auth: 'url' });
+    await request(app)
+      .put(`/api/admin/webhooks/${hook.id}/auth`)
+      .set('authorization', `Bearer ${admin}`)
+      .send({ auth: 'hmac', signingSecret: 'later' })
+      .expect(200);
+    const body = JSON.stringify({
+      type: 'Issue',
+      action: 'update',
+      webhookTimestamp: h.clock.now.getTime(),
+    });
+    await post(hook.path, body, {}).expect(401);
+    await post(hook.path, body, { 'linear-signature': sign('later', body) }).expect(200);
+  });
+
+  it('only offers signed bodies for senders whose signature it knows', async () => {
+    await asAdmin('post', '')
+      .send({ name: 'x', source: 'monday', auth: 'hmac', signingSecret: 's' })
+      .expect(400);
+  });
+});
+
 describe('ownership', () => {
   it('lets members manage only their own webhooks', async () => {
     const tpl = await request(app)

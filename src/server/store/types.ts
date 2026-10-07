@@ -128,14 +128,21 @@ export type WebhookAuth =
   /** `Authorization: <JWT>` signed HS256 with this secret (monday.com apps' signing secret). */
   | { kind: 'jwt'; signingSecret: string }
   /** `Authorization: Bearer <secret>`; only the secret's keyed hash is kept. */
-  | { kind: 'bearer'; secretHash: string };
+  | { kind: 'bearer'; secretHash: string }
+  /** HMAC-SHA256 of the raw body in the sender's signature header (Linear, GitHub). */
+  | { kind: 'hmac'; signingSecret: string };
+
+export type WebhookSource = 'monday' | 'linear' | 'github' | 'generic';
 
 /** An inbound webhook endpoint: `POST <publicUrl>/hooks/<token>`. */
 export interface Webhook {
   id: string;
   name: string;
-  /** What sends it; `monday` also answers monday.com's URL challenge. */
-  source: 'monday' | 'generic';
+  /**
+   * What sends it: `monday` also answers monday.com's URL challenge; `linear` and `github` know
+   * their senders' signature headers.
+   */
+  source: WebhookSource;
   /** Keyed hash of the address token; the address is shown once. */
   tokenHash: string;
   auth: WebhookAuth;

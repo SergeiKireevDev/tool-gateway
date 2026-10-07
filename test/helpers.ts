@@ -9,6 +9,7 @@ import { Gateway } from '../src/server/gateway.js';
 import { CryptoBox } from '../src/server/store/crypto.js';
 import { EncryptedStore } from '../src/server/store/store.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
+import { createLinearProvider } from '../src/server/tools/linear.js';
 import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
 import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
@@ -210,6 +211,56 @@ function fakeClaudeToken(body: Record<string, string>): Response {
   });
 }
 
+/** Teams of the entities the fake Linear API knows: issues, teams (by id) and comments. */
+const LINEAR_TEAMS: Record<string, Record<string, string>> = {
+  issue: { 'ENG-1': 'ENG', 'issue-uuid-eng': 'ENG', 'OPS-1': 'OPS' },
+  team: { 'team-eng': 'ENG', 'team-ops': 'OPS' },
+  comment: { 'c-eng': 'ENG', 'c-ops': 'OPS' },
+};
+
+function linearLookup(kind: string, id: string): unknown {
+  const key = LINEAR_TEAMS[kind]?.[id];
+  if (!key) return null;
+  if (kind === 'team') return { key };
+  if (kind === 'issue') return { team: { key } };
+  return { issue: { team: { key } } };
+}
+
+/** Fake Linear: `viewer` for any key but `lin_api_bad`, the gateway's team lookups, and an echo. */
+export function fakeLinearFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (new Headers(init.headers).get('authorization') === 'lin_api_bad') {
+      return Promise.resolve(
+        Response.json({ errors: [{ message: 'Authentication required' }] }, { status: 401 }),
+      );
+    }
+    const { query, variables } = bodyOf(init);
+    if (query.includes('viewer { id name email }')) {
+      return Promise.resolve(
+        Response.json({
+          data: {
+            viewer: { id: 'u1', name: 'Ada', email: 'ada@example.com' },
+            organization: { name: 'Acme', urlKey: 'acme' },
+          },
+        }),
+      );
+    }
+    const lookups = [...query.matchAll(/l(\d+): (\w+)\(/g)];
+    if (lookups.length > 0) {
+      const data = Object.fromEntries(
+        lookups.map((m) => [
+          `l${m[1] ?? ''}`,
+          linearLookup(m[2] ?? '', String(variables[`v${m[1] ?? ''}`])),
+        ]),
+      );
+      return Promise.resolve(Response.json({ data }));
+    }
+    return Promise.resolve(Response.json({ data: { echo: query } }));
+  };
+}
+
 const LLM_HOSTS = [
   'https://platform.claude.com/',
   'https://api.anthropic.com/',
@@ -223,8 +274,10 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const monday = fakeMondayFetch(calls);
   const slack = fakeSlackFetch(calls);
   const llm = fakeLlmFetch(calls);
+  const linear = fakeLinearFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+    if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
     return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);
@@ -314,6 +367,7 @@ export async function createHarness(): Promise<Harness> {
       createGitHubProvider(fetch),
       createMondayProvider(fetch),
       createSlackProvider(fetch),
+      createLinearProvider(fetch),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),
