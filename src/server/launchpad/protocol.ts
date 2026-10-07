@@ -42,6 +42,11 @@ export interface RunnerConfig {
   llm: { provider: LlmProvider; model: string | null };
   /** MCP tool names of the gateway tools, for harnesses that allowlist tools. */
   gatewayTools: string[];
+  /**
+   * HTTPS domains the agent may reach through the gateway's egress proxy. When any, the runner
+   * sets `HTTPS_PROXY` for the agent. Absent in configs from older gateways.
+   */
+  egressDomains?: string[];
   prompt: string;
   systemPrompt: string;
   /** `MEMORY.md` carried over from the previous run of a schedule, or null. */

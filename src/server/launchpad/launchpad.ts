@@ -328,10 +328,12 @@ export class Launchpad {
       harness: run.harness,
       llm: { provider, model: run.model },
       gatewayTools: grants.map((g) => gatewayToolName(g.tool)),
+      egressDomains: session.egressDomains ?? [],
       prompt: run.prompt,
       systemPrompt: buildSystemPrompt({
         harness: run.harness,
         grants,
+        egressDomains: session.egressDomains ?? [],
         deadline,
         hasMemory: run.memoryIn !== null,
         instructions: run.instructions,

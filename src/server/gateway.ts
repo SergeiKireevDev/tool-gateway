@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ActivityLog } from './activity.js';
+import { checkDomainPattern, MAX_EGRESS_DOMAINS } from './egress/domains.js';
 import type { LlmUsageLog } from './llmUsage.js';
 import { OAuthSignIns } from './oauthSignIns.js';
 import {
@@ -99,6 +100,8 @@ export const templateSchema = z
     description: z.string().trim().max(MAX_DESCRIPTION_LENGTH).default(''),
     /** One entry per tool the template covers. */
     grants: z.array(toolGrantSchema).min(1, 'Grant access to at least one tool'),
+    /** HTTPS domains launched agents may reach directly (see `egress/domains.ts`). */
+    egressDomains: z.array(z.string()).max(MAX_EGRESS_DOMAINS).default([]),
     defaultTtlSeconds: ttl,
     maxTtlSeconds: ttl,
   })
@@ -749,7 +752,16 @@ export class Gateway {
 
   private validateTemplate(input: unknown): z.infer<typeof templateSchema> {
     const data = templateSchema.parse(input);
-    return { ...data, grants: data.grants.map((g) => this.validateGrant(g)) };
+    const egressDomains = data.egressDomains.map((d) => {
+      const checked = checkDomainPattern(d);
+      if ('error' in checked) throw badRequest(checked.error);
+      return checked.pattern;
+    });
+    return {
+      ...data,
+      grants: data.grants.map((g) => this.validateGrant(g)),
+      egressDomains: [...new Set(egressDomains)],
+    };
   }
 
   private validateGrant(grant: ToolGrant): ToolGrant {
@@ -1262,6 +1274,7 @@ export class Gateway {
       requestCount: 0,
       issuedBy,
       tokenBudget: req.tokenBudget ?? null,
+      egressDomains: [...(template.egressDomains ?? [])],
     };
     await this.store.update((s) => {
       // Re-checked inside the mutation: the request may have waited (slow body, queued run)

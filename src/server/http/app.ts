@@ -245,6 +245,7 @@ export function createVmApp(
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', false);
+  app.use(ownOriginOnly(config.publicUrl));
   mountSessionKeyRoutes(app, gateway, config, options.fetch);
   if (options.launchpad) app.use('/runner', runnerRoutes(options.launchpad));
   app.use((_req, _res, next) => {
@@ -252,6 +253,31 @@ export function createVmApp(
   });
   app.use(errorHandler);
   return app;
+}
+
+/**
+ * Agents with `HTTP_PROXY` set send their plain-HTTP calls to the gateway itself in absolute
+ * form (`GET http://172.30.0.1:7420/proxy/…`), when their client ignores `NO_PROXY`: those are
+ * served as usual. Plain HTTP to anywhere else is refused (the egress proxy is HTTPS only).
+ */
+function ownOriginOnly(publicUrl: string): express.RequestHandler {
+  const own = new URL(publicUrl).host.toLowerCase();
+  return (req, _res, next) => {
+    // The raw path is kept as sent: the proxy validates it (no `new URL()` normalization).
+    const absolute = /^https?:\/\/([^/?#]*)([^#]*)$/i.exec(req.url);
+    if (!absolute) {
+      next();
+      return;
+    }
+    if (absolute[1]?.toLowerCase() !== own) {
+      next(forbidden('Only HTTPS goes through the egress proxy (CONNECT <domain>:443)'));
+      return;
+    }
+    const path = absolute[2] ?? '';
+    req.url = path.startsWith('/') ? path : `/${path}`;
+    req.originalUrl = req.url;
+    next();
+  };
 }
 
 /** Routes authenticated by a session key: the tool proxy and key introspection. */

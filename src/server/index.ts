@@ -3,6 +3,7 @@ import nextModule from 'next';
 import { openGateway } from './bootstrap.js';
 import { loadConfig, loadEnvFile, vmPublicUrl } from './config.js';
 import { createApp, createVmApp } from './http/app.js';
+import { attachEgressProxy } from './http/egressProxy.js';
 
 // `next` is CommonJS: at runtime the default import *is* the factory, but its typings
 // model it as an ES module with a `default` export.
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
         },
       )
     : null;
+  if (vmServer) attachEgressProxy(vmServer, gateway);
 
   if (launchpad) {
     await launchpad.recover();
