@@ -14,7 +14,7 @@ import {
   type RunEvent,
 } from '@/lib/launchpad';
 import { Button, Card, ErrorBanner, useNow } from '../ui';
-import { runDuration, StatusBadge, TokenMeter } from './RunBits';
+import { runDuration, runOrigin, StatusBadge, TokenMeter } from './RunBits';
 import { RunLog } from './RunLog';
 import { RunSteps } from './RunSteps';
 import { RunTools } from './RunTools';
@@ -243,8 +243,7 @@ export function RunDetail({
                 {HARNESS_LABELS[run.harness]}
                 {run.model && ` · ${run.model}`} · {run.templateName}
                 {showMember && ` · ${run.memberName}`}
-                {run.scheduleId && ' · scheduled'}
-                {run.triggerId && ' · webhook'}
+                {runOrigin(run)}
               </span>
             </div>
             <RunPrompt run={run} />
