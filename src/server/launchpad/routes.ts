@@ -305,6 +305,10 @@ export function memberLaunchRoutes(
       TRIGGERS_PATH,
       created((req, res) => triggers.view(triggers.create(memberOf(res), req.body))),
     );
+    router.put(
+      TRIGGER_PATH,
+      h((req, res) => triggers.view(triggers.edit(memberOf(res), param(req, 'tid'), req.body))),
+    );
     triggerRoutes(router, triggers, actorOf);
   }
   return router;

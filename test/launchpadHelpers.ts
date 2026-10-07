@@ -63,7 +63,11 @@ export interface LaunchHarness extends Harness {
   cookieFor(name: string): Promise<string>;
   /** Creates a member with a Google email and returns it with a portal cookie. */
   member(name: string, templateIds?: string[]): Promise<{ id: string; cookie: string }>;
-  portal(cookie: string, method: 'get' | 'post' | 'patch' | 'delete', path: string): request.Test;
+  portal(
+    cookie: string,
+    method: 'get' | 'post' | 'put' | 'patch' | 'delete',
+    path: string,
+  ): request.Test;
   /** The member portal's webhook routes (`/api/me/webhooks`). */
   hooks(cookie: string, method: 'get' | 'post', path: string): request.Test;
   admin(method: 'get' | 'post' | 'put' | 'patch', path: string): request.Test;

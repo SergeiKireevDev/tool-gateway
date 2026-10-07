@@ -161,6 +161,7 @@ export interface Trigger {
   harness: Harness;
   model: string | null;
   templateId: string;
+  accountIds: string[];
   enabled: boolean;
   stoppedReason: string | null;
   lastRunId: string | null;

@@ -81,17 +81,19 @@ export function RunsTable({
   );
 }
 
-/** Runs, pause or resume, delete: the actions on a schedule or a trigger. */
+/** Runs, edit, pause or resume, delete: the actions on a schedule or a trigger. */
 function RowActions({
   enabled,
   canResume,
   onShowRuns,
+  onEdit,
   onToggle,
   onDelete,
 }: {
   enabled: boolean;
   canResume: boolean;
   onShowRuns: () => void;
+  onEdit?: () => void;
   onToggle: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
@@ -100,6 +102,11 @@ function RowActions({
       <Button size="sm" variant="ghost" onClick={onShowRuns}>
         Runs
       </Button>
+      {onEdit && (
+        <Button size="sm" variant="secondary" onClick={onEdit}>
+          Edit
+        </Button>
+      )}
       {enabled ? (
         <Button
           size="sm"
@@ -207,6 +214,7 @@ export function TriggersTable({
   triggers,
   showMember,
   canResume,
+  onEdit,
   onToggle,
   onDelete,
   onShowRuns,
@@ -214,6 +222,8 @@ export function TriggersTable({
   triggers: Trigger[];
   showMember: boolean;
   canResume: boolean;
+  /** Members only: the admin can't edit a member's trigger. */
+  onEdit?: (t: Trigger) => void;
   onToggle: (t: Trigger, enabled: boolean) => void;
   onDelete: (t: Trigger) => void;
   onShowRuns: (t: Trigger) => void;
@@ -257,6 +267,11 @@ export function TriggersTable({
                   onShowRuns={() => {
                     onShowRuns(t);
                   }}
+                  {...(onEdit && {
+                    onEdit: () => {
+                      onEdit(t);
+                    },
+                  })}
                   onToggle={(enabled) => {
                     onToggle(t, enabled);
                   }}
