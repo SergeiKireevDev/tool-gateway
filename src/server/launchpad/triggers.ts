@@ -9,6 +9,12 @@ import type { AcceptedDelivery, Webhooks } from '../webhooks.js';
 import { type Actor, launchSchema, type Launchpad, MAX_PROMPT_LENGTH } from './launchpad.js';
 import type { Harness } from './protocol.js';
 import { clip } from './runStore.js';
+import {
+  matchesFilters,
+  parseFilters,
+  type TriggerFilters,
+  triggerFiltersSchema,
+} from './triggerFilters.js';
 
 const MAX_NAME_LENGTH = 100;
 const MAX_EVENT_TYPES = 20;
@@ -29,6 +35,8 @@ export const triggerSchema = launchSchema.omit({ prompt: true }).extend({
     .array(z.string().trim().min(1).max(MAX_EVENT_TYPE_LENGTH))
     .max(MAX_EVENT_TYPES)
     .default([]),
+  /** Deterministic conditions on the payload, checked before launching (see `triggerFilters`). */
+  filters: triggerFiltersSchema,
   /** What the agent should do with an event: added to its system prompt. */
   instructions: z
     .string()
@@ -44,6 +52,7 @@ export interface Trigger {
   name: string;
   webhookId: string;
   eventTypes: string[];
+  filters: TriggerFilters;
   instructions: string;
   harness: Harness;
   model: string | null;
@@ -68,6 +77,7 @@ interface TriggerRow {
   name: string;
   webhook_id: string;
   event_types: string;
+  filters: string;
   instructions: string;
   harness: Harness;
   model: string | null;
@@ -90,6 +100,7 @@ function toTrigger(r: TriggerRow): Trigger {
     name: r.name,
     webhookId: r.webhook_id,
     eventTypes: JSON.parse(r.event_types) as string[],
+    filters: parseFilters(r.filters),
     instructions: r.instructions,
     harness: r.harness,
     model: r.model,
@@ -155,9 +166,9 @@ export class Triggers {
     const id = randomId();
     this.db.sql
       .prepare(
-        `INSERT INTO triggers (id, member_id, member_name, name, webhook_id, event_types, instructions, harness,
-           model, template_id, account_ids, key_generation, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO triggers (id, member_id, member_name, name, webhook_id, event_types, filters, instructions,
+           harness, model, template_id, account_ids, key_generation, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
       .run(
         id,
@@ -166,6 +177,7 @@ export class Triggers {
         req.name ?? clip(req.instructions.split('\n')[0] ?? 'Webhook agent', MAX_NAME_LENGTH),
         req.webhookId,
         JSON.stringify([...new Set(req.eventTypes)]),
+        JSON.stringify(req.filters),
         redact(req.instructions),
         plan.harness,
         plan.model,
@@ -272,13 +284,21 @@ export class Triggers {
 
   // ---------------------------------------------------------------- firing
 
-  /** Launches the agents of the enabled triggers on the delivery's webhook that match its type. */
+  /**
+   * Launches the agents of the enabled triggers on the delivery's webhook that match its type and
+   * whose filters its payload passes.
+   */
   onDelivery(delivery: AcceptedDelivery): void {
     const rows = this.db.sql
       .prepare('SELECT * FROM triggers WHERE webhook_id = ? AND enabled = 1 ORDER BY created_at')
       .all(delivery.webhook.id) as unknown as TriggerRow[];
     for (const trigger of rows.map(toTrigger)) {
-      if (matchesEventTypes(trigger.eventTypes, delivery.eventType)) this.fire(trigger, delivery);
+      if (
+        matchesEventTypes(trigger.eventTypes, delivery.eventType) &&
+        matchesFilters(trigger.filters, delivery.payload)
+      ) {
+        this.fire(trigger, delivery);
+      }
     }
   }
 

@@ -2,6 +2,7 @@
 
 import { formatDateTime, formatRelative } from '@/lib/format';
 import {
+  describeFilters,
   describeSchedule,
   formatTokens,
   HARNESS_LABELS,
@@ -244,6 +245,7 @@ export function TriggersTable({
                 <div className="text-xs text-slate-500">
                   {t.eventTypes.length > 0 ? t.eventTypes.join(', ') : 'Every event'}
                 </div>
+                <TriggerFilterLine filters={t.filters} />
               </td>
               <td className="px-4 py-3">
                 <TriggerState trigger={t} now={now} />
@@ -269,6 +271,12 @@ export function TriggersTable({
       </table>
     </Card>
   );
+}
+
+/** The trigger's filters, if any. */
+function TriggerFilterLine({ filters }: { filters: Trigger['filters'] }) {
+  const text = describeFilters(filters);
+  return text ? <div className="max-w-xs truncate text-xs text-slate-500">{text}</div> : null;
 }
 
 function TriggerState({ trigger, now }: { trigger: Trigger; now: number }) {
