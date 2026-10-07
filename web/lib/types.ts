@@ -86,6 +86,8 @@ export interface TemplateSummary {
   description: string;
   /** One per tool the template covers. */
   grants: ToolGrant[];
+  /** HTTPS domains launched agents may reach directly. */
+  egressDomains?: string[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
 }
@@ -99,6 +101,7 @@ export interface TemplateInput {
   name: string;
   description: string;
   grants: ToolGrant[];
+  egressDomains: string[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
 }

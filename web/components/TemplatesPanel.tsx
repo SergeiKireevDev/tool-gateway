@@ -3,9 +3,11 @@
 import { useState } from 'react';
 import { formatDuration } from '@/lib/format';
 import { toolName, toolsOfKind } from '@/lib/grants';
+import { parseDomains } from '@/lib/egress';
 import { DEFAULT_MAX_TTL_SECONDS, DEFAULT_TTL_SECONDS } from '@/lib/units';
 import type { TemplateInput, TemplateSummary as Template, Tool } from '@/lib/types';
 import type { PanelProps } from './AdminApp';
+import { EgressDomainsField } from './EgressDomainsField';
 import { GrantList } from './GrantList';
 import {
   Badge,
@@ -106,6 +108,9 @@ export function TemplatesPanel({ api, data, refresh }: PanelProps) {
               <p className="mt-4 text-xs text-slate-500">
                 TTL: default {formatDuration(tpl.defaultTtlSeconds)}, max{' '}
                 {formatDuration(tpl.maxTtlSeconds)}
+                {tpl.egressDomains?.length
+                  ? ` · Agents' internet access: ${tpl.egressDomains.join(', ')}`
+                  : ''}
               </p>
             </Card>
           ))}
@@ -141,13 +146,14 @@ function TemplateModal({
   onSaved: () => Promise<void>;
 } & Pick<PanelProps, 'api' | 'data'>) {
   const existing = editing?.mode === 'edit' ? editing.template : null;
-  const [form, setForm] = useState<Omit<TemplateInput, 'grants'>>(() => ({
+  const [form, setForm] = useState<Omit<TemplateInput, 'grants' | 'egressDomains'>>(() => ({
     name: existing?.name ?? '',
     description: existing?.description ?? '',
     defaultTtlSeconds: existing?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS,
     maxTtlSeconds: existing?.maxTtlSeconds ?? DEFAULT_MAX_TTL_SECONDS,
   }));
   const [drafts, setDrafts] = useState(() => initialDrafts(data.tools, existing));
+  const [domainsText, setDomainsText] = useState(() => (existing?.egressDomains ?? []).join('\n'));
   // One tool is edited at a time; the others show a one-line summary.
   const [expanded, setExpanded] = useState<string | null>(() =>
     existing ? null : (data.tools[0]?.id ?? null),
@@ -164,6 +170,7 @@ function TemplateModal({
     setError(null);
     const body: TemplateInput = {
       ...form,
+      egressDomains: parseDomains(domainsText),
       grants: data.tools.flatMap((t) => {
         const d = drafts[t.id];
         if (!d?.enabled) return [];
@@ -240,6 +247,8 @@ function TemplateModal({
             ))}
           </fieldset>
         ))}
+
+        <EgressDomainsField value={domainsText} onChange={setDomainsText} />
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Default TTL">

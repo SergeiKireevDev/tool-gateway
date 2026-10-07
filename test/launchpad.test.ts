@@ -198,6 +198,29 @@ describe('launch checks', () => {
     expect(codex.body.message).toBe('No openai account available');
   });
 
+  it('gives the run its template’s internet access', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'with npm',
+        grants: [{ tool: 'anthropic', permissions: ['llm:invoke'], resources: [] }],
+        egressDomains: ['registry.npmjs.org'],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const alice = await t.member('alice', [tpl.body.id as string, t.ids.template]);
+    await launch(alice.cookie, { templateId: tpl.body.id });
+    const config = t.driver.lastConfig();
+    expect(config.egressDomains).toEqual(['registry.npmjs.org']);
+    expect(config.systemPrompt).toContain('`registry.npmjs.org`');
+    expect(config.systemPrompt).not.toContain('has no internet access');
+
+    await launch(alice.cookie);
+    expect(t.driver.lastConfig().egressDomains).toEqual([]);
+    expect(t.driver.lastConfig().systemPrompt).toContain('has no internet access');
+  });
+
   it('only allows the member’s templates, and respects disabled launch rights', async () => {
     const bob = await t.member('bob', [t.ids.noLlmTemplate]);
     await t.portal(bob.cookie, 'post', '/runs').send(launchBody()).expect(403);

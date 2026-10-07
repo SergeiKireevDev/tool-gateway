@@ -215,6 +215,11 @@ output files and `MEMORY.md` are kept and shown per run. Admins see every run un
 **Agent runs** and set limits under **Launchpad**. Off unless `LAUNCHPAD_VM_DRIVER` is set: see
 [docs/launchpad.md](docs/launchpad.md) for the host setup and the security model.
 
+Agents have no internet access, except for the HTTPS domains their template lists under
+**Internet access** (e.g. `registry.npmjs.org`, `*.pythonhosted.org`; presets for npm, PyPI,
+crates.io, Go modules and Debian). They reach them through the gateway, which logs each connection.
+See [Internet access](docs/launchpad.md#internet-access).
+
 ## Webhooks
 
 Other services can send events to the gateway: `POST <GATEWAY_PUBLIC_URL>/hooks/<token>`. The

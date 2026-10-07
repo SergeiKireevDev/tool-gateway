@@ -94,6 +94,7 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | An agent can do no more than its member could                     | Keys are issued in-process with the member-key narrowing, re-checked inside the store mutation (`gateway.issueSessionForRun`)            |
 | Keys and VMs never outlive their run                              | `Launchpad.finish` revokes and destroys; the reaper runs every minute; the key TTL is the run time limit + 5 min                         |
+| Agents reach only their template's internet domains               | The egress proxy (`src/server/http/egressProxy.ts`) checks each `CONNECT` against the key's domains and refuses non-public addresses     |
 | VMs reach the gateway only                                        | `deploy/vm-host-setup.sh`: nftables drops forwarding off the bridge and all host ports but the gateway's; taps are isolated bridge ports |
 | The VM listener exposes nothing else                              | `createVmApp` serves only `/proxy/*`, `/api/session` and `/runner/*`                                                                     |
 | The model API key never enters the VM                             | LLM providers (`src/server/tools/llm`) swap the session key for the real key; their auth errors are not relayed                          |
@@ -101,6 +102,49 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
 | Agents can't get around the network lockdown through the provider | Provider-side tools (web search/fetch, code execution, remote MCP) need the `llm:server-tools` permission                                |
 | Members only see their own runs, schedules and outputs            | Member routes check ownership and answer 404 otherwise                                                                                   |
 | No secrets in the database                                        | Keys and known token formats are redacted before activity, transcripts and prompts are written                                           |
+
+## Internet access
+
+A template can list HTTPS domains its agents may reach (**Internet access** in the template editor):
+
+- `example.com` allows that host only.
+- `*.example.com` allows its subdomains, but not `example.com` itself.
+
+Keys snapshot the list when they are issued.
+
+When the list isn't empty, the runner sets `HTTPS_PROXY` (and `HTTP_PROXY`) to the gateway, with
+the session key as the password. `NO_PROXY` covers the gateway itself. curl, git, npm, pip, cargo
+and most CLIs honor these variables. The VM firewall doesn't change: programs that ignore the
+proxy settings get nowhere.
+
+For each `CONNECT <domain>:443`, the gateway's VM listener:
+
+1. checks the session key (`Proxy-Authorization`; `407` otherwise);
+2. checks the domain against the key's list. Only port 443 is allowed, and IP addresses are refused;
+3. resolves the name itself, and refuses it if **any** address is private, loopback, link-local,
+   shared or reserved. This stops an allowed name from pointing at the host, the VM network or a
+   cloud metadata service;
+4. connects to a checked address (IPv4 first) and relays the bytes.
+
+Each connection is logged with its domain, bytes and duration (tool `internet`), and shows up in
+the run's gateway calls. A key holds at most 64 tunnels at once. Tunnels close after 5 minutes
+idle and when the key expires.
+
+Plain HTTP to other hosts is refused. Plain HTTP to the gateway itself (sent in absolute form by
+clients that ignore `NO_PROXY`) is served as usual.
+
+**What it doesn't do.** TLS is end to end, so the gateway sees the domain, never the requests:
+
+- It can't allow only some paths or methods (e.g. GET only). Doing so would mean decrypting the
+  traffic, with a gateway certificate installed in the VM. Some tools pin their certificates, and
+  the gateway would become a much bigger target. Read-only methods wouldn't stop data from leaving
+  either, because a URL can carry data.
+- Every listed domain is a place an agent can send data to. Keep the lists short, and prefer
+  package registries and documentation sites.
+
+Domains of services the gateway brokers can't be listed, nor their subdomains: `github.com`,
+`slack.com`, `monday.com`, `linear.app`, the model APIs, and so on. Direct access would bypass
+their per-repository and per-permission checks and token budgets, so grant their tool instead.
 
 **Known limitation (accepted for now):** the agent can read its own session key (environment
 variable). It is scoped and short-lived, and it only works from inside the VM network.

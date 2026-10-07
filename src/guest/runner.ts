@@ -165,6 +165,27 @@ function gitConfig(config: RunnerConfig): string {
   ].join('\n');
 }
 
+/**
+ * Proxy settings for the agent when its run may reach some HTTPS domains: the gateway's egress
+ * proxy, authenticated by the session key. The gateway itself is reached directly.
+ */
+export function proxyEnv(config: RunnerConfig): Record<string, string> {
+  if (!config.egressDomains?.length) return {};
+  const gateway = new URL(config.gatewayUrl);
+  const url = `${gateway.protocol}//agent:${encodeURIComponent(config.sessionKey)}@${gateway.host}`;
+  const noProxy = `${gateway.hostname},localhost,127.0.0.1`;
+  return {
+    HTTPS_PROXY: url,
+    https_proxy: url,
+    HTTP_PROXY: url,
+    http_proxy: url,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    // Node's built-in fetch only honors the variables above with this set (Node >= 22.21).
+    NODE_USE_ENV_PROXY: '1',
+  };
+}
+
 /** Starts the harness and resolves when it exits (or was stopped at the deadline). */
 function runHarness(
   config: RunnerConfig,
@@ -186,7 +207,7 @@ function runHarness(
   const workDir = path.join(home, 'work');
   const child: ChildProcess = spawn(launch.command, launch.args, {
     cwd: workDir,
-    env: { NODE_ENV: 'production', ...launch.env },
+    env: { NODE_ENV: 'production', ...proxyEnv(config), ...launch.env },
     stdio: ['ignore', 'pipe', 'pipe'],
     ...(ids ? { uid: ids.uid, gid: ids.gid } : {}),
   });

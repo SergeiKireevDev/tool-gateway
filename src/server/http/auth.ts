@@ -24,7 +24,8 @@ export function proxyToken(req: Request): string | null {
   return header.startsWith(SESSION_KEY_PREFIX) && !/\s/.test(header) ? header : null;
 }
 
-function basicAuthKey(encoded: string): string | null {
+/** Session key in HTTP Basic credentials (base64 `user:password`): the password, or the user name. */
+export function basicAuthKey(encoded: string): string | null {
   const decoded = Buffer.from(encoded, 'base64').toString('utf8');
   const colon = decoded.indexOf(':');
   const user = colon < 0 ? decoded : decoded.slice(0, colon);

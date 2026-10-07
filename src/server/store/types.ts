@@ -40,6 +40,11 @@ export interface Template {
   name: string;
   description: string;
   grants: ToolGrant[];
+  /**
+   * HTTPS domains agents launched with this template may reach directly, through the gateway's
+   * egress proxy (`example.com`, `*.example.com`). Absent/empty = none.
+   */
+  egressDomains?: string[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;
   createdAt: string;
@@ -104,6 +109,8 @@ export interface Session {
   issuedBy?: SessionIssuer;
   /** Most LLM tokens the key may use (see `llmUsage.ts`); null/absent = no budget. */
   tokenBudget?: number | null;
+  /** Snapshot of the template's egress domains (agent runs only reach them). */
+  egressDomains?: string[];
 }
 
 /** Browser session after signing in with Google (cookie-based), for the admin or a member. */
