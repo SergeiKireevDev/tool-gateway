@@ -1,4 +1,3 @@
-import { gunzipSync } from 'node:zlib';
 import { isRecord } from './json.js';
 import type { AuthzDecision, Grant, ToolRequest, ToolRequestContext } from './types.js';
 
@@ -28,8 +27,12 @@ const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PKT_LEN_CHARS = 4;
 const HEX = 16;
 const BRANCH_PREFIX = 'refs/heads/';
-/** Request headers git needs upstream; the credential is added by the gateway. */
-const GIT_HEADERS = ['accept', 'content-type', 'content-encoding', 'git-protocol'];
+/**
+ * Request headers git needs upstream; the credential is added by the gateway. Not
+ * `content-encoding`: the proxy's body parser already inflated gzipped requests (git gzips the
+ * larger negotiation rounds), so the body is forwarded plain.
+ */
+const GIT_HEADERS = ['accept', 'content-type', 'git-protocol'];
 const PERM_READ = 'contents:read';
 const MALFORMED = 'Malformed push request';
 const PERM_WRITE = 'contents:write';
@@ -93,20 +96,13 @@ async function defaultBranch(
 
 async function checkPush(
   body: Buffer | undefined,
-  headers: Headers,
   repo: { owner: string; name: string },
   secret: string,
   fetchImpl: typeof fetch,
 ): Promise<string> {
+  // Already inflated by the proxy's body parser when the client gzipped it.
   if (!body) throw new Denied('Empty push');
-  const gzipped = (headers.get('content-encoding') ?? '').toLowerCase() === 'gzip';
-  let plain: Buffer;
-  try {
-    plain = gzipped ? gunzipSync(body) : body;
-  } catch {
-    throw new Denied(MALFORMED);
-  }
-  const updates = parseRefUpdates(plain);
+  const updates = parseRefUpdates(body);
   if (updates.length === 0) throw new Denied('Empty push');
   const main = `${BRANCH_PREFIX}${await defaultBranch(repo.owner, repo.name, secret, fetchImpl)}`;
   for (const { newId, ref } of updates) {
@@ -169,7 +165,7 @@ async function authorize(
 
   const pushing = service === RECEIVE && rest[0] === RECEIVE;
   const branches = pushing
-    ? await checkPush(request.body, request.headers, { owner, name }, ctx.secret, fetchImpl)
+    ? await checkPush(request.body, { owner, name }, ctx.secret, fetchImpl)
     : null;
   return {
     allowed: true,
