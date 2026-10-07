@@ -38,6 +38,12 @@ export function StatusBadge({ status }: { status: RunStatus }) {
 }
 
 /** How long a run took (or has been going). */
+/** How the run was launched, when not by hand: " · scheduled" or " · webhook". */
+export function runOrigin(run: Run): string {
+  if (run.scheduleId) return ' · scheduled';
+  return run.triggerId ? ' · webhook' : '';
+}
+
 export function runDuration(run: Run, now: number): string {
   if (!run.startedAt) return '—';
   const end = run.finishedAt ? Date.parse(run.finishedAt) : now;

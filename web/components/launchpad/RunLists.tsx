@@ -10,7 +10,7 @@ import {
   type Trigger,
 } from '@/lib/launchpad';
 import { Badge, Button, Card, EmptyState, useNow } from '../ui';
-import { runDuration, StatusBadge } from './RunBits';
+import { runDuration, runOrigin, StatusBadge } from './RunBits';
 
 const PROMPT_CHARS = 90;
 const excerpt = (text: string): string =>
@@ -57,8 +57,7 @@ export function RunsTable({
                 <div className="truncate text-slate-800">{excerpt(r.prompt)}</div>
                 <div className="text-xs text-slate-500">
                   {r.templateName}
-                  {r.scheduleId && ' · scheduled'}
-                  {r.triggerId && ' · webhook'}
+                  {runOrigin(r)}
                 </div>
               </td>
               {showMember && <td className="px-4 py-3 text-slate-600">{r.memberName}</td>}

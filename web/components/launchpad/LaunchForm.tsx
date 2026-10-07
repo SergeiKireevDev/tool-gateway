@@ -25,12 +25,13 @@ const WHEN_LABELS: Record<When, string> = {
   monthly: 'Every month',
   webhook: 'On a webhook event',
 };
+const CREATE_SCHEDULE = 'Create schedule';
 const SUBMIT_LABELS: Record<When, string> = {
   now: 'Launch agent',
-  hourly: 'Create schedule',
-  daily: 'Create schedule',
-  weekly: 'Create schedule',
-  monthly: 'Create schedule',
+  hourly: CREATE_SCHEDULE,
+  daily: CREATE_SCHEDULE,
+  weekly: CREATE_SCHEDULE,
+  monthly: CREATE_SCHEDULE,
   webhook: 'Create trigger',
 };
 const LAST_DAY = 28;
@@ -134,6 +135,8 @@ function RecurrenceFields({
     </div>
   );
 }
+
+const firstId = (items: { id: string }[]): string => items[0]?.id ?? '';
 
 /** "issues.opened, Issue" → ["issues.opened", "Issue"] */
 function splitList(value: string): string[] {
@@ -249,6 +252,13 @@ interface Draft {
   eventTypes: string;
 }
 
+const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
+
+/** Whether the form holds what its request needs: a task, and for a trigger a webhook. */
+function ready(d: Pick<Draft, 'when' | 'prompt' | 'webhookId'>): boolean {
+  return d.prompt.trim() !== '' && (d.when !== 'webhook' || d.webhookId !== '');
+}
+
 /** The request the form sends: a run now, a schedule, or a webhook trigger. */
 function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   const launch = {
@@ -317,9 +327,8 @@ export function LaunchForm({
   const [weekday, setWeekday] = useState(1);
   const [day, setDay] = useState(1);
   const [timezone, setTimezone] = useState(browserTimeZone);
-  const [webhookId, setWebhookId] = useState('');
+  const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
   const [eventTypes, setEventTypes] = useState('');
-  const hookId = webhookId || (webhooks[0]?.id ?? '');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -351,7 +360,7 @@ export function LaunchForm({
       weekday,
       day,
       timezone,
-      webhookId: hookId,
+      webhookId,
       eventTypes,
     });
     try {
@@ -471,13 +480,13 @@ export function LaunchForm({
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}
-          webhookId={hookId}
+          webhookId={webhookId}
           setWebhookId={setWebhookId}
           eventTypes={eventTypes}
           setEventTypes={setEventTypes}
         />
       )}
-      {when !== 'now' && when !== 'webhook' && (
+      {isPreset(when) && (
         <RecurrenceFields
           when={when}
           time={time}
@@ -496,7 +505,7 @@ export function LaunchForm({
           Runs in a disposable VM that can only reach the gateway. Stops after{' '}
           {formatDuration(options.defaultTimeoutSeconds)} at most.
         </p>
-        <Button type="submit" disabled={busy || !prompt.trim() || (when === 'webhook' && !hookId)}>
+        <Button type="submit" disabled={busy || !ready({ when, prompt, webhookId })}>
           {SUBMIT_LABELS[when]}
         </Button>
       </div>
