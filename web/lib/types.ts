@@ -11,6 +11,10 @@ export interface SignInConfig {
   registerUrl: string;
   defaultScopes: string;
   oauthClientId: string;
+  /** Button label, e.g. "Sign in with ChatGPT". */
+  label: string;
+  /** The tool's public client ID is built in: there is no OAuth app to set up. */
+  builtIn: boolean;
 }
 
 /** Example call through the gateway, relative to the tool's proxy base URL. */

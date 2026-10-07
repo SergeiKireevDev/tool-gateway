@@ -168,9 +168,21 @@ function fakeLlmAnswer(url: string, body: Record<string, unknown>): Response {
 
 /** Fake Anthropic / OpenAI / Gemini: rejects key `bad-key`, answers with fixed token usage. */
 export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  const openAiAuth = { polls: 0 };
   return (input, init = {}) => {
     const url = input instanceof Request ? input.url : String(input);
     calls.push({ url, init });
+    if (url.startsWith('https://auth.openai.com/')) {
+      return Promise.resolve(fakeOpenAiAuth(url, init, openAiAuth));
+    }
+    if (url === 'https://chatgpt.com/backend-api/codex/responses') {
+      const usage = {
+        input_tokens: 110,
+        input_tokens_details: { cached_tokens: 10 },
+        output_tokens: 55,
+      };
+      return Promise.resolve(sse([{ type: 'response.completed', response: { usage } }]));
+    }
     if (url === 'https://platform.claude.com/v1/oauth/token') {
       return Promise.resolve(
         fakeClaudeToken(JSON.parse(init.body as string) as Record<string, string>),
@@ -191,6 +203,46 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
     >;
     return Promise.resolve(fakeLlmAnswer(url, body));
   };
+}
+
+/** A ChatGPT access token (unsigned JWT) for account `acct_1`, generation `n`. */
+export function fakeChatGptToken(n: number): string {
+  const part = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return [
+    part({ alg: 'none' }),
+    part({
+      n,
+      'https://api.openai.com/auth': { chatgpt_account_id: 'acct_1', chatgpt_plan_type: 'pro' },
+      'https://api.openai.com/profile': { email: 'ada@chatgpt.example' },
+    }),
+    'sig',
+  ].join('.');
+}
+
+/** Fake OpenAI auth server: device code, approval after one pending poll, token exchange, refresh. */
+function fakeOpenAiAuth(url: string, init: RequestInit, state: { polls: number }): Response {
+  if (url.endsWith('/api/accounts/deviceauth/usercode')) {
+    return Response.json({ device_auth_id: 'dev-1', user_code: 'ABCD-EFGH', interval: '5' });
+  }
+  if (url.endsWith('/api/accounts/deviceauth/token')) {
+    state.polls += 1;
+    if (state.polls === 1) return new Response('', { status: 403 });
+    return Response.json({ authorization_code: 'auth-code', code_verifier: 'verifier' });
+  }
+  const form = new URLSearchParams(init.body as string);
+  const n =
+    form.get('grant_type') === 'authorization_code' && form.get('code') === 'auth-code'
+      ? 1
+      : form.get('grant_type') === 'refresh_token' &&
+          /^cr\d+$/.test(form.get('refresh_token') ?? '')
+        ? Number(form.get('refresh_token')?.slice(2)) + 1
+        : 0;
+  if (n === 0) return Response.json({ error: 'invalid_grant' }, { status: 400 });
+  return Response.json({
+    access_token: fakeChatGptToken(n),
+    refresh_token: `cr${String(n)}`,
+    expires_in: 3600,
+  });
 }
 
 /** Fake Claude OAuth token endpoint: code `good-code`, then refresh tokens r1 → r2 → … */
@@ -262,6 +314,8 @@ export function fakeLinearFetch(calls: Harness['upstreamCalls']): typeof fetch {
 }
 
 const LLM_HOSTS = [
+  'https://auth.openai.com/',
+  'https://chatgpt.com/',
   'https://platform.claude.com/',
   'https://api.anthropic.com/',
   'https://api.openai.com/',

@@ -89,7 +89,8 @@ export interface DeviceAuthorization {
 export type DevicePollResult =
   | { status: 'pending' }
   | { status: 'slow_down'; interval: number }
-  | { status: 'complete'; secret: string }
+  /** `tokens` for sign-ins that return refreshable OAuth tokens (the gateway refreshes them). */
+  | { status: 'complete'; secret: string; tokens?: OAuthTokens }
   | { status: 'failed'; message: string };
 
 /** OAuth 2.0 device authorization grant (RFC 8628): lets the admin sign in instead of pasting a token. */
@@ -99,8 +100,14 @@ export interface DeviceFlow {
   /** Where the OAuth client is registered. */
   registerUrl: string;
   defaultScopes: string;
+  /** A public client ID the tool's own CLI uses: no OAuth app to register. */
+  builtInClientId?: string;
+  /** Label of the sign-in button, e.g. "Sign in with ChatGPT". */
+  label?: string;
   start(clientId: string, scopes: string): Promise<DeviceAuthorization>;
   poll(clientId: string, deviceCode: string): Promise<DevicePollResult>;
+  /** Renews tokens a completed flow returned (see `DevicePollResult.tokens`). */
+  refresh?(refreshToken: string): Promise<OAuthTokens>;
 }
 
 /** Tokens from an OAuth sign-in; the access token is the account's secret. */

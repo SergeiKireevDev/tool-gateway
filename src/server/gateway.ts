@@ -239,11 +239,24 @@ export interface ToolCatalogEntry {
     setupHelp: string;
     registerUrl: string;
     defaultScopes: string;
+    /** Button label, e.g. "Sign in with ChatGPT". */
+    label: string;
+    /** The tool's public client ID is built in: there is no OAuth app to set up. */
+    builtIn: boolean;
     oauthClientId: string;
   } | null;
 }
 
 /** A template grant with the account chosen for it at issuance. */
+/**
+ * Which of a template's tools an agent run's key covers: `drop` grants are left out (model APIs
+ * the harness can't use); `optional` grants are left out when no account is available for them.
+ */
+export interface RunToolScope {
+  drop: readonly string[];
+  optional: readonly string[];
+}
+
 interface BoundGrant {
   grant: ToolGrant;
   account: Account;
@@ -436,7 +449,9 @@ export class Gateway {
             setupHelp: t.deviceFlow.setupHelp,
             registerUrl: t.deviceFlow.registerUrl,
             defaultScopes: t.deviceFlow.defaultScopes,
-            ...this.toolSettings(t.id),
+            label: t.deviceFlow.label ?? `Sign in with ${t.name}`,
+            builtIn: t.deviceFlow.builtInClientId !== undefined,
+            oauthClientId: t.deviceFlow.builtInClientId ?? this.toolSettings(t.id).oauthClientId,
           }
         : null,
     }));
@@ -469,7 +484,7 @@ export class Gateway {
     const data = deviceFlowStartSchema.parse(input);
     const tool = this.tool(data.tool);
     if (!tool.deviceFlow) throw badRequest(`${tool.name} does not support sign-in`);
-    const clientId = this.toolSettings(tool.id).oauthClientId;
+    const clientId = tool.deviceFlow.builtInClientId ?? this.toolSettings(tool.id).oauthClientId;
     if (!clientId) throw badRequest(`Configure a ${tool.name} OAuth client ID first`);
 
     let auth;
@@ -533,13 +548,9 @@ export class Gateway {
           return result;
         case 'complete': {
           this.deviceFlows.delete(flowId);
-          const account = await this.addAccount(
-            tool,
-            flow.label,
-            result.secret,
-            'device-flow',
-            actor,
-          );
+          const account = result.tokens
+            ? await this.addOAuthAccount(tool.id, flow.label, result.tokens, actor)
+            : await this.addAccount(tool, flow.label, result.secret, 'device-flow', actor);
           return { status: 'complete', account };
         }
       }
@@ -668,11 +679,12 @@ export class Gateway {
   }
 
   private async refreshAccount(account: Account, refreshToken: string): Promise<Account> {
-    const signIn = this.tool(account.tool).oauthSignIn;
-    if (!signIn) throw unauthorized('This account can no longer be refreshed');
+    const tool = this.tool(account.tool);
+    const refresher = tool.oauthSignIn ?? tool.deviceFlow;
+    if (!refresher?.refresh) throw unauthorized('This account can no longer be refreshed');
     let tokens: OAuthTokens;
     try {
-      tokens = await signIn.refresh(refreshToken);
+      tokens = await refresher.refresh(refreshToken);
     } catch (err) {
       throw badGateway(
         `Could not refresh "${account.label}": ${(err as Error).message}. Sign in again.`,
@@ -1090,6 +1102,7 @@ export class Gateway {
     runId: string,
     input: unknown,
     keyGeneration?: number,
+    scope?: RunToolScope,
   ): Promise<{ key: string; session: PublicSession }> {
     const member = this.store.read().members.find((m) => m.id === memberId);
     if (!member || this.memberExpired(member)) throw unauthorized(MEMBER_NOT_VALID);
@@ -1101,10 +1114,12 @@ export class Gateway {
       ? this.store.read().templates.find((t) => t.id === req.templateId)
       : undefined;
     if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
-    const accounts = this.pickAccounts(template, requestedAccounts(req), {
-      kind: 'member',
-      member,
-    });
+    const accounts = this.pickAccounts(
+      template,
+      requestedAccounts(req),
+      { kind: 'member', member },
+      scope,
+    );
     return this.issue(
       req,
       template,
@@ -1122,19 +1137,29 @@ export class Gateway {
 
   /**
    * Checks, without issuing anything, that a member could get a key for this template (and these
-   * accounts). Returns the template and the account picked for each of its tools.
+   * accounts). Returns the template, and the tools the key would cover with their accounts.
    */
   planMemberSession(
     member: Member,
     templateId: string,
     accountIds: readonly string[],
-  ): { template: Template; accountIds: string[] } {
+    scope?: RunToolScope,
+  ): { template: Template; accountIds: string[]; tools: string[] } {
     const template = member.templateIds.includes(templateId)
       ? this.store.read().templates.find((t) => t.id === templateId)
       : undefined;
     if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
-    const bound = this.pickAccounts(template, [...new Set(accountIds)], { kind: 'member', member });
-    return { template, accountIds: bound.map((b) => b.account.id) };
+    const bound = this.pickAccounts(
+      template,
+      [...new Set(accountIds)],
+      { kind: 'member', member },
+      scope,
+    );
+    return {
+      template,
+      accountIds: bound.map((b) => b.account.id),
+      tools: bound.map((b) => b.grant.tool),
+    };
   }
 
   /** The member's current key generation, or null when it is gone or expired. */
@@ -1158,28 +1183,38 @@ export class Gateway {
 
   /**
    * Resolves the account a key will use for each tool of the template, in template order: the
-   * requested one, or the only usable account for that tool.
+   * requested one, or the only usable account for that tool. A `scope` (agent runs) leaves some
+   * of the template's tools out; requested accounts for dropped tools are ignored.
    */
-  private pickAccounts(template: Template, requestedIds: string[], actor: Actor): BoundGrant[] {
+  private pickAccounts(
+    template: Template,
+    requestedIds: string[],
+    actor: Actor,
+    scope?: RunToolScope,
+  ): BoundGrant[] {
     const usable = this.usableAccounts(actor);
-    const requested = requestedIds.map((id) => {
+    const dropped = (tool: string) => scope?.drop.includes(tool) ?? false;
+    const grants = template.grants.filter((g) => !dropped(g.tool));
+    const requested = requestedIds.flatMap((id) => {
       const account = usable.find((a) => a.id === id);
       if (!account) {
         throw actor.kind === 'admin'
           ? notFound(ACCOUNT_NOT_FOUND)
           : forbidden('This account is not available to you');
       }
-      if (!template.grants.some((g) => g.tool === account.tool)) {
+      if (dropped(account.tool)) return [];
+      if (!grants.some((g) => g.tool === account.tool)) {
         throw badRequest(
           `Account "${account.label}" is a ${account.tool} account but the template does not cover ${account.tool}`,
         );
       }
-      return account;
+      return [account];
     });
-    return template.grants.map((grant) => {
+    return grants.flatMap((grant) => {
       const { tool } = grant;
       const explicit = requested.filter((a) => a.tool === tool);
       const candidates = explicit.length ? explicit : usable.filter((a) => a.tool === tool);
+      if (candidates.length === 0 && scope?.optional.includes(tool)) return [];
       const [only] = candidates;
       if (candidates.length !== 1 || !only) {
         throw badRequest(
@@ -1188,7 +1223,7 @@ export class Gateway {
             : `Several ${tool} accounts match this template: give exactly one in accountIds`,
         );
       }
-      return { grant, account: only };
+      return [{ grant, account: only }];
     });
   }
 

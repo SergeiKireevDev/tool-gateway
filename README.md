@@ -187,6 +187,14 @@ patterns** (`claude-sonnet-*`, `gpt-5*`; empty = any model).
 
 `models:read` allows listing models. Everything else is denied.
 
+Instead of an API key, an account can use a subscription:
+
+- **Sign in with Claude** (Anthropic): paste the code shown after signing in.
+- **Sign in with ChatGPT** (OpenAI): OAuth device code, so nothing to set up. Enter the code shown
+  at auth.openai.com/codex/device; the gateway picks up the tokens and refreshes them. Calls go to
+  the ChatGPT Codex backend, so such accounts serve `POST /v1/responses` only (Codex). The gateway
+  sends them with `store: false` and without `max_output_tokens`, which that backend refuses.
+
 - **Token budget.** A session key may carry a `tokenBudget` (`POST /api/sessions` …
   `"tokenBudget": 2000000`). Every metered call counts input + output + cache-read + cache-write
   tokens, read from the (streamed) response. The output limit of each call (`max_tokens`,

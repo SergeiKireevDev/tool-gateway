@@ -164,6 +164,40 @@ describe('launch checks', () => {
       .expect(400);
   });
 
+  it('binds only the model API the harness uses', async () => {
+    // A template for several harnesses: Anthropic and OpenAI, but no OpenAI account.
+    const both = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'any harness',
+        grants: [
+          { tool: 'github', permissions: ['issues:read'], resources: ['o/r'] },
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: [] },
+          { tool: 'openai', permissions: ['llm:invoke'], resources: [] },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const alice = await t.member('alice', [both.body.id as string]);
+    const templateId = both.body.id as string;
+    const tools = async (harness: string) => {
+      await launch(alice.cookie, { templateId, harness });
+      const session = await request(t.vmApp)
+        .get('/api/session')
+        .set('authorization', `Bearer ${t.driver.lastConfig().sessionKey}`)
+        .expect(200);
+      return (session.body.grants as { tool: string }[]).map((g) => g.tool);
+    };
+    expect(await tools('claude-code')).toEqual(['github', 'anthropic']);
+    expect(await tools('pi')).toEqual(['github', 'anthropic']);
+    const codex = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ templateId, harness: 'codex' }))
+      .expect(400);
+    expect(codex.body.message).toBe('No openai account available');
+  });
+
   it('only allows the member’s templates, and respects disabled launch rights', async () => {
     const bob = await t.member('bob', [t.ids.noLlmTemplate]);
     await t.portal(bob.cookie, 'post', '/runs').send(launchBody()).expect(403);

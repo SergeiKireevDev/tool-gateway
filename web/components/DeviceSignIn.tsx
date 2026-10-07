@@ -27,7 +27,8 @@ export function DeviceSignIn({
   /** Whether the viewer may set the OAuth app client ID (admin only). */
   canConfigure: boolean;
 }) {
-  const [editingClient, setEditingClient] = useState(!tool.signIn.oauthClientId);
+  const { builtIn } = tool.signIn;
+  const [editingClient, setEditingClient] = useState(!builtIn && !tool.signIn.oauthClientId);
   const [label, setLabel] = useState('');
   const [scopes, setScopes] = useState(tool.signIn.defaultScopes);
   const [flow, setFlow] = useState<DeviceFlowStart | null>(null);
@@ -105,25 +106,29 @@ export function DeviceSignIn({
           }}
         />
       </Field>
-      <Field
-        label="Requested scopes"
-        hint={
-          <>
-            Space-separated OAuth scopes. <code className="font-mono">repo</code> is needed for
-            private repositories; templates then narrow down what each session key can do.
-          </>
-        }
-      >
-        <Input
-          className="font-mono"
-          value={scopes}
-          onChange={(e) => {
-            setScopes(e.target.value);
-          }}
-        />
-      </Field>
+      {builtIn ? (
+        <p className="text-sm text-slate-600">{tool.signIn.setupHelp}</p>
+      ) : (
+        <Field
+          label="Requested scopes"
+          hint={
+            <>
+              Space-separated OAuth scopes. <code className="font-mono">repo</code> is needed for
+              private repositories; templates then narrow down what each session key can do.
+            </>
+          }
+        >
+          <Input
+            className="font-mono"
+            value={scopes}
+            onChange={(e) => {
+              setScopes(e.target.value);
+            }}
+          />
+        </Field>
+      )}
       <ErrorBanner message={error} />
-      {canConfigure && (
+      {canConfigure && !builtIn && (
         <p className="text-xs text-slate-500">
           OAuth app <span className="font-mono">{tool.signIn.oauthClientId}</span> ·{' '}
           <button
@@ -142,7 +147,7 @@ export function DeviceSignIn({
           Cancel
         </Button>
         <Button type="submit" disabled={busy || !label.trim()}>
-          {busy ? `Contacting ${tool.name}…` : `Sign in with ${tool.name}`}
+          {busy ? `Contacting ${tool.name}…` : tool.signIn.label}
         </Button>
       </div>
     </form>

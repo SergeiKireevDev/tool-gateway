@@ -1,6 +1,7 @@
 import { isRecord } from '../json.js';
 import { matchPath } from '../pathMatch.js';
 import type {
+  AuthzAllowed,
   AuthzDecision,
   Grant,
   TokenUsage,
@@ -9,7 +10,14 @@ import type {
   ToolRequestContext,
 } from '../types.js';
 import {
+  CHATGPT_RESPONSES_URL,
+  chatgptAccountId,
+  chatgptHeaders,
+  createChatGptDeviceFlow,
+} from './chatgpt.js';
+import {
   canonical,
+  checkBudget,
   cappedLimit,
   checkModel,
   count,
@@ -71,12 +79,33 @@ function generate(body: Record<string, unknown>, grant: Grant): { model: string;
   return { model, stream: body.stream === true };
 }
 
+/**
+ * A ChatGPT sign-in: the call goes to the ChatGPT backend, which only accepts unstored responses
+ * and no output limit (the token budget is still enforced between calls).
+ */
+function chatgptResponses(
+  body: Record<string, unknown>,
+  ctx: ToolRequestContext,
+): Partial<AuthzAllowed> {
+  checkBudget(ctx.tokensRemaining);
+  body.store = false;
+  delete body.max_output_tokens;
+  return { upstreamUrl: CHATGPT_RESPONSES_URL, upstreamHeaders: chatgptHeaders };
+}
+
 function responses(request: ToolRequest, grant: Grant, ctx: ToolRequestContext): AuthzDecision {
   const body = jsonBody(request);
   const { model, stream } = generate(body, grant);
-  const cap = cappedLimit(body.max_output_tokens, ctx.tokensRemaining);
-  if (cap !== undefined) body.max_output_tokens = cap;
+  const chatgpt = chatgptAccountId(ctx.secret) !== null;
+  let routing: Partial<AuthzAllowed> = {};
+  if (chatgpt) {
+    routing = chatgptResponses(body, ctx);
+  } else {
+    const cap = cappedLimit(body.max_output_tokens, ctx.tokensRemaining);
+    if (cap !== undefined) body.max_output_tokens = cap;
+  }
   return {
+    ...routing,
     allowed: true,
     permission: LLM_PERM.INVOKE,
     detail: `responses ${model}${stream ? ' (stream)' : ''}`,
@@ -129,6 +158,12 @@ function authorizeRequest(
   const verb = request.method.toUpperCase();
   const { segments } = request;
   if (
+    chatgptAccountId(ctx.secret) !== null &&
+    !(verb === 'POST' && matchPath('v1/responses', segments))
+  ) {
+    throw new Denied('A ChatGPT sign-in only serves the Responses API (POST /v1/responses)');
+  }
+  if (
     verb === 'GET' &&
     (matchPath('v1/models', segments) ?? matchPath('v1/models/:id', segments))
   ) {
@@ -163,9 +198,12 @@ export function createOpenAIProvider(fetchImpl: typeof fetch = fetch): ToolProvi
       clientHint: 'e.g. OPENAI_BASE_URL (…/proxy/openai/v1) + OPENAI_API_KEY',
     },
 
+    deviceFlow: createChatGptDeviceFlow(fetchImpl),
+
     validateResource: validateModelPattern,
 
     async verifyCredential(secret) {
+      if (chatgptAccountId(secret)) return { keyType: 'ChatGPT subscription (pasted token)' };
       const res = await fetchImpl(`${API}/v1/models`, {
         headers: { authorization: `Bearer ${secret}` },
       });
