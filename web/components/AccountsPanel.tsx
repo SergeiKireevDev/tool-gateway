@@ -365,7 +365,9 @@ function ConnectAccount({
   canConfigure: boolean;
 }) {
   const available = (t: Tool | undefined): Tool | undefined =>
-    t?.oauthSignIn || (t?.signIn && (canConfigure || t.signIn.oauthClientId)) ? t : undefined;
+    t?.oauthSignIn || (t?.signIn && (canConfigure || t.signIn.builtIn || t.signIn.oauthClientId))
+      ? t
+      : undefined;
   // With a single tool there is nothing to choose.
   const [toolId, setToolId] = useState(tools.length === 1 ? (tools[0]?.id ?? '') : '');
   const tool = tools.find((t) => t.id === toolId);
@@ -406,7 +408,13 @@ function ConnectAccount({
             </button>
           </div>
         )}
-        {offered && <MethodTabs toolName={offered.name} method={method} onChange={setMethod} />}
+        {offered && (
+          <MethodTabs
+            signInLabel={offered.signIn?.label ?? `Sign in with ${offered.name}`}
+            method={method}
+            onChange={setMethod}
+          />
+        )}
       </div>
       {method === 'sign-in' && offered?.oauthSignIn ? (
         <OAuthSignIn api={api} tool={offered} onConnected={onSaved} onCancel={onCancel} />
@@ -475,16 +483,16 @@ function ToolPicker({
 }
 
 function MethodTabs({
-  toolName,
+  signInLabel,
   method,
   onChange,
 }: {
-  toolName: string;
+  signInLabel: string;
   method: ConnectMethod;
   onChange: (method: ConnectMethod) => void;
 }) {
   const tabs: [ConnectMethod, string][] = [
-    ['sign-in', `Sign in with ${toolName}`],
+    ['sign-in', signInLabel],
     ['token', 'Paste a token'],
   ];
   return (

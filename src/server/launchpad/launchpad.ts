@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized } from '../errors.js';
-import type { Gateway } from '../gateway.js';
+import type { Gateway, RunToolScope } from '../gateway.js';
 import type { CryptoBox } from '../store/crypto.js';
 import { randomId, randomToken } from '../store/crypto.js';
 import type { Member, SessionIssuer, Template } from '../store/types.js';
@@ -10,6 +10,7 @@ import {
   HARNESS_PROVIDERS,
   HARNESSES,
   type Harness,
+  LLM_PROVIDERS,
   type LlmProvider,
   RUN_TOKEN_PREFIX,
   type RunEvent,
@@ -151,14 +152,22 @@ export class Launchpad {
     if (!this.deps.runs.memberLaunch(member.id).launchEnabled) {
       throw forbidden('Launching agents is disabled for you');
     }
-    const plan = this.deps.gateway.planMemberSession(member, req.templateId, req.accountIds);
-    const choice = this.harnessChoices(plan.template).find((c) => c.harness === req.harness);
-    if (!choice) {
-      const needs = HARNESS_PROVIDERS[req.harness].join(' or ');
+    const plan = this.deps.gateway.planMemberSession(
+      member,
+      req.templateId,
+      req.accountIds,
+      runToolScope(req.harness),
+    );
+    const needs = HARNESS_PROVIDERS[req.harness].join(' or ');
+    if (!this.harnessChoices(plan.template).some((c) => c.harness === req.harness)) {
       throw badRequest(
         `Template "${plan.template.name}" gives no ${needs} access, which ${req.harness} needs`,
       );
     }
+    // The model API the run uses: one the template grants and the member has an account for.
+    const covered = plan.template.grants.filter((g) => plan.tools.includes(g.tool));
+    const choice = this.harnessChoices({ grants: covered }).find((c) => c.harness === req.harness);
+    if (!choice) throw badRequest(`No ${needs} account available`);
     const timeoutSeconds = Math.min(
       settings.defaultTimeoutSeconds,
       settings.maxTimeoutSeconds,
@@ -283,6 +292,7 @@ export class Launchpad {
         tokenBudget: run.tokenBudget ?? undefined,
       },
       run.keyGeneration ?? undefined,
+      runToolScope(run.harness),
     );
     this.deps.runs.update(run.id, { sessionId: session.id });
     const deadline = new Date(
@@ -514,6 +524,18 @@ export class Launchpad {
       detail: `${detail} (run ${run.id})`,
     });
   }
+}
+
+/**
+ * What a run's key covers: the model APIs the harness can't use are left out; when the harness
+ * can use several (pi), those without an account are too.
+ */
+function runToolScope(harness: Harness): RunToolScope {
+  const providers: readonly string[] = HARNESS_PROVIDERS[harness];
+  return {
+    drop: LLM_PROVIDERS.filter((p) => !providers.includes(p)),
+    optional: providers.length > 1 ? providers : [],
+  };
 }
 
 function reasonOf(err: unknown): string {
