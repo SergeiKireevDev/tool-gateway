@@ -251,7 +251,7 @@ function AccountCard({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-semibold">{acc.label}</h3>
-            <Badge tone="indigo">{toolName}</Badge>
+            <Badge tone="brand">{toolName}</Badge>
             <OwnerBadge account={acc} viewer={viewer} />
           </div>
           <AccountIdentity account={acc} />
@@ -399,7 +399,7 @@ function ConnectAccount({
             </span>
             <button
               type="button"
-              className="font-medium text-indigo-600 hover:text-indigo-500"
+              className="font-medium text-brand-600 hover:text-brand-500"
               onClick={() => {
                 setToolId('');
               }}
@@ -464,7 +464,7 @@ function ToolPicker({
             onClick={() => {
               onPick(t);
             }}
-            className="rounded-lg p-4 text-left ring-1 ring-slate-200 transition hover:bg-indigo-50 hover:ring-indigo-300 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+            className="rounded-lg p-4 text-left ring-1 ring-slate-200 transition hover:bg-brand-50 hover:ring-brand-300 focus:ring-2 focus:ring-brand-500 focus:outline-none"
           >
             <span className="block font-semibold text-slate-900">{t.name}</span>
             <span className="mt-1 block text-xs text-slate-500">

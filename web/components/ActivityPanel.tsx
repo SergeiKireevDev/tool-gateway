@@ -77,7 +77,7 @@ export function ActivityPanel({ api }: { api: Api }) {
                   </td>
                   <td className="px-4 py-2.5">
                     {e.kind !== 'proxy' ? (
-                      <Badge tone={e.kind === 'admin' ? 'slate' : 'indigo'}>{e.kind}</Badge>
+                      <Badge tone={e.kind === 'admin' ? 'slate' : 'brand'}>{e.kind}</Badge>
                     ) : (
                       <span className="flex items-center gap-2">
                         <Badge tone={e.decision === 'denied' ? 'red' : 'green'}>

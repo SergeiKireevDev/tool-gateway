@@ -95,7 +95,7 @@ export function OAuthSignIn({
             href={started.authorizeUrl}
             target="_blank"
             rel="noreferrer"
-            className="font-medium text-indigo-600 hover:underline"
+            className="font-medium text-brand-600 hover:underline"
           >
             Open the {tool.name} sign-in page
           </a>{' '}

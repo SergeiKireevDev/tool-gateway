@@ -197,7 +197,7 @@ function ClientSetup({
           href={tool.signIn.registerUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-2 inline-block font-medium text-indigo-600 hover:text-indigo-500"
+          className="mt-2 inline-block font-medium text-brand-600 hover:text-brand-500"
         >
           Register a new OAuth App on {tool.name} ↗
         </a>
@@ -294,7 +294,7 @@ function PendingApproval({
         Open {flow.verificationUri.replace(/^https?:\/\//, '')} ↗
       </a>
       <p className="flex items-center justify-center gap-2 text-sm text-slate-500">
-        <span className="size-2 animate-pulse rounded-full bg-indigo-500" />
+        <span className="size-2 animate-pulse rounded-full bg-brand-500" />
         Waiting for approval… code expires {formatRelative(flow.expiresAt, now)}
       </p>
       <div className="flex justify-center">

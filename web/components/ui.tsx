@@ -20,7 +20,7 @@ const cx = (...classes: (string | false | null | undefined)[]): string =>
 type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-indigo-600 text-white hover:bg-indigo-500 focus-visible:outline-indigo-600',
+  primary: 'bg-brand-700 text-white hover:bg-brand-600 focus-visible:outline-brand-600',
   secondary: 'bg-white text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50',
   danger: 'bg-white text-red-600 ring-1 ring-inset ring-red-200 hover:bg-red-50',
   ghost: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
@@ -49,7 +49,7 @@ export function Button({
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cx('rounded-xl bg-white shadow-sm ring-1 ring-slate-200', className)}>
+    <div className={cx('rounded-lg bg-white shadow-xs ring-1 ring-slate-200', className)}>
       {children}
     </div>
   );
@@ -65,9 +65,9 @@ export function SectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-6">
       <div>
-        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        <h2 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h2>
         <p className="mt-1 max-w-2xl text-sm text-slate-500">{description}</p>
       </div>
       {action}
@@ -94,7 +94,7 @@ export function Field({
 }
 
 const inputClass =
-  'block w-full rounded-md border-0 bg-white px-3 py-2 text-sm text-slate-900 shadow-xs ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-600 focus:outline-none';
+  'block w-full rounded-md border-0 bg-white px-3 py-2 text-sm text-slate-900 shadow-xs ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:ring-2 focus:ring-brand-600 focus:outline-none';
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cx(inputClass, props.className)} />;
@@ -108,14 +108,14 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={cx(inputClass, 'pr-8', props.className)} />;
 }
 
-type Tone = 'slate' | 'green' | 'amber' | 'red' | 'indigo';
+type Tone = 'slate' | 'green' | 'amber' | 'red' | 'brand';
 
 const TONES: Record<Tone, string> = {
   slate: 'bg-slate-100 text-slate-700 ring-slate-500/10',
   green: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
   amber: 'bg-amber-50 text-amber-800 ring-amber-600/20',
   red: 'bg-red-50 text-red-700 ring-red-600/20',
-  indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-600/20',
+  brand: 'bg-brand-50 text-brand-700 ring-brand-600/20',
 };
 
 export function Badge({ tone = 'slate', children }: { tone?: Tone; children: ReactNode }) {
@@ -177,7 +177,7 @@ export function Modal({
       ref={ref}
       onClose={onClose}
       className={cx(
-        'm-auto w-full rounded-xl p-0 shadow-xl backdrop:bg-slate-900/40 backdrop:backdrop-blur-sm',
+        'm-auto w-full rounded-lg p-0 shadow-2xl backdrop:bg-slate-950/50 backdrop:backdrop-blur-sm',
         wide ? 'max-w-2xl' : 'max-w-lg',
       )}
     >

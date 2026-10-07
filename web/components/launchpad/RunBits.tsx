@@ -14,11 +14,11 @@ export const VIZ = {
 
 const STATUS: Record<
   RunStatus,
-  { tone: 'slate' | 'green' | 'amber' | 'red' | 'indigo'; icon: string; label: string }
+  { tone: 'slate' | 'green' | 'amber' | 'red' | 'brand'; icon: string; label: string }
 > = {
   queued: { tone: 'slate', icon: '…', label: 'Queued' },
-  provisioning: { tone: 'indigo', icon: '◌', label: 'Starting' },
-  running: { tone: 'indigo', icon: '●', label: 'Running' },
+  provisioning: { tone: 'brand', icon: '◌', label: 'Starting' },
+  running: { tone: 'brand', icon: '●', label: 'Running' },
   succeeded: { tone: 'green', icon: '✓', label: 'Succeeded' },
   failed: { tone: 'red', icon: '✕', label: 'Failed' },
   timed_out: { tone: 'amber', icon: '⏱', label: 'Timed out' },

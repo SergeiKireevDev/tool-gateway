@@ -84,7 +84,7 @@ export function RunTools({ activity }: { activity: RunActivity[] }) {
       <div className="flex flex-wrap gap-2 text-xs">
         <button
           type="button"
-          className={filter === null ? 'font-semibold text-indigo-700' : 'text-slate-500'}
+          className={filter === null ? 'font-semibold text-brand-700' : 'text-slate-500'}
           onClick={() => {
             setFilter(null);
           }}
@@ -95,7 +95,7 @@ export function RunTools({ activity }: { activity: RunActivity[] }) {
           <button
             key={c.tool}
             type="button"
-            className={filter === c.tool ? 'font-semibold text-indigo-700' : 'text-slate-500'}
+            className={filter === c.tool ? 'font-semibold text-brand-700' : 'text-slate-500'}
             onClick={() => {
               setFilter(c.tool);
             }}

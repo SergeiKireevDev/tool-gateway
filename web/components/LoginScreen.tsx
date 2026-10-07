@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { createApi, fetchAuthConfig } from '@/lib/api';
+import { BrandMark } from './icons';
 import { Button, Card, ErrorBanner, Field, Input } from './ui';
 
 /** Reads and removes `?login_error=` set by the gateway after a failed Google sign-in. */
@@ -35,12 +36,10 @@ export function LoginScreen({ onTokenLogin }: { onTokenLogin: (token: string) =>
   }, []);
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
-      <Card className="w-full max-w-md p-8">
+    <div className="grid min-h-screen place-items-center bg-linear-to-b from-slate-100 to-slate-50 px-4">
+      <Card className="w-full max-w-md p-8 shadow-lg">
         <div className="mb-6 flex items-center gap-3">
-          <div className="grid size-10 place-items-center rounded-lg bg-indigo-600 text-lg font-bold text-white">
-            G
-          </div>
+          <BrandMark className="size-10" />
           <div>
             <h1 className="text-lg font-semibold">Local Gateway</h1>
             <p className="text-sm text-slate-500">Sign in to manage your access</p>
