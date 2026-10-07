@@ -73,6 +73,9 @@ variable). It is scoped and short-lived, and it only works from inside the VM ne
 
 ## Setting up a host
 
+`sudo deploy/install.sh` does all of this on a fresh Debian/Ubuntu host with KVM (see the README).
+The manual steps it automates:
+
 Requirements: Linux with KVM, root for the one-time setup, Docker to build the guest image, and
 Node 22.
 
@@ -84,7 +87,7 @@ sudo deploy/vm-host-setup.sh            # re-run at boot (the vmd unit does it)
 deploy/build-guest-image.sh rootfs.ext4
 sudo install -m 0644 rootfs.ext4 /var/lib/launchpad/rootfs.ext4
 
-# 3. vmd, the root VM daemon (see deploy/launchpad-vmd.service).
+# 3. vmd, the root VM daemon (deploy/install.sh writes a systemd unit for it).
 npm run build
 sudo VMD_SOCKET_GID=$(id -g) node dist/vmd/index.js
 
