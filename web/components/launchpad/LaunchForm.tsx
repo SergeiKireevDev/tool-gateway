@@ -365,39 +365,6 @@ export function LaunchForm({
       setBusy(false);
     }
   };
-    try {
-      if (when === 'now') {
-        onLaunched(await api<Run>('POST', '/launchpad/runs', body));
-      } else if (when === 'webhook') {
-        const { prompt: instructions, ...launch } = body;
-        onTriggered(
-          await api<Trigger>('POST', '/launchpad/triggers', {
-            ...launch,
-            instructions,
-            webhookId: hookId,
-            eventTypes: splitList(eventTypes),
-          }),
-        );
-      } else {
-        const { hour, minute } = parseTime(time);
-        onScheduled(
-          await api<Schedule>('POST', '/launchpad/schedules', {
-            ...body,
-            preset: when,
-            hour,
-            minute,
-            weekday,
-            dayOfMonth: day,
-            timezone,
-          }),
-        );
-      }
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <form
