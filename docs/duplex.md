@@ -86,8 +86,8 @@ hold unchanged, and nothing stays alive between turns.
   is the conversation: the opening event, then each message (author, time, text) and each of the
   agent's previous replies (the runs' final messages), capped to the prompt size, oldest first
   dropped.
-- **Continuity.** Phase 1 replays the conversation as above: it works the same for every harness.
-  Phase 3 adds harness sessions: the runner uploads the harness's session directory at the end of
+- **Continuity.** Step 2 of the [plan](#plan) replays the conversation as above: it works the same for every harness.
+  Step 4 adds harness sessions: the runner uploads the harness's session directory at the end of
   a turn (Claude Code `~/.claude/projects`, Codex `~/.codex/sessions`, Gemini CLI `~/.gemini/tmp`,
   pi's session file), the gateway stores it with the conversation (size-capped, redacted like
   transcripts) and the next turn restores it and resumes (`claude --resume`, `codex exec resume`,
@@ -104,7 +104,7 @@ hold unchanged, and nothing stays alive between turns.
 A live VM per conversation would answer faster and keep its working files, but conversations last
 hours or days: the session key would need a long TTL (today: the run's limit + 5 min), VMs would
 sit idle against the concurrency limits, and the reaper's "nothing outlives its run" guarantee
-would no longer hold. A turn boots in seconds, which is fine at the pace of comments. Phase 4 can
+would no longer hold. A turn boots in seconds, which is fine at the pace of comments. Step 5 can
 add a short **warm window** (the runner long-polls `/runner/inbox` for a few minutes after a reply
 and runs the next turn in the same VM, within the run's deadline) if replies feel slow.
 
@@ -125,7 +125,7 @@ CREATE TABLE conversations (
   turns INTEGER NOT NULL DEFAULT 0,
   tokens_used INTEGER NOT NULL DEFAULT 0,
   memory TEXT,
-  harness_session BLOB,              -- phase 3
+  harness_session BLOB,              -- plan step 4
   last_run_id TEXT,
   created_at TEXT NOT NULL,
   last_activity_at TEXT NOT NULL
