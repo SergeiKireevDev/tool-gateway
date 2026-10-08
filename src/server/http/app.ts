@@ -22,6 +22,7 @@ import type { Triggers } from '../launchpad/triggers.js';
 import type { Webhooks } from '../webhooks.js';
 import { webhookReceiver, webhookRoutes } from './webhookRoutes.js';
 import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
+import { type ServiceBoxes, serviceBoxRoutes } from '../launchpad/serviceBoxes.js';
 
 export interface AppOptions {
   /** Used for upstream calls; injectable for tests. */
@@ -35,6 +36,8 @@ export interface AppOptions {
   triggers?: Triggers | null;
   /** Inbound webhooks; their routes are off when absent. */
   webhooks?: Webhooks | null;
+  /** Long-lived service VMs (vmd only); their routes are off when absent. */
+  serviceBoxes?: ServiceBoxes | null;
 }
 
 export function createApp(
@@ -196,6 +199,8 @@ export function createApp(
     '/activity',
     h(() => gateway.activity.recent()),
   );
+  if (options.serviceBoxes)
+    admin.use('/launchpad/services', serviceBoxRoutes(options.serviceBoxes));
   if (options.launchpad) {
     admin.use(
       '/launchpad',

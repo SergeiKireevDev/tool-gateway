@@ -7,6 +7,7 @@ import { Launchpad } from './launchpad/launchpad.js';
 import { LocalProcessDriver } from './launchpad/localDriver.js';
 import { RunStore } from './launchpad/runStore.js';
 import { Scheduler } from './launchpad/scheduler.js';
+import { ServiceBoxes } from './launchpad/serviceBoxes.js';
 import { Triggers } from './launchpad/triggers.js';
 import { VmdDriver } from './launchpad/vmdDriver.js';
 import { CryptoBox } from './store/crypto.js';
@@ -28,6 +29,8 @@ export interface Services {
   scheduler: Scheduler | null;
   webhooks: Webhooks;
   triggers: Triggers | null;
+  /** Service boxes (vmd only). */
+  serviceBoxes: ServiceBoxes | null;
 }
 
 export async function openGateway(config: GatewayConfig): Promise<Services> {
@@ -45,7 +48,10 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
   ]);
   const gateway = new Gateway(store, crypto, tools, new ActivityLog(db), new LlmUsageLog(db));
   gateway.setAdminEmails(config.google?.adminEmails ?? []);
-  const launchpad = openLaunchpad(config, gateway, db, crypto);
+  const vmd =
+    config.launchpad?.driver === 'firecracker' ? new VmdDriver(config.launchpad.vmdSocket) : null;
+  const serviceBoxes = vmd && new ServiceBoxes(vmd, gateway.activity);
+  const launchpad = openLaunchpad(config, gateway, db, crypto, { vmd, serviceBoxes });
   const scheduler = launchpad && new Scheduler(db, gateway, launchpad);
   if (launchpad && scheduler) {
     launchpad.onFinished((run) => {
@@ -59,7 +65,7 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
       triggers.onDelivery(delivery);
     });
   }
-  return { gateway, db, launchpad, scheduler, webhooks, triggers };
+  return { gateway, db, launchpad, scheduler, webhooks, triggers, serviceBoxes };
 }
 
 function openLaunchpad(
@@ -67,17 +73,16 @@ function openLaunchpad(
   gateway: Gateway,
   db: Database,
   crypto: CryptoBox,
+  { vmd, serviceBoxes }: { vmd: VmdDriver | null; serviceBoxes: ServiceBoxes | null },
 ): Launchpad | null {
   const settings = config.launchpad;
   if (!settings) return null;
-  const firecracker = settings.driver === 'firecracker';
   return new Launchpad({
     gateway,
     runs: new RunStore(db),
     crypto,
-    driver: firecracker
-      ? new VmdDriver(settings.vmdSocket)
-      : new LocalProcessDriver(settings.runnerScript),
-    vmGatewayUrl: firecracker ? vmPublicUrl(config) : config.publicUrl,
+    driver: vmd ?? new LocalProcessDriver(settings.runnerScript),
+    vmGatewayUrl: vmd ? vmPublicUrl(config) : config.publicUrl,
+    serviceBoxes,
   });
 }

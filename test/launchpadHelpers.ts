@@ -4,6 +4,13 @@ import { Launchpad } from '../src/server/launchpad/launchpad.js';
 import type { RunnerConfig } from '../src/server/launchpad/protocol.js';
 import { RunStore } from '../src/server/launchpad/runStore.js';
 import { Scheduler } from '../src/server/launchpad/scheduler.js';
+import type {
+  ServiceDriver,
+  ServiceImage,
+  ServiceInfo,
+  ServiceSpec,
+} from '../src/server/launchpad/serviceDriver.js';
+import { ServiceBoxes } from '../src/server/launchpad/serviceBoxes.js';
 import { Triggers } from '../src/server/launchpad/triggers.js';
 import type { VmDriver, VmInfo, VmSpec } from '../src/server/launchpad/vmDriver.js';
 import { Webhooks } from '../src/server/webhooks.js';
@@ -49,12 +56,50 @@ export class FakeVmDriver implements VmDriver {
   }
 }
 
+/** vmd's service side, in memory: one image, `echo`, exposing port 8080. */
+export class FakeServiceDriver implements ServiceDriver {
+  readonly services = new Map<string, ServiceInfo>();
+  images: ServiceImage[] = [{ name: 'echo', ports: [8080] }];
+  private n = 0;
+
+  createService(spec: ServiceSpec): Promise<ServiceInfo> {
+    this.n += 1;
+    const service: ServiceInfo = {
+      ...spec,
+      serviceId: `svc-${this.n}`,
+      address: `172.30.0.${100 + this.n}`,
+      agentEndpoints: spec.agentAccess
+        ? spec.publish.map((p) => `172.30.0.1:${String(p.hostPort)}`)
+        : [],
+      ports: this.images.find((i) => i.name === spec.image)?.ports ?? [],
+      running: true,
+      startedAt: new Date(0).toISOString(),
+    };
+    this.services.set(service.serviceId, service);
+    return Promise.resolve(service);
+  }
+
+  destroyService(serviceId: string): Promise<void> {
+    this.services.delete(serviceId);
+    return Promise.resolve();
+  }
+
+  listServices(): Promise<ServiceInfo[]> {
+    return Promise.resolve([...this.services.values()]);
+  }
+
+  listServiceImages(): Promise<ServiceImage[]> {
+    return Promise.resolve(this.images);
+  }
+}
+
 export interface LaunchHarness extends Harness {
   launchpad: Launchpad;
   scheduler: Scheduler;
   webhooks: Webhooks;
   triggers: Triggers;
   driver: FakeVmDriver;
+  serviceDriver: FakeServiceDriver;
   app: ReturnType<typeof createApp>;
   vmApp: ReturnType<typeof createVmApp>;
   adminToken: string;
@@ -66,19 +111,22 @@ export interface LaunchHarness extends Harness {
   portal(cookie: string, method: 'get' | 'post' | 'patch' | 'delete', path: string): request.Test;
   /** The member portal's webhook routes (`/api/me/webhooks`). */
   hooks(cookie: string, method: 'get' | 'post', path: string): request.Test;
-  admin(method: 'get' | 'post' | 'put' | 'patch', path: string): request.Test;
+  admin(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string): request.Test;
   runner(token: string, method: 'post' | 'put', path: string): request.Test;
 }
 
 export async function createLaunchHarness(): Promise<LaunchHarness> {
   const h = await createHarness();
   const driver = new FakeVmDriver();
+  const serviceDriver = new FakeServiceDriver();
+  const serviceBoxes = new ServiceBoxes(serviceDriver, h.gateway.activity);
   const launchpad = new Launchpad({
     gateway: h.gateway,
     runs: new RunStore(h.db),
     driver,
     crypto: h.crypto,
     vmGatewayUrl: 'http://172.30.0.1:7420',
+    serviceBoxes,
     now: () => h.clock.now,
   });
   const scheduler = new Scheduler(h.db, h.gateway, launchpad, () => h.clock.now);
@@ -103,10 +151,11 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     scheduler,
     webhooks,
     triggers,
+    serviceBoxes,
   });
   const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
   const adminToken = await h.gateway.rotateAdminToken();
-  const admin = (method: 'get' | 'post' | 'put' | 'patch', path: string) =>
+  const admin = (method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string) =>
     request(app)[method](`/api/admin${path}`).set('authorization', `Bearer ${adminToken}`);
 
   const github = await admin('post', '/accounts')
@@ -148,6 +197,7 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     webhooks,
     triggers,
     driver,
+    serviceDriver,
     app,
     vmApp,
     adminToken,

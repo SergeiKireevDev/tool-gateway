@@ -17,7 +17,7 @@ KERNEL_URL=${GUEST_KERNEL_URL:-https://s3.amazonaws.com/spec.ccfc.min/firecracke
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 [ -e /dev/kvm ] || { echo "/dev/kvm missing: KVM is required" >&2; exit 1; }
 
-install -d -m 0755 "$STATE_DIR" "$STATE_DIR/logs"
+install -d -m 0755 "$STATE_DIR" "$STATE_DIR/logs" "$STATE_DIR/services"
 
 if ! /usr/local/bin/firecracker --version 2>/dev/null | grep -q "${FC_VERSION#v}"; then
   tmp=$(mktemp -d)
@@ -40,15 +40,21 @@ ip addr replace "$ADDRESS/$PREFIX" dev "$BRIDGE"
 ip link set "$BRIDGE" up
 
 # VMs reach the gateway's VM listener and nothing else: not the internet (no forwarding off the
-# bridge), not other host ports, not each other (taps are isolated bridge ports, see vmd).
+# bridge), not other host ports, not each other (taps are isolated bridge ports, see vmd). The one
+# exception: host ports vmd publishes for service boxes open to agents (set service_ports, which
+# vmd fills), forwarded by vmd to the service's VM.
 nft -f - <<NFT
 table inet launchpad
 delete table inet launchpad
 table inet launchpad {
+  set service_ports {
+    type inet_service
+  }
   chain input {
     type filter hook input priority -10; policy accept;
     iifname "$BRIDGE" ct state established,related accept
     iifname "$BRIDGE" ip daddr $ADDRESS tcp dport $GATEWAY_PORT accept
+    iifname "$BRIDGE" ip daddr $ADDRESS tcp dport @service_ports accept
     iifname "$BRIDGE" drop
   }
   chain forward {

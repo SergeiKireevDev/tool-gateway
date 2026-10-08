@@ -100,6 +100,61 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
   member is deleted or expired, or when a launch fails. The member can resume it; the admin can
   pause it. Deleting the webhook leaves the trigger without events.
 
+## Service boxes
+
+Some boxes aren't disposable: a **service box** is a long-lived VM that serves a test service (a
+database, a mock API, a web app) to agent runs, or to external users through a tunnel. It runs
+until an admin stops it; it has no session key, no deadline and no gateway access.
+
+**Spec.** Like the agent image (`deploy/guest-image/Dockerfile`), a service is specced as a
+Dockerfile, in `deploy/services/<name>/Dockerfile`. Its `CMD`/`ENTRYPOINT`, `ENV`, `WORKDIR` and
+`USER` are what the box runs, and `EXPOSE` lists its ports. `deploy/services/hello-http` is an
+example. Build it into a rootfs and a manifest, and install both in vmd's service directory:
+
+```bash
+deploy/build-service-image.sh hello-http /tmp/services       # hello-http.ext4 + hello-http.json
+sudo install -m 0644 /tmp/services/hello-http.* /var/lib/launchpad/services/
+```
+
+The image's own init is replaced by `/sbin/service-box-init`
+(`deploy/service-image/service-box-init`): it mounts `/proc`, `/sys` and `/dev`, then runs the
+command (as `USER`, with `setpriv`). When the command exits, the VM stops (shown as stopped until
+removed). There is no DNS and no internet: the box only talks to the host.
+
+**Launching.** **Launchpad → Service boxes**, or `POST /api/admin/launchpad/services`:
+
+```json
+{
+  "image": "hello-http",
+  "name": "hello",
+  "publish": [{ "port": 8080, "hostPort": 18080 }],
+  "agentAccess": true,
+  "vcpus": 1,
+  "memMib": 1024
+}
+```
+
+`GET /api/admin/launchpad/services/images` lists the installed images, `GET …/services` the
+running boxes (with their addresses), and `DELETE …/services/<serviceId>` stops one. Names are
+unique among running boxes. Service boxes need the `firecracker` driver.
+
+**Where they serve.**
+
+- **Locally.** vmd forwards each published port from `127.0.0.1:<hostPort>` on the host to the
+  service's VM: `curl http://127.0.0.1:18080`, or point a tunnel there (`cloudflared tunnel --url
+http://127.0.0.1:18080`, `ngrok http 18080`, `ssh -R`). Host ports are 1024 and up. The VM's
+  own bridge address works from the host too.
+- **To agents** (`agentAccess`, needs published ports). vmd also listens on
+  `<GATEWAY_VM_HOST>:<hostPort>` (e.g. `172.30.0.1:18080`) and adds the port to the VM firewall's
+  `service_ports` set. **Every** agent VM can then reach it, and runs list it in their system
+  prompt. The service's tap stays isolated like the agents' ones: agents never reach its VM
+  directly, and vmd only opens ports it is listening on.
+
+**Lifecycle.** vmd owns service boxes, so they survive gateway restarts, and the launchpad's
+reaper leaves them alone. They count towards `VMD_MAX_VMS`, not towards the agent limits.
+Restarting vmd (or the host) stops them: start them again from the UI. Each box boots from a fresh
+copy of its image, so data doesn't survive a restart either.
+
 ## Guarantees and where they come from
 
 | Guarantee                                                         | Mechanism                                                                                                                                |
@@ -108,6 +163,7 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
 | Keys and VMs never outlive their run                              | `Launchpad.finish` revokes and destroys; the reaper runs every minute; the key TTL is the run time limit + 5 min                         |
 | Agents reach only their template's internet domains               | The egress proxy (`src/server/http/egressProxy.ts`) checks each `CONNECT` against the key's domains and refuses non-public addresses     |
 | VMs reach the gateway only                                        | `deploy/vm-host-setup.sh`: nftables drops forwarding off the bridge and all host ports but the gateway's; taps are isolated bridge ports |
+| Agents reach only the service boxes opened to them                | Service taps are isolated too; vmd forwards and opens (nftables `service_ports`) only the published ports of boxes with `agentAccess`    |
 | The VM listener exposes nothing else                              | `createVmApp` serves only `/proxy/*`, `/api/session` and `/runner/*`                                                                     |
 | The model API key never enters the VM                             | LLM providers (`src/server/tools/llm`) swap the session key for the real key; their auth errors are not relayed                          |
 | Model spend is bounded                                            | Each run's key carries a token budget; the output limit of each call is capped to what is left, and calls are refused once it is spent   |
@@ -202,6 +258,7 @@ Then, as admin:
 | `LAUNCHPAD_RUNNER_SCRIPT`                                 | `guest/dist/runner.js`        | runner bundle used by `local-unsafe`                               |
 | `VMD_SOCKET_GID`                                          | unset (root only)             | group allowed to use vmd's socket                                  |
 | `VMD_STATE_DIR`                                           | `/var/lib/launchpad`          | `rootfs.ext4`, `vmlinux`, `logs/`                                  |
+| `VMD_SERVICE_DIR`                                         | `$VMD_STATE_DIR/services`     | service images: `<name>.ext4` + `<name>.json`                      |
 | `VMD_BRIDGE` / `VMD_BRIDGE_ADDRESS` / `VMD_PREFIX_LENGTH` | `lpbr0` / `172.30.0.1` / `24` |                                                                    |
 | `VMD_MAX_VMS`                                             | `32`                          | hard cap on VMs (the launchpad's own limits apply first)           |
 | `VMD_JAIL_UID` / `VMD_JAIL_GID`                           | `900`                         | unprivileged user Firecracker runs as                              |

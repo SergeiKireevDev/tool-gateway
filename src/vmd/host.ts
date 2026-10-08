@@ -1,7 +1,8 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { constants, createWriteStream } from 'node:fs';
-import { access, chown, copyFile, mkdir, open, rm } from 'node:fs/promises';
+import { access, chown, copyFile, mkdir, open, readdir, readFile, rm } from 'node:fs/promises';
 import { request } from 'node:http';
+import { connect, createServer } from 'node:net';
 import { promisify } from 'node:util';
 import { PRIVATE_FILE_MODE } from '../server/units.js';
 
@@ -14,6 +15,11 @@ export interface HostProcess {
   readonly pid: number | undefined;
   onExit(listener: (code: number | null) => void): void;
   kill(signal: NodeJS.Signals): void;
+}
+
+/** A loopback port forwarded to a guest port. */
+export interface PortForward {
+  close(): void;
 }
 
 /** Everything vmd does to the host, so the VM logic can be tested without root or KVM. */
@@ -32,6 +38,16 @@ export interface HostOps {
   chown(file: string, uid: number, gid: number): Promise<void>;
   /** One call to a Firecracker API socket. */
   firecracker(socket: string, method: string, path: string, body: unknown): Promise<void>;
+  /** File names in a directory (none when it doesn't exist). */
+  readDir(dir: string): Promise<string[]>;
+  readText(file: string): Promise<string>;
+  /** Listens on `listenAddress`:`hostPort` and relays each connection to `address`:`port`. */
+  forward(
+    listenAddress: string,
+    hostPort: number,
+    address: string,
+    port: number,
+  ): Promise<PortForward>;
 }
 
 class ChildHostProcess implements HostProcess {
@@ -117,6 +133,29 @@ export const realHost: HostOps = {
       );
       req.on('error', reject);
       req.end(payload);
+    });
+  },
+  async readDir(dir) {
+    return readdir(dir).catch(() => []);
+  },
+  async readText(file) {
+    return readFile(file, 'utf8');
+  },
+  forward(listenAddress, hostPort, address, port) {
+    const server = createServer((client) => {
+      const upstream = connect(port, address);
+      client.pipe(upstream).pipe(client);
+      client.on('error', () => upstream.destroy());
+      upstream.on('error', () => client.destroy());
+      client.on('close', () => upstream.destroy());
+      upstream.on('close', () => client.destroy());
+    });
+    return new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(hostPort, listenAddress, () => {
+        server.off('error', reject);
+        resolve({ close: () => server.close() });
+      });
     });
   },
 };

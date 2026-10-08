@@ -8,12 +8,21 @@ export interface PromptGrant {
   resourceHelp: string;
 }
 
+/** A service box the agent's VM can reach. */
+export interface PromptService {
+  name: string;
+  /** `host:port` to connect to. */
+  endpoints: string[];
+}
+
 export interface PromptContext {
   harness: Harness;
   /** Tool grants of the run's session key (LLM providers excluded). */
   grants: PromptGrant[];
   /** HTTPS domains reachable through the egress proxy. */
   egressDomains?: readonly string[];
+  /** Service boxes open to agents on the VM network. */
+  services?: readonly PromptService[];
   deadline: string;
   hasMemory: boolean;
   /** A webhook trigger's instructions (its member's), or null. */
@@ -54,6 +63,14 @@ function networkLine(domains: readonly string[]): string {
   return `- The only reachable service is the gateway, which brokers every third-party tool call. Besides, you can reach these domains over HTTPS (only) through the proxy already set in your environment (\`HTTPS_PROXY\`): ${listed}. \`*.\` covers subdomains. Everything else is blocked, so don't try other hosts.`;
 }
 
+function servicesLine(services: readonly PromptService[]): string {
+  if (services.length === 0) return '';
+  const listed = services.map(
+    (s) => `\`${s.name}\` at ${s.endpoints.map((e) => '`' + e + '`').join(', ')}`,
+  );
+  return `\n- These shared test services (service boxes) are reachable too, directly (no proxy): ${listed.join('; ')}. Other agents may use them as well, so don't rely on their state.`;
+}
+
 /**
  * The system prompt every launched agent gets: how to reach tools through the gateway, what it is
  * allowed to do, and how its run ends. The task itself is the user prompt.
@@ -70,7 +87,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 
 ## Environment
 - You run in a disposable virtual machine as the user \`agent\`, in \`/home/agent/work\`. It is destroyed when you finish.
-${networkLine(ctx.egressDomains ?? [])}
+${networkLine(ctx.egressDomains ?? [])}${servicesLine(ctx.services ?? [])}
 - Your run ends at ${ctx.deadline}. Finish before then.
 
 ## Third-party tools
