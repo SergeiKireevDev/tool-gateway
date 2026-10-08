@@ -27,7 +27,13 @@ import {
   type RunStatus,
   type RunStore,
 } from './runStore.js';
-import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
+import {
+  buildSystemPrompt,
+  gatewayToolName,
+  type PromptGrant,
+  type PromptService,
+} from './systemPrompt.js';
+import type { ServiceInfo } from './serviceDriver.js';
 import type { VmDriver } from './vmDriver.js';
 
 /** Session keys outlive the run's timeout by this much, so the agent is stopped first. */
@@ -91,6 +97,8 @@ export interface LaunchpadDeps {
   crypto: CryptoBox;
   /** Gateway base URL as seen from inside the VMs. */
   vmGatewayUrl: string;
+  /** Service boxes open to agents, listed in their system prompt. */
+  serviceBoxes?: { forAgents(): Promise<ServiceInfo[]> } | null;
   now?: () => Date;
 }
 
@@ -334,6 +342,7 @@ export class Launchpad {
         harness: run.harness,
         grants,
         egressDomains: session.egressDomains ?? [],
+        services: await this.agentServices(),
         deadline,
         hasMemory: run.memoryIn !== null,
         instructions: run.instructions,
@@ -341,6 +350,18 @@ export class Launchpad {
       memory: run.memoryIn,
       deadline,
     };
+  }
+
+  /** Service boxes the run's VM can reach; a vmd hiccup must not fail the run. */
+  private async agentServices(): Promise<PromptService[]> {
+    const services = await this.deps.serviceBoxes?.forAgents().catch((err: unknown) => {
+      console.error('Launchpad: could not list service boxes', err);
+      return [];
+    });
+    return (services ?? []).map(({ name, agentEndpoints }) => ({
+      name,
+      endpoints: agentEndpoints,
+    }));
   }
 
   // ---------------------------------------------------------------- runner reports

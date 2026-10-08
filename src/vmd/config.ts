@@ -21,6 +21,8 @@ export interface VmdConfig {
   bridgeAddress: string;
   prefixLength: number;
   maxVms: number;
+  /** Service images: `<name>.ext4` plus its `<name>.json` manifest. */
+  serviceDir: string;
   /** Where Firecracker's console output is kept, per VM. */
   logDir: string;
 }
@@ -65,6 +67,7 @@ export function loadVmdConfig(env: Env = process.env): VmdConfig {
     bridgeAddress,
     prefixLength: int(env, 'VMD_PREFIX_LENGTH', DEFAULT_PREFIX),
     maxVms,
+    serviceDir: read(env, 'VMD_SERVICE_DIR') ?? path.join(stateDir, 'services'),
     logDir: path.join(stateDir, 'logs'),
   };
 }

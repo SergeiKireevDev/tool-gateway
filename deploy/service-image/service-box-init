@@ -1,0 +1,24 @@
+#!/bin/sh
+# PID 1 of a service box: minimal mounts, then the image's command as its Dockerfile set it
+# (ENTRYPOINT + CMD, ENV, WORKDIR, USER; written to /etc/service-box/command at build time).
+# When the command exits the VM stops. /tmp and /run are left as the image has them.
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+# The kernel command line configured eth0 (ip=); lp_service is the service's name.
+hostname "${lp_service:-service}" 2>/dev/null
+command -v ip >/dev/null 2>&1 && ip link set lo up
+unset lp_service
+
+SERVICE_USER=
+. /etc/service-box/command
+case "$SERVICE_USER" in
+  '' | root | 0 | 0:0) exec "$@" ;;
+esac
+u=${SERVICE_USER%%:*}
+g=${SERVICE_USER#*:}
+[ "$g" = "$SERVICE_USER" ] && g=$(id -g "$u")
+exec setpriv --reuid="$u" --regid="$g" --clear-groups -- "$@"

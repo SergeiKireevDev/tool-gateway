@@ -19,6 +19,7 @@ import {
   Input,
   SectionHeader,
 } from '../ui';
+import { ServiceBoxesPanel } from './ServiceBoxesPanel';
 
 const HTTP_NOT_FOUND = 404;
 
@@ -289,6 +290,10 @@ export function LaunchpadSettingsPanel({ api }: { api: Api }) {
       <div>
         <h3 className="mb-3 text-sm font-semibold text-slate-700">Members</h3>
         <MemberRights api={api} members={members} onSaved={() => void load()} />
+      </div>
+      <div>
+        <h3 className="mb-3 text-sm font-semibold text-slate-700">Service boxes</h3>
+        <ServiceBoxesPanel api={api} />
       </div>
       <div>
         <h3 className="mb-3 text-sm font-semibold text-slate-700">

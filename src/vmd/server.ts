@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { HTTP } from '../server/httpStatus.js';
 import { BYTES_PER_MIB } from '../server/units.js';
 import { HARNESSES, LLM_PROVIDERS } from '../server/launchpad/protocol.js';
+import type { ServiceSpec } from '../server/launchpad/serviceDriver.js';
 import type { VmSpec } from '../server/launchpad/vmDriver.js';
 import { VmdError, type VmManager } from './vmManager.js';
 
@@ -33,6 +34,30 @@ const specSchema = z.object({
     deadline: z.string(),
   }),
 });
+
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const MAX_PORT = 65_535;
+/** Host ports below this need root: vmd won't publish there. */
+const MIN_HOST_PORT = 1024;
+const MAX_PUBLISHED = 16;
+const serviceSchema = z
+  .object({
+    name: z.string().regex(NAME_RE),
+    image: z.string().regex(NAME_RE),
+    vcpus: z.number().int().min(1).max(MAX_VCPUS),
+    memMib: z.number().int().min(MIN_MEM_MIB).max(MAX_MEM_MIB),
+    agentAccess: z.boolean(),
+    publish: z
+      .array(
+        z.object({
+          port: z.number().int().min(1).max(MAX_PORT),
+          hostPort: z.number().int().min(MIN_HOST_PORT).max(MAX_PORT),
+        }),
+      )
+      .max(MAX_PUBLISHED)
+      .refine((p) => new Set(p.map((x) => x.hostPort)).size === p.length, 'Duplicate host port'),
+  })
+  .refine((s) => !s.agentAccess || s.publish.length > 0, 'Agents reach published ports only');
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -68,6 +93,10 @@ async function route(
   res: http.ServerResponse,
 ): Promise<void> {
   const url = req.url ?? '/';
+  if (url.startsWith('/services') || url === '/service-images') {
+    await serviceRoute(vms, req, res, url);
+    return;
+  }
   const match = /^\/vms\/([A-Za-z0-9-]+)$/.exec(url);
   if (req.method === 'GET' && url === '/vms') {
     send(res, HTTP.OK, vms.list());
@@ -83,6 +112,27 @@ async function route(
     return;
   }
   send(res, HTTP.NOT_FOUND, { error: 'Not found' });
+}
+
+async function serviceRoute(
+  vms: VmManager,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: string,
+): Promise<void> {
+  const match = /^\/services\/([A-Za-z0-9-]+)$/.exec(url);
+  if (req.method === 'GET' && url === '/service-images') {
+    send(res, HTTP.OK, await vms.listImages());
+  } else if (req.method === 'GET' && url === '/services') {
+    send(res, HTTP.OK, vms.listServices());
+  } else if (req.method === 'POST' && url === '/services') {
+    const spec: ServiceSpec = serviceSchema.parse(JSON.parse(await readBody(req)));
+    send(res, HTTP.CREATED, await vms.createService(spec));
+  } else if (req.method === 'DELETE' && match?.[1]) {
+    send(res, (await vms.destroyService(match[1])) ? HTTP.NO_CONTENT : HTTP.NOT_FOUND);
+  } else {
+    send(res, HTTP.NOT_FOUND, { error: 'Not found' });
+  }
 }
 
 /** The vmd API over a unix socket only reachable by root and the gateway's group. */

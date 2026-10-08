@@ -7,7 +7,7 @@ import { VmManager } from './vmManager.js';
 
 const SOCKET_DIR_MODE = 0o750;
 
-/** vmd: the root daemon that boots agent microVMs for the gateway's launchpad. */
+/** vmd: the root daemon that boots agent microVMs and service boxes for the gateway's launchpad. */
 async function main(): Promise<void> {
   if (process.getuid?.() !== 0) throw new Error('vmd must run as root');
   const config = loadVmdConfig();
@@ -25,7 +25,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     server.close();
-    void Promise.all(vms.list().map((vm) => vms.destroy(vm.vmId))).finally(() => process.exit(0));
+    void vms.destroyAll().finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

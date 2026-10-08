@@ -248,3 +248,35 @@ export function toolLabel(name: string): string {
 export function withToolLabel(text: string, tool: string | undefined): string {
   return tool && text.startsWith(tool) ? `${toolLabel(tool)}${text.slice(tool.length)}` : text;
 }
+
+/** A service box (see src/server/launchpad/serviceDriver.ts). */
+export interface ServiceBox {
+  serviceId: string;
+  name: string;
+  image: string;
+  vcpus: number;
+  memMib: number;
+  agentAccess: boolean;
+  publish: { port: number; hostPort: number }[];
+  address: string;
+  agentEndpoints: string[];
+  ports: number[];
+  running: boolean;
+  startedAt: string;
+}
+
+export interface ServiceImage {
+  name: string;
+  ports: number[];
+}
+
+/** Parses "8080:18080, 5432:15432" (service port : host port) into published ports. */
+export function parsePublish(text: string): { port: number; hostPort: number }[] | null {
+  const parts = text
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const parsed = parts.map((p) => /^(\d+):(\d+)$/.exec(p));
+  if (parsed.some((m) => m === null)) return null;
+  return parsed.map((m) => ({ port: Number(m?.[1]), hostPort: Number(m?.[2]) }));
+}

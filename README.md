@@ -220,6 +220,11 @@ Agents have no internet access, except for the HTTPS domains their template list
 crates.io, Go modules and Debian). They reach them through the gateway, which logs each connection.
 See [Internet access](docs/launchpad.md#internet-access).
 
+Admins can also start **service boxes** (under **Launchpad**): long-lived VMs built from a
+Dockerfile in `deploy/services/` that serve a test service until stopped, on the host's loopback
+(e.g. behind a tunnel) and, if opened to them, to agents. See
+[Service boxes](docs/launchpad.md#service-boxes).
+
 ## Webhooks
 
 Other services can send events to the gateway: `POST <GATEWAY_PUBLIC_URL>/hooks/<token>`. The
