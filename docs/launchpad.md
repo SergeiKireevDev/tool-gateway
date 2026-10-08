@@ -99,6 +99,8 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
 - **Stopping.** Like schedules, a trigger stops when its member's key is rotated or revoked, when the
   member is deleted or expired, or when a launch fails. The member can resume it; the admin can
   pause it. Deleting the webhook leaves the trigger without events.
+- **Conversations.** Planned: triggers that discuss a unit of work in its comments before
+  acting. See [duplex mode](duplex.md).
 
 ## Guarantees and where they come from
 
