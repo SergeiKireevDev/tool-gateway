@@ -58,7 +58,8 @@ const PERMISSIONS: readonly PermissionDef[] = [
   {
     id: PERM.MAIL_MODIFY,
     label: 'Mail (organize)',
-    description: 'Add or remove labels (read, starred, archived…), trash and untrash.',
+    description:
+      'Add or remove labels (read, starred, archived…) on messages and threads, also on many messages at once (POST messages/batchModify), trash and untrash.',
   },
   {
     id: PERM.LABELS_WRITE,
@@ -137,6 +138,15 @@ const ADDRESS_RE = /^[^\s@<>"(),:;\\[\]]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
 const RESOURCE_RE = /^(?:\*|[^\s@<>"(),:;\\[\]*]+)@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
 
 class Denied extends Error {}
+
+/** Gmail's only batch label endpoint; agents guess it under labels or threads too. */
+const BATCH_MODIFY = 'batchModify';
+const BATCH_MODIFY_HINT = `to add or remove labels on many messages, use POST messages/${BATCH_MODIFY} with {"ids": [...], "addLabelIds": [...], "removeLabelIds": [...]}`;
+
+function notCovered(method: string, path: string, rest: readonly string[]): Denied {
+  const hint = rest.at(-1) === BATCH_MODIFY ? ` (${BATCH_MODIFY_HINT})` : '';
+  return new Denied(`${method} ${path} is not covered by any gateway permission${hint}`);
+}
 
 /** Header section of an RFC 5322 message, unfolded, as `[lower-cased name, value]` pairs. */
 function headersOf(message: string): [string, string][] {
@@ -248,7 +258,7 @@ function authorizeRequest(request: ToolRequest, grant: Grant): AuthzDecision {
   const method = request.method.toUpperCase();
   const rule = RULES.find((r) => r.method === method && matchPath(r.pattern, rest) !== null);
   const path = rest.join('/');
-  if (!rule) throw new Denied(`${method} ${path} is not covered by any gateway permission`);
+  if (!rule) throw notCovered(method, path, rest);
   if (rule.permission !== 'meta' && !grant.permissions.includes(rule.permission)) {
     throw new Denied(`Missing permission "${rule.permission}"`);
   }

@@ -68,6 +68,19 @@ describe('Gmail authorization', () => {
     expect(await reason(read, get('settings/forwardingAddresses'))).toMatch(/not covered/);
     expect(await reason(read, { ...get('messages/m1'), method: 'DELETE' })).toMatch(/not covered/);
     expect(await reason(read, post('messages/import'))).toMatch(/not covered/);
+    // Batch labelling is messages/batchModify; misplaced guesses are pointed to it
+    const modify: Grant = { permissions: ['mail:modify'], resources: [] };
+    const batch = { ids: ['m1', 'm2'], addLabelIds: ['Label_1'], removeLabelIds: ['UNREAD'] };
+    expect(await ok(modify, post('messages/batchModify', batch))).toBe(true);
+    expect(await reason(read, post('messages/batchModify', batch))).toBe(
+      'Missing permission "mail:modify"',
+    );
+    for (const path of ['labels/batchModify', 'threads/batchModify']) {
+      expect(await reason(modify, post(path, batch))).toMatch(
+        /not covered .*use POST messages\/batchModify/,
+      );
+    }
+    expect(await reason(modify, post('messages/batchDelete'))).not.toMatch(/batchModify/);
     // Only the signed-in mailbox, only the REST API
     const other = { path: '/gmail/v1/users/boss@acme.com/messages' };
     expect(await reason(read, other)).toMatch(/Only \/gmail\/v1\/users\/me/);
