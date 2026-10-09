@@ -172,6 +172,41 @@ describe('schedules', () => {
     await t.portal(alice.cookie, 'delete', `/schedules/${id}`).expect(204);
   });
 
+  it('launches its runs on the model API it was created with', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'anthropic + local model',
+        grants: [
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: [] },
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: [],
+            endpoint: { url: 'https://llm.example.com', api: 'anthropic' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const alice = await t.member('alice', [tpl.body.id as string]);
+    const created = await t
+      .portal(alice.cookie, 'post', '/schedules')
+      .send(scheduleBody({ templateId: tpl.body.id, provider: 'custom', model: 'qwen3' }))
+      .expect(201);
+    expect(created.body).toMatchObject({ provider: 'custom', model: 'qwen3' });
+
+    t.clock.now = new Date('2026-03-11T09:00:10Z');
+    await t.scheduler.tick();
+    await settle(t.launchpad);
+    expect(t.driver.lastConfig().llm).toEqual({
+      provider: 'custom',
+      model: 'qwen3',
+      api: 'anthropic',
+    });
+  });
+
   it('validates schedules like launches', async () => {
     const alice = await t.member('alice');
     await t

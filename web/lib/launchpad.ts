@@ -22,6 +22,8 @@ export interface Run {
   scheduleId: string | null;
   triggerId: string | null;
   harness: Harness;
+  /** The model API the launch asked for; null = the first the member could use. */
+  provider: string | null;
   model: string | null;
   prompt: string;
   /** A webhook trigger's instructions (the prompt is then the event). */
@@ -82,6 +84,7 @@ export interface ModelUsage {
   total: number;
 }
 
+/** A harness on one of the model APIs a template grants it (several when it grants several). */
 export interface HarnessChoice {
   harness: Harness;
   provider: string;

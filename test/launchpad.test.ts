@@ -403,6 +403,85 @@ describe('launch checks', () => {
     expect(await tools('pi')).toEqual(['anthropic', ['anthropic', 'custom']]);
   });
 
+  it('runs on the custom LLM endpoint when the launch picks it over the official API', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'anthropic + local model',
+        grants: [
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: ['claude-sonnet-5'] },
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: [],
+            endpoint: { url: 'https://llm.example.com', api: 'anthropic' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const templateId = tpl.body.id as string;
+    const alice = await t.member('alice', [templateId]);
+
+    // Both model APIs are offered, the official one first (the default).
+    const options = await t.portal(alice.cookie, 'get', '').expect(200);
+    const offered = (options.body.templates as { harnesses: object[] }[])[0]?.harnesses;
+    expect(offered).toEqual([
+      {
+        harness: 'claude-code',
+        provider: 'anthropic',
+        models: ['claude-sonnet-5'],
+        modelRequired: false,
+      },
+      { harness: 'claude-code', provider: 'custom', models: [], modelRequired: true },
+      { harness: 'pi', provider: 'anthropic', models: ['claude-sonnet-5'], modelRequired: false },
+      { harness: 'pi', provider: 'custom', models: [], modelRequired: true },
+    ]);
+    const models = await t.portal(alice.cookie, 'get', `/templates/${templateId}/models`);
+    expect(models.body).toEqual({ models: ['qwen3', 'llama-4', 'gpt-6'] });
+
+    const run = async (extra: object) => {
+      const id = await launch(alice.cookie, { templateId, ...extra });
+      const config = t.driver.lastConfig();
+      const session = await request(t.vmApp)
+        .get('/api/session')
+        .set('authorization', `Bearer ${config.sessionKey}`)
+        .expect(200);
+      await finishLast();
+      const tools = (session.body.grants as { tool: string }[]).map((g) => g.tool);
+      return { id, llm: config.llm, tools };
+    };
+    // No API picked: the official one, the endpoint staying usable (as before).
+    expect(await run({})).toMatchObject({
+      llm: { provider: 'anthropic', model: 'claude-sonnet-5' },
+      tools: ['anthropic', 'custom'],
+    });
+    const local = await run({ provider: 'custom', model: 'qwen3' });
+    expect(local).toMatchObject({
+      llm: { provider: 'custom', model: 'qwen3', api: 'anthropic' },
+      tools: ['custom'],
+    });
+    const stored = await t.portal(alice.cookie, 'get', `/runs/${local.id}`).expect(200);
+    expect(stored.body).toMatchObject({ provider: 'custom', model: 'qwen3' });
+    expect(await run({ harness: 'pi', provider: 'anthropic' })).toMatchObject({
+      llm: { provider: 'anthropic', model: 'claude-sonnet-5' },
+      tools: ['anthropic'],
+    });
+
+    // The model is checked against the picked API's allowlist, and the API must be granted.
+    const send = (extra: object) =>
+      t.portal(alice.cookie, 'post', '/runs').send(launchBody({ templateId, ...extra }));
+    expect((await send({ provider: 'custom' }).expect(400)).body.message).toContain(
+      'name the model',
+    );
+    await send({ provider: 'anthropic', model: 'qwen3' }).expect(400);
+    const openai = await send({ provider: 'openai' }).expect(400);
+    expect(openai.body.message).toBe(
+      'Template "anthropic + local model" gives no openai access claude-code can use',
+    );
+  });
+
   it('gives the run its template’s internet access', async () => {
     const tpl = await t
       .admin('post', '/templates')

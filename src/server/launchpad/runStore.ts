@@ -1,7 +1,13 @@
 import type { Database } from '../db/database.js';
 import { SECONDS_PER_HOUR } from '../units.js';
 import { redact, redactDeep } from '../db/redact.js';
-import { type Harness, type RunEvent, type RunEventType, RUNNER_LIMITS } from './protocol.js';
+import {
+  type Harness,
+  type LlmProvider,
+  type RunEvent,
+  type RunEventType,
+  RUNNER_LIMITS,
+} from './protocol.js';
 
 export const RUN_STATUSES = [
   'queued',
@@ -24,6 +30,8 @@ export interface Run {
   /** The webhook trigger that launched the run, if any. */
   triggerId: string | null;
   harness: Harness;
+  /** The model API the launch asked for; null = the first the member could use. */
+  provider: LlmProvider | null;
   model: string | null;
   prompt: string;
   /** A trigger's instructions, added to the system prompt (the prompt is then the event). */
@@ -57,6 +65,7 @@ export type NewRun = Pick<
   | 'scheduleId'
   | 'triggerId'
   | 'harness'
+  | 'provider'
   | 'model'
   | 'prompt'
   | 'instructions'
@@ -133,6 +142,7 @@ interface RunRow {
   schedule_id: string | null;
   trigger_id: string | null;
   harness: Harness;
+  provider: LlmProvider | null;
   model: string | null;
   prompt: string;
   instructions: string | null;
@@ -179,6 +189,7 @@ function toRun(r: RunRow): Run {
     scheduleId: r.schedule_id,
     triggerId: r.trigger_id,
     harness: r.harness,
+    provider: r.provider,
     model: r.model,
     prompt: r.prompt,
     instructions: r.instructions,
@@ -241,10 +252,10 @@ export class RunStore {
   insert(run: NewRun): Run {
     this.db.sql
       .prepare(
-        `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, harness, model, prompt,
-           instructions, template_id, template_name, account_ids, run_token_hash, status, timeout_seconds,
-           token_budget, key_generation, memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, harness, provider, model,
+           prompt, instructions, template_id, template_name, account_ids, run_token_hash, status,
+           timeout_seconds, token_budget, key_generation, memory_in, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -253,6 +264,7 @@ export class RunStore {
         run.scheduleId,
         run.triggerId,
         run.harness,
+        run.provider,
         run.model,
         redact(run.prompt),
         run.instructions === null ? null : redact(run.instructions),
