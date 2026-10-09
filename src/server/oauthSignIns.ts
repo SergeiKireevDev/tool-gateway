@@ -109,6 +109,18 @@ export class OAuthSignIns {
     return this.gateway.addOAuthAccount(flow.tool, flow.label, tokens, actor);
   }
 
+  /**
+   * Whether a sign-in in progress uses this state: Google then redirected back to the gateway
+   * for it rather than for an admin or member login.
+   */
+  awaits(state: string): boolean {
+    const now = this.now().getTime();
+    for (const flow of this.flows.values()) {
+      if (flow.state === state && flow.expiresAt > now) return true;
+    }
+    return false;
+  }
+
   cancel(flowId: string, actor: Actor): void {
     this.flow(flowId, actor);
     this.flows.delete(flowId);

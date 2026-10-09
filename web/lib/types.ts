@@ -39,8 +39,11 @@ export interface Tool {
   endpointApis: LlmEndpointApi[] | null;
   /** Present when the tool supports interactive sign-in (OAuth device flow). */
   signIn: SignInConfig | null;
-  /** Present when the tool supports "Sign in with …" through OAuth (paste back the redirect). */
-  oauthSignIn: { help: string } | null;
+  /**
+   * Present when the tool supports "Sign in with …" through OAuth. `redirectsBack`: the provider
+   * returns to the gateway's callback page; otherwise the redirect address is pasted back.
+   */
+  oauthSignIn: { help: string; redirectsBack: boolean } | null;
 }
 
 export interface DeviceFlowStart {

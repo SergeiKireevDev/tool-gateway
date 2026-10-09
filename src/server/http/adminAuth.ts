@@ -9,6 +9,11 @@ export const SESSION_COOKIE = 'gw_session';
 const LOGIN_COOKIE = 'gw_login';
 const LOGIN_COOKIE_PATH = '/auth/google';
 /**
+ * UI page that hands a "Sign in with …" redirect (code and state) to the dialog that started it,
+ * which completes the sign-in with its own credentials.
+ */
+export const SIGN_IN_CALLBACK_PAGE = '/sign-in/callback';
+/**
  * Cookie-authenticated API calls must carry this header. Browsers can't add custom headers to
  * cross-site requests without a CORS preflight (which the gateway never grants), so this blocks
  * CSRF on top of SameSite=Strict.
@@ -108,6 +113,13 @@ export function adminAuthRoutes(
   });
 
   router.get(`${LOGIN_COOKIE_PATH}/callback`, (req, res, next) => {
+    // Google also sends account sign-ins (Gmail) here, so only one redirect URI is registered.
+    const query = new URL(req.originalUrl, config.publicUrl).searchParams;
+    const state = query.get('state');
+    if (state && gateway.signIns.awaits(state)) {
+      res.redirect(HTTP.SEE_OTHER, `${SIGN_IN_CALLBACK_PAGE}?${query.toString()}`);
+      return;
+    }
     if (!google) {
       failed(res, 'Google sign-in is not configured');
       return;
