@@ -2,15 +2,29 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { type Api, ApiError } from '@/lib/api';
-import type { LaunchOptions, Run, Schedule, Trigger, WebhookOption } from '@/lib/launchpad';
+import type {
+  LaunchOptions,
+  Run,
+  Schedule,
+  Trigger,
+  WebhookOption,
+  Workflow,
+} from '@/lib/launchpad';
 import type { Account } from '@/lib/types';
 import { Button, EmptyState, ErrorBanner, Modal, SectionHeader, Select } from '../ui';
 import { LaunchForm } from './LaunchForm';
 import { RunDetail } from './RunDetail';
 import { RunsTable, SchedulesTable, TriggersTable } from './RunLists';
+import { WorkflowView } from './WorkflowView';
 
 const POLL_MS = 5000;
 const HTTP_NOT_FOUND = 404;
+
+/** What is open: a run, or a workflow (whose step runs show inside it). */
+interface Selection {
+  kind: 'run' | 'workflow';
+  id: string;
+}
 
 /** Runs of one schedule or trigger. */
 interface RunsFilter {
@@ -36,7 +50,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const [options, setOptions] = useState<LaunchOptions | null>(null);
   const [off, setOff] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Selection | null>(null);
   const [runsFilter, setRunsFilter] = useState<RunsFilter | null>(null);
   const [memberFilter, setMemberFilter] = useState('');
   const [launching, setLaunching] = useState(false);
@@ -84,16 +98,25 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
     );
   }
   if (selected) {
-    return (
-      <RunDetail
+    const back = (): void => {
+      setSelected(null);
+      void load();
+    };
+    return selected.kind === 'workflow' ? (
+      <WorkflowView
         api={api}
-        runId={selected}
+        workflowId={selected.id}
         downloadBase={base}
         showMember={admin}
-        onBack={() => {
-          setSelected(null);
-          void load();
-        }}
+        onBack={back}
+      />
+    ) : (
+      <RunDetail
+        api={api}
+        runId={selected.id}
+        downloadBase={base}
+        showMember={admin}
+        onBack={back}
       />
     );
   }
@@ -160,7 +183,9 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
           runs={runs}
           showMember={admin}
           onSelect={(r) => {
-            setSelected(r.id);
+            setSelected(
+              r.workflowId ? { kind: 'workflow', id: r.workflowId } : { kind: 'run', id: r.id },
+            );
           }}
         />
       )}
@@ -213,7 +238,11 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
             webhooks={webhooks}
             onLaunched={(run) => {
               setLaunching(false);
-              setSelected(run.id);
+              setSelected({ kind: 'run', id: run.id });
+            }}
+            onWorkflow={(workflow: Workflow) => {
+              setLaunching(false);
+              setSelected({ kind: 'workflow', id: workflow.id });
             }}
             onScheduled={() => {
               setLaunching(false);

@@ -19,6 +19,7 @@ import { proxyHandler } from './proxy.js';
 import type { Launchpad } from '../launchpad/launchpad.js';
 import type { Scheduler } from '../launchpad/scheduler.js';
 import type { Triggers } from '../launchpad/triggers.js';
+import type { Workflows } from '../launchpad/workflows.js';
 import type { Webhooks } from '../webhooks.js';
 import { webhookReceiver, webhookRoutes } from './webhookRoutes.js';
 import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
@@ -33,6 +34,8 @@ export interface AppOptions {
   scheduler?: Scheduler | null;
   /** Agents launched by webhook deliveries (needs the launchpad and webhooks). */
   triggers?: Triggers | null;
+  /** Multi-step workflows (needs the launchpad). */
+  workflows?: Workflows | null;
   /** Inbound webhooks; their routes are off when absent. */
   webhooks?: Webhooks | null;
 }
@@ -204,6 +207,7 @@ export function createApp(
         gateway,
         options.scheduler ?? null,
         options.triggers ?? null,
+        options.workflows ?? null,
       ),
     );
   }
@@ -222,6 +226,7 @@ export function createApp(
       options.scheduler ?? null,
       options.webhooks ?? null,
       options.triggers ?? null,
+      options.workflows ?? null,
     ),
   );
   app.use('/api', memberRoutes(gateway));

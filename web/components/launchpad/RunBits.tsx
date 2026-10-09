@@ -1,7 +1,7 @@
 'use client';
 
 import { formatDuration } from '@/lib/format';
-import { formatTokens, type Run, type RunStatus } from '@/lib/launchpad';
+import { formatTokens, type Run, type RunStatus, WORKFLOW_STEP_LABELS } from '@/lib/launchpad';
 import { MS_PER_SECOND } from '@/lib/units';
 import { Badge } from '../ui';
 
@@ -37,13 +37,15 @@ export function StatusBadge({ status }: { status: RunStatus }) {
   );
 }
 
-/** How long a run took (or has been going). */
-/** How the run was launched, when not by hand: " · scheduled" or " · webhook". */
+/** How the run was launched, when not by hand: " · scheduled", " · webhook" or its workflow step. */
 export function runOrigin(run: Run): string {
+  if (run.workflowStep)
+    return ` · workflow ${WORKFLOW_STEP_LABELS[run.workflowStep].toLowerCase()} step`;
   if (run.scheduleId) return ' · scheduled';
   return run.triggerId ? ' · webhook' : '';
 }
 
+/** How long a run took (or has been going). */
 export function runDuration(run: Run, now: number): string {
   if (!run.startedAt) return '—';
   const end = run.finishedAt ? Date.parse(run.finishedAt) : now;

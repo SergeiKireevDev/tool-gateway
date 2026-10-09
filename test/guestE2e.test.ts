@@ -9,7 +9,8 @@ import { createApp } from '../src/server/http/app.js';
 import { Launchpad } from '../src/server/launchpad/launchpad.js';
 import { LocalProcessDriver } from '../src/server/launchpad/localDriver.js';
 import { RunStore } from '../src/server/launchpad/runStore.js';
-import { createHarness, type Harness } from './helpers.js';
+import { Workflows } from '../src/server/launchpad/workflows.js';
+import { createHarness, CUSTOM_LLM_URL, type Harness } from './helpers.js';
 
 /**
  * A fake `claude` CLI: talks to the gateway MCP server it is given, calls the model API through
@@ -28,8 +29,16 @@ readline.createInterface({ input: mcp.stdout }).on('line', (l) => { const m = JS
 let id = 0;
 const rpc = (method, params) => new Promise((resolve) => { id += 1; pending.set(id, resolve); mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n'); });
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+const prompt = args[args.indexOf('-p') + 1];
 (async () => {
   out({ type: 'system', subtype: 'init', model: 'fake-claude' });
+  if (prompt.startsWith('Plan:')) {
+    // A workflow's planner: writes the script next to this CLI to its output files.
+    fs.mkdirSync(process.env.HOME + '/out', { recursive: true });
+    fs.copyFileSync(__dirname + '/workflow-script.mjs', process.env.HOME + '/out/script.mjs');
+    out({ type: 'result', subtype: 'success', is_error: false, result: 'Wrote the script' });
+    process.exit(0);
+  }
   await rpc('initialize', {});
   const tools = (await rpc('tools/list', {})).result.tools.map((t) => t.name);
   out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: tools[0], input: { method: 'GET', path: '/repos/o/r/issues' } }] } });
@@ -45,9 +54,21 @@ const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
 })();
 `;
 
+/** The script the fake planner writes: calls a tool, the custom LLM endpoint, and a model it lacks. */
+const WORKFLOW_SCRIPT = `const headers = { authorization: \`Bearer \${process.env.GATEWAY_SESSION_KEY}\`, 'content-type': 'application/json' };
+const issues = await fetch(\`\${process.env.GATEWAY_URL}/proxy/github/repos/o/r/issues\`, { headers });
+console.log(\`issues \${issues.status}\`);
+const body = JSON.stringify({ model: process.env.LLM_MODEL, messages: [{ role: 'user', content: 'hi' }] });
+const llm = await fetch(\`\${process.env.LLM_URL}/v1/chat/completions\`, { method: 'POST', headers, body });
+console.log(\`llm \${llm.status} \${process.env.LLM_API} \${process.env.LLM_MODEL}\`);
+const frontier = await fetch(\`\${process.env.GATEWAY_URL}/proxy/anthropic/v1/messages\`, { method: 'POST', headers, body });
+console.log(\`anthropic \${frontier.status}\`);
+`;
+
 let h: Harness;
 let server: Server;
 let launchpad: Launchpad;
+let workflows: Workflows;
 
 beforeAll(async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'launchpad-e2e-'));
@@ -55,6 +76,7 @@ beforeAll(async () => {
   const bin = path.join(dir, 'bin');
   await mkdir(bin);
   await writeFile(path.join(bin, 'claude'), FAKE_CLAUDE);
+  await writeFile(path.join(bin, 'workflow-script.mjs'), WORKFLOW_SCRIPT);
   await chmod(path.join(bin, 'claude'), 0o755);
 
   h = await createHarness();
@@ -66,6 +88,10 @@ beforeAll(async () => {
     }),
     crypto: h.crypto,
     vmGatewayUrl: 'set below',
+  });
+  workflows = new Workflows(h.gateway, launchpad);
+  launchpad.onFinished((run) => {
+    workflows.onRunFinished(run);
   });
   server = createApp(h.gateway, h.config, { fetch: h.fetch, launchpad }).listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
@@ -136,5 +162,54 @@ describe('a real runner with a fake harness (local driver)', () => {
     expect(calls.map((c) => c.tool)).toEqual(expect.arrayContaining(['github', 'anthropic']));
     expect(h.gateway.llmUsage.totalsFor([done.sessionId ?? '']).calls).toBe(1);
     expect(h.gateway.listSessions().find((s) => s.id === done.sessionId)?.status).toBe('revoked');
+  }, 30_000);
+
+  it('runs a workflow: the planner writes a script, the execution container runs it', async () => {
+    const gh = await h.gateway.createAccount({ tool: 'github', label: 'gh2', secret: 'ghp_x' });
+    const llm = await h.gateway.createAccount({
+      tool: 'anthropic',
+      label: 'c2',
+      secret: 'sk-ant-x',
+    });
+    const tpl = await h.gateway.createTemplate({
+      name: 'workflow',
+      grants: [
+        { tool: 'github', permissions: ['issues:read'], resources: ['o/r'] },
+        { tool: 'anthropic', permissions: ['llm:invoke'], resources: [] },
+        {
+          tool: 'custom',
+          permissions: ['llm:invoke'],
+          resources: ['qwen3'],
+          endpoint: { url: CUSTOM_LLM_URL, api: 'openai', token: 'endpoint-token' },
+        },
+      ],
+      defaultTtlSeconds: 3600,
+      maxTtlSeconds: 4 * 3600,
+    });
+    const { member } = await h.gateway.createMember({
+      name: 'bob',
+      templateIds: [tpl.id],
+      accountIds: [gh.id, llm.id],
+    });
+    const bob = h.gateway.activeMember(member.id);
+    if (!bob) throw new Error('no member');
+    const wf = workflows.create(bob, {
+      prompt: 'Plan: triage o/r',
+      templateId: tpl.id,
+      harness: 'claude-code',
+    });
+    const [plan] = launchpad.runs.workflowRuns(wf.id);
+    expect(await waitFor(plan?.id ?? '')).toBe('succeeded');
+    const exec = launchpad.runs.workflowRuns(wf.id)[1];
+    expect(exec?.harness).toBe('script');
+    expect(await waitFor(exec?.id ?? '')).toBe('succeeded');
+
+    const done = workflows.view(launchpad.runs.requireWorkflow(wf.id));
+    expect(done.status).toBe('succeeded');
+    expect(done.steps[1]?.run?.finalMessage).toMatch(
+      /^issues 200\nllm 200 openai qwen3\nanthropic 40[13]$/,
+    );
+    const lines = launchpad.runs.events(exec?.id ?? '').filter((e) => e.type === 'assistant_text');
+    expect(lines.map((e) => e.text)).toEqual(expect.arrayContaining(['issues 200']));
   }, 30_000);
 });

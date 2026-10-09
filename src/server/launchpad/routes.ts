@@ -9,7 +9,8 @@ import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
 import type { Actor, Launchpad } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
 import type { Triggers } from './triggers.js';
-import { HARNESSES, RUNNER_LIMITS } from './protocol.js';
+import type { Workflows, WorkflowView } from './workflows.js';
+import { RUN_HARNESSES, RUNNER_LIMITS } from './protocol.js';
 import { RUN_STATUSES, type LaunchSettings, type Run, type RunFilter } from './runStore.js';
 
 const MAX_TIMEOUT_HOURS = 24;
@@ -27,6 +28,8 @@ const SCHEDULES_PATH = '/schedules';
 const SCHEDULE_PATH = '/schedules/:sid';
 const TRIGGERS_PATH = '/triggers';
 const TRIGGER_PATH = '/triggers/:tid';
+const WORKFLOWS_PATH = '/workflows';
+const WORKFLOW_PATH = '/workflows/:wid';
 
 const timeoutSeconds = z
   .number()
@@ -97,7 +100,8 @@ function runFilter(req: Request): RunFilter {
     filter.status = status as RunFilter['status'];
   }
   if (harness) {
-    if (!(HARNESSES as readonly string[]).includes(harness)) throw badRequest('Unknown harness');
+    if (!(RUN_HARNESSES as readonly string[]).includes(harness))
+      throw badRequest('Unknown harness');
     filter.harness = harness as RunFilter['harness'];
   }
   const before = queryString(req, 'before');
@@ -180,6 +184,36 @@ function runReadRoutes(
   );
 }
 
+/** A workflow with its step runs (and their token usage), as the API returns it. */
+function workflowView(launchpad: Launchpad, gateway: Gateway, workflow: WorkflowView) {
+  return {
+    ...workflow,
+    steps: workflow.steps.map((s) => ({
+      ...s,
+      run: s.run && runView(launchpad, gateway, s.run),
+    })),
+  };
+}
+
+/** Workflow routes shared by the member portal (own workflows) and the admin (all). */
+function workflowRoutes(
+  router: Router,
+  launchpad: Launchpad,
+  gateway: Gateway,
+  workflows: Workflows,
+  actorOf: (res: Response) => Actor,
+): void {
+  const view = (w: WorkflowView) => workflowView(launchpad, gateway, w);
+  router.get(
+    WORKFLOW_PATH,
+    h((req, res) => view(workflows.visible(actorOf(res), param(req, 'wid')))),
+  );
+  router.post(
+    `${WORKFLOW_PATH}/cancel`,
+    h(async (req, res) => view(await workflows.cancel(actorOf(res), param(req, 'wid')))),
+  );
+}
+
 /** A schedule with its next runs, as the API returns it. */
 function scheduleView(scheduler: Scheduler, schedule: Schedule) {
   return { ...schedule, nextRuns: scheduler.preview(schedule) };
@@ -246,6 +280,7 @@ export function memberLaunchRoutes(
   gateway: Gateway,
   scheduler: Scheduler | null,
   triggers: Triggers | null = null,
+  workflows: Workflows | null = null,
 ): Router {
   const router = express.Router();
   const memberOf = (res: Response): Member => res.locals.member as Member;
@@ -268,6 +303,7 @@ export function memberLaunchRoutes(
           tools: t.grants.map((g) => g.tool),
           maxTtlSeconds: t.maxTtlSeconds,
           harnesses: launchpad.harnessChoices(t),
+          workflow: workflows && launchpad.workflowChoice(t),
         })),
       };
     }),
@@ -313,6 +349,21 @@ export function memberLaunchRoutes(
     );
     triggerRoutes(router, triggers, actorOf);
   }
+  if (workflows) {
+    router.get(
+      WORKFLOWS_PATH,
+      h((_req, res) =>
+        workflows.list(memberOf(res).id).map((w) => workflowView(launchpad, gateway, w)),
+      ),
+    );
+    router.post(
+      WORKFLOWS_PATH,
+      created((req, res) =>
+        workflowView(launchpad, gateway, workflows.create(memberOf(res), req.body)),
+      ),
+    );
+    workflowRoutes(router, launchpad, gateway, workflows, actorOf);
+  }
   return router;
 }
 
@@ -322,9 +373,17 @@ export function adminLaunchRoutes(
   gateway: Gateway,
   scheduler: Scheduler | null,
   triggers: Triggers | null = null,
+  workflows: Workflows | null = null,
 ): Router {
   const router = express.Router();
   const actorOf = (): Actor => ({ kind: 'admin' });
+  if (workflows) {
+    router.get(
+      WORKFLOWS_PATH,
+      h(() => workflows.list().map((w) => workflowView(launchpad, gateway, w))),
+    );
+    workflowRoutes(router, launchpad, gateway, workflows, actorOf);
+  }
   if (scheduler) {
     router.get(
       SCHEDULES_PATH,

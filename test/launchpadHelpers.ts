@@ -6,6 +6,7 @@ import { RunStore } from '../src/server/launchpad/runStore.js';
 import { Scheduler } from '../src/server/launchpad/scheduler.js';
 import { Triggers } from '../src/server/launchpad/triggers.js';
 import type { VmDriver, VmInfo, VmSpec } from '../src/server/launchpad/vmDriver.js';
+import { Workflows } from '../src/server/launchpad/workflows.js';
 import { Webhooks } from '../src/server/webhooks.js';
 import { createHarness, type Harness } from './helpers.js';
 
@@ -54,6 +55,7 @@ export interface LaunchHarness extends Harness {
   scheduler: Scheduler;
   webhooks: Webhooks;
   triggers: Triggers;
+  workflows: Workflows;
   driver: FakeVmDriver;
   app: ReturnType<typeof createApp>;
   vmApp: ReturnType<typeof createVmApp>;
@@ -98,12 +100,17 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
   webhooks.onDelivery((delivery) => {
     triggers.onDelivery(delivery);
   });
+  const workflows = new Workflows(h.gateway, launchpad, () => h.clock.now);
+  launchpad.onFinished((run) => {
+    workflows.onRunFinished(run);
+  });
   const app = createApp(h.gateway, h.config, {
     fetch: h.fetch,
     launchpad,
     scheduler,
     webhooks,
     triggers,
+    workflows,
   });
   const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
   const adminToken = await h.gateway.rotateAdminToken();
@@ -148,6 +155,7 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     scheduler,
     webhooks,
     triggers,
+    workflows,
     driver,
     app,
     vmApp,

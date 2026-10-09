@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { claudeCode, codex, gemini, newState, pi } from '../src/guest/harnesses.js';
+import { claudeCode, codex, gemini, newState, pi, script } from '../src/guest/harnesses.js';
 import type { RunnerConfig } from '../src/server/launchpad/protocol.js';
 
 const lines = (records: object[]): string[] => records.map((r) => JSON.stringify(r));
@@ -310,5 +310,44 @@ describe('custom LLM endpoints', () => {
     expect(() =>
       pi.launch({ ...ctx, config: { ...config, llm: { provider: 'custom', model: null } } }),
     ).toThrow(/chat API and model/);
+  });
+});
+
+describe('script (execution container)', () => {
+  const scriptCtx = {
+    ...ctx,
+    config: {
+      ...config,
+      harness: 'script' as const,
+      llm: { provider: 'custom' as const, model: 'qwen3', api: 'openai' as const },
+      prompt: "console.log('hi')",
+      systemPrompt: '',
+    },
+  };
+
+  it('runs the script with Node, with the custom LLM endpoint in its environment', () => {
+    const launch = script.launch(scriptCtx);
+    expect(launch.command).toBe('/usr/bin/node');
+    expect(launch.args).toEqual(['/home/agent/work/script.mjs']);
+    expect(launch.files).toEqual([
+      { path: '/home/agent/work/script.mjs', content: "console.log('hi')" },
+    ]);
+    expect(launch.env).toMatchObject({
+      GATEWAY_URL: 'http://172.30.0.1:7420',
+      GATEWAY_SESSION_KEY: 'gws_key',
+      LLM_URL: 'http://172.30.0.1:7420/proxy/custom',
+      LLM_API: 'openai',
+      LLM_MODEL: 'qwen3',
+    });
+  });
+
+  it('logs each printed line and keeps all of them as the final message', () => {
+    const state = newState();
+    const events = ['Read 3 mails', '', 'Drafted 1 reply'].flatMap((l) => script.parse(l, state));
+    expect(events).toEqual([
+      { type: 'assistant_text', text: 'Read 3 mails' },
+      { type: 'assistant_text', text: 'Drafted 1 reply' },
+    ]);
+    expect(state.finalMessage).toBe('Read 3 mails\n\nDrafted 1 reply');
   });
 });
