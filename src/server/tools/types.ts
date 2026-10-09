@@ -74,6 +74,11 @@ export interface AuthzAllowed {
   upstreamHeaders?: (secret: string, incoming: Headers) => Headers;
   /** LLM calls: meters the (streamed) response, given its content type, for token budgets. */
   meter?: (contentType: string) => UsageMeter;
+  /**
+   * Rewrites the upstream response before it is metered and relayed (e.g. an API served on top of
+   * another one). Auth errors are handled before, on the upstream response itself.
+   */
+  transformResponse?: (upstream: Response) => Promise<Response>;
 }
 
 export type AuthzDecision = AuthzAllowed | { allowed: false; reason: string };

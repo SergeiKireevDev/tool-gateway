@@ -1,15 +1,27 @@
 import { isRecord } from '../json.js';
-import type { LlmEndpoint, LlmEndpointApi, ToolProvider } from '../types.js';
+import { matchPath } from '../pathMatch.js';
+import type {
+  AuthzDecision,
+  Grant,
+  LlmEndpoint,
+  LlmEndpointApi,
+  ToolProvider,
+  ToolRequest,
+  ToolRequestContext,
+} from '../types.js';
 import { MS_PER_SECOND } from '../../units.js';
 import { createAnthropicProvider } from './anthropic.js';
 import {
+  canonical,
   decide,
   Denied,
+  jsonBody,
   LLM_PERMISSIONS,
   MODEL_RESOURCE_HELP,
   validateModelPattern,
 } from './common.js';
-import { createOpenAIProvider } from './openai.js';
+import { createOpenAIProvider, responsesMeter } from './openai.js';
+import { type BridgedRequest, chatRequestOf, responsesAnswer } from './responsesBridge.js';
 
 /**
  * A custom LLM endpoint (self-hosted vLLM / Ollama / LiteLLM, another vendor's compatible API…)
@@ -82,10 +94,15 @@ export function createCustomLlmProvider(fetchImpl: typeof fetch = fetch): ToolPr
       const rules = dialect(endpoint.api, fetchImpl);
       return {
         ...provider,
-        upstreamBaseUrl: endpoint.url,
+        upstreamBaseUrl: apiBase(endpoint.url),
         example: EXAMPLES[endpoint.api],
-        // No account secret: the official providers' subscription-token handling stays off.
-        authorize: (request, grant, ctx) => rules.authorize(request, grant, { ...ctx, secret: '' }),
+        authorize(request, grant, ctx) {
+          // No account secret: the official providers' subscription-token handling stays off.
+          const context = { ...ctx, secret: '' };
+          return endpoint.api === 'openai' && isResponsesCall(request)
+            ? bridgeResponses(rules, request, grant, context, apiBase(endpoint.url))
+            : rules.authorize(request, grant, context);
+        },
         upstreamHeaders(secret, incoming) {
           const headers = rules.upstreamHeaders('', incoming);
           headers.delete('x-api-key');
@@ -97,6 +114,54 @@ export function createCustomLlmProvider(fetchImpl: typeof fetch = fetch): ToolPr
     },
   };
   return provider;
+}
+
+/**
+ * The endpoint's base URL, without the `/v1` the gateway adds to every call: OpenAI-style servers
+ * are often documented (and pasted) as `https://host/v1`.
+ */
+function apiBase(url: string): string {
+  return url.replace(/\/v1\/?$/i, '');
+}
+
+const isResponsesCall = (request: ToolRequest): boolean =>
+  request.method.toUpperCase() === 'POST' && matchPath('v1/responses', request.segments) !== null;
+
+/**
+ * A Responses call (Codex) on an OpenAI-style endpoint: sent as Chat Completions, which every
+ * OpenAI-compatible server speaks, and checked with the Chat Completions rules (model, budget,
+ * tools); the answer is turned back into a Responses one.
+ */
+async function bridgeResponses(
+  rules: ToolProvider,
+  request: ToolRequest,
+  grant: Grant,
+  ctx: ToolRequestContext,
+  base: string,
+): Promise<AuthzDecision> {
+  let bridged: BridgedRequest;
+  try {
+    if (request.search !== '') throw new Denied('Unsupported query string');
+    bridged = chatRequestOf(jsonBody(request));
+  } catch (err) {
+    if (err instanceof Denied) return { allowed: false, reason: err.message };
+    throw err;
+  }
+  const chat: ToolRequest = {
+    ...request,
+    segments: ['v1', 'chat', 'completions'],
+    body: canonical(bridged.chat),
+  };
+  const decision = await rules.authorize(chat, grant, ctx);
+  if (!decision.allowed) return decision;
+  const model = String(bridged.chat.model);
+  return {
+    ...decision,
+    detail: `responses via ${decision.detail ?? 'chat'}`,
+    upstreamUrl: `${base}/v1/chat/completions`,
+    meter: (contentType) => responsesMeter(contentType, model),
+    transformResponse: (upstream) => responsesAnswer(upstream, model, bridged.customTools),
+  };
 }
 
 /** The model IDs of a `{ data: [{ id }] }` list (OpenAI and Anthropic shape), deduplicated. */
@@ -119,7 +184,7 @@ export async function listEndpointModels(
 ): Promise<string[]> {
   const headers = new Headers({ accept: 'application/json', 'user-agent': 'local-gateway' });
   if (endpoint.token) headers.set('authorization', `Bearer ${endpoint.token}`);
-  let url = `${endpoint.url}/v1/models`;
+  let url = `${apiBase(endpoint.url)}/v1/models`;
   if (endpoint.api === 'anthropic') {
     headers.set('anthropic-version', ANTHROPIC_VERSION);
     url += `?limit=${String(ANTHROPIC_MODELS_PAGE)}`;

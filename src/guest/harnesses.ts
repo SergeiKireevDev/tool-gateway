@@ -241,6 +241,9 @@ export const claudeCode: HarnessAdapter = {
 
 const toml = (value: string): string => JSON.stringify(value);
 
+/** Codex `error` records that are only warnings. */
+const CODEX_WARNINGS = [/^Model metadata for .* not found/];
+
 /** Tool name of a Codex item: MCP calls by tool, shell commands as `shell`, others by type. */
 function codexTool(item: Json): string {
   if (item.type === 'mcp_tool_call') return str(item.tool) ?? 'mcp';
@@ -306,6 +309,8 @@ export const codex: HarnessAdapter = {
           `{ GATEWAY_URL = ${toml(config.gatewayUrl)}, GATEWAY_SESSION_KEY = ${toml(config.sessionKey)} }`,
         ),
         ...override('developer_instructions', toml(config.systemPrompt)),
+        // A custom endpoint has no hosted web search: Codex would offer the model a tool it lacks.
+        ...(config.llm.provider === 'custom' ? override('web_search', toml('disabled')) : []),
         ...(config.llm.model ? ['--model', config.llm.model] : []),
         config.prompt,
       ],
@@ -333,8 +338,11 @@ export const codex: HarnessAdapter = {
         state.error = message ?? 'Codex turn failed';
         return [{ type: 'error', text: state.error }];
       }
-      case 'error':
-        return [{ type: 'error', text: str(record.message) ?? 'Codex error' }];
+      case 'error': {
+        const text = str(record.message) ?? 'Codex error';
+        // A warning, not a failure: Codex knows no metadata (context window…) for custom models.
+        return [{ type: CODEX_WARNINGS.some((w) => w.test(text)) ? 'status' : 'error', text }];
+      }
       default:
         return [];
     }

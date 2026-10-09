@@ -237,7 +237,9 @@ API) are set up in the template rather than as an account: enable **Custom LLM**
 access_ and enter its **URL**, the **chat API** it speaks (OpenAI or Anthropic) and an optional
 **bearer token**. Clients call `/proxy/custom/v1/…` with the endpoints and session key header of
 that API; the gateway applies the same checks (model allowlist, token budget, server-side tools)
-and forwards to `<URL>/v1/…` with `Authorization: Bearer <token>`. The token is never returned by
+and forwards to `<URL>/v1/…` with `Authorization: Bearer <token>` (a URL entered with its `/v1`
+works too). OpenAI-style endpoints only need Chat Completions: the gateway serves
+`POST /v1/responses` (Codex) on top of `/v1/chat/completions`. The token is never returned by
 the API (leave it blank when editing to keep it), and session keys keep the endpoint they were
 issued with. [Launchpad agents](docs/launchpad.md#custom-llm-endpoints) run on it too: Claude Code
 and pi on Anthropic-style endpoints, Codex and pi on OpenAI-style ones.
