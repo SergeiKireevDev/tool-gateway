@@ -31,6 +31,9 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const LOOPBACK_REDIRECT_URI = 'http://127.0.0.1:8765/';
 /** Read, organize, draft and send; not permanent deletion or settings. */
 const SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+const ENABLE_GMAIL_API = 'https://console.cloud.google.com/apis/library/gmail.googleapis.com';
+const SCOPE_NOT_GRANTED =
+  'Gmail access was not granted: on Google’s consent screen, tick “Read, compose and send emails from your Gmail account”, then sign in again';
 
 export interface GmailOAuthClient {
   clientId: string;
@@ -277,13 +280,43 @@ function tokensOf(json: unknown, refreshToken?: string): Omit<OAuthTokens, 'iden
   };
 }
 
+/** The reasons (`SERVICE_DISABLED`, `ACCESS_TOKEN_SCOPE_INSUFFICIENT`…) of a Google API error. */
+function errorReasons(error: Record<string, unknown>): string[] {
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? (value as unknown[]) : []);
+  const entries: unknown[] = [...list(error.details), ...list(error.errors)];
+  return entries.flatMap((e) => (isRecord(e) && typeof e.reason === 'string' ? [e.reason] : []));
+}
+
+/** Why Gmail refused a token, with what to do about it when Google says. */
+export function rejection(status: number, json: unknown): string {
+  const prefix = `Gmail rejected the token (HTTP ${status})`;
+  const error = isRecord(json) && isRecord(json.error) ? json.error : null;
+  if (!error) return prefix;
+  const reasons = errorReasons(error);
+  if (reasons.some((r) => r === 'SERVICE_DISABLED' || r === 'accessNotConfigured')) {
+    return `${prefix}: the Gmail API is not enabled in the Google Cloud project of the OAuth client. Enable it at ${ENABLE_GMAIL_API} (in that project), wait a few minutes, then sign in again`;
+  }
+  if (
+    reasons.some((r) => r === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' || r === 'insufficientPermissions')
+  ) {
+    return `${prefix}: ${SCOPE_NOT_GRANTED}`;
+  }
+  return typeof error.message === 'string' ? `${prefix}: ${error.message}` : prefix;
+}
+
+/** Google lets the user untick scopes on its consent screen; the answer lists those granted. */
+function checkGrantedScope(json: unknown): void {
+  if (!isRecord(json) || typeof json.scope !== 'string') return;
+  if (!json.scope.split(' ').includes(SCOPE)) throw new Error(SCOPE_NOT_GRANTED);
+}
+
 async function profile(fetchImpl: typeof fetch, secret: string): Promise<Record<string, string>> {
   const res = await fetchImpl(`${API}/${PREFIX.join('/')}/profile`, {
     headers: { authorization: `Bearer ${secret}`, 'user-agent': USER_AGENT },
   });
-  const json: unknown = res.ok ? await res.json() : null;
-  if (!isRecord(json) || typeof json.emailAddress !== 'string') {
-    throw new Error(`Gmail rejected the token (HTTP ${res.status})`);
+  const json: unknown = await res.json().catch(() => null);
+  if (!res.ok || !isRecord(json) || typeof json.emailAddress !== 'string') {
+    throw new Error(rejection(res.status, res.ok ? null : json));
   }
   const identity: Record<string, string> = { login: json.emailAddress };
   if (typeof json.messagesTotal === 'number') identity.messages = String(json.messagesTotal);
@@ -307,6 +340,7 @@ function googleSignIn(fetchImpl: typeof fetch, client: GmailOAuthClient): OAuthS
         isRecord(json) && typeof json.error === 'string' ? json.error : `HTTP ${res.status}`;
       throw new Error(`Google sign-in failed (${error})`);
     }
+    checkGrantedScope(json);
     const tokens = tokensOf(json, refreshToken);
     return { ...tokens, identity: await profile(fetchImpl, tokens.access) };
   };

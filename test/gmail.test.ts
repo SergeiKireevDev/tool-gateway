@@ -1,7 +1,12 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/server/http/app.js';
-import { createGmailProvider, parseAddressList, recipientsOf } from '../src/server/tools/gmail.js';
+import {
+  createGmailProvider,
+  parseAddressList,
+  recipientsOf,
+  rejection,
+} from '../src/server/tools/gmail.js';
 import type { AuthzDecision, Grant } from '../src/server/tools/types.js';
 import { createHarness, fakeGmailFetch, GMAIL_CLIENT, type Harness } from './helpers.js';
 
@@ -322,5 +327,72 @@ describe('Sign in with Google through the gateway’s own client', () => {
     expect(signIn?.redirectsBack).toBe(false);
     const url = new URL(signIn?.authorizeUrl('challenge', 'state') ?? '');
     expect(url.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:8765/');
+  });
+});
+
+describe('Gmail refusing a token', () => {
+  const googleError = (reason: string, message: string) => ({
+    error: {
+      code: 403,
+      message,
+      status: 'PERMISSION_DENIED',
+      details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason }],
+    },
+  });
+
+  it('says to enable the Gmail API when the Cloud project has it disabled', () => {
+    const json = googleError('SERVICE_DISABLED', 'Gmail API has not been used in project 1');
+    expect(rejection(403, json)).toMatch(
+      /^Gmail rejected the token \(HTTP 403\): the Gmail API is not enabled .*gmail\.googleapis\.com/,
+    );
+    const legacy = { error: { code: 403, errors: [{ reason: 'accessNotConfigured' }] } };
+    expect(rejection(403, legacy)).toMatch(/Gmail API is not enabled/);
+  });
+
+  it('says to grant the Gmail scope when the token lacks it', () => {
+    const json = googleError('ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'insufficient scopes');
+    expect(rejection(403, json)).toMatch(/Gmail access was not granted/);
+  });
+
+  it("passes Google's message on otherwise", () => {
+    expect(rejection(403, googleError('OTHER', 'Mail service not enabled'))).toBe(
+      'Gmail rejected the token (HTTP 403): Mail service not enabled',
+    );
+    expect(rejection(401, null)).toBe('Gmail rejected the token (HTTP 401)');
+  });
+
+  it('reports it when verifying a pasted token', async () => {
+    const disabled: typeof fetch = () =>
+      Promise.resolve(Response.json(googleError('SERVICE_DISABLED', 'off'), { status: 403 }));
+    await expect(createGmailProvider(disabled).verifyCredential('ya29.x')).rejects.toThrow(
+      /Gmail API is not enabled/,
+    );
+  });
+
+  it('refuses a sign-in where the Gmail scope was unticked', async () => {
+    const calls: Harness['upstreamCalls'] = [];
+    const fake = fakeGmailFetch(calls);
+    /** Google's token answer, listing the scopes the user left ticked. */
+    const granting =
+      (scope: string): typeof fetch =>
+      async (input, init) => {
+        const res = await fake(input, init);
+        const url = input instanceof Request ? input.url : String(input);
+        if (url !== 'https://oauth2.googleapis.com/token') return res;
+        return Response.json({ ...((await res.json()) as object), scope });
+      };
+    const signIn = createGmailProvider(granting('openid email'), GMAIL_CLIENT).oauthSignIn;
+    await expect(signIn?.exchange('good-code', 'state', 'verifier')).rejects.toThrow(
+      /Gmail access was not granted/,
+    );
+    expect(calls.some((c) => c.url.endsWith('/profile'))).toBe(false);
+
+    const all = granting('https://www.googleapis.com/auth/gmail.modify openid');
+    const ok = await createGmailProvider(all, GMAIL_CLIENT).oauthSignIn?.exchange(
+      'good-code',
+      'state',
+      'verifier',
+    );
+    expect(ok?.identity).toMatchObject({ login: 'ada@example.com' });
   });
 });

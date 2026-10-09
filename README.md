@@ -124,6 +124,11 @@ Alternatively, set `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` to a dedicated OA
 into the dialog. Without any OAuth client, an access token (`ya29.…`) can be pasted, but Google
 expires it within an hour.
 
+If Google lets the user sign in but the dialog then reports "Gmail rejected the token (HTTP 403)",
+the dialog says why: either the Gmail API is not enabled in the Google Cloud project of the OAuth
+client (enable it, wait a few minutes and sign in again), or the user unticked the Gmail permission
+on Google's consent screen (sign in again and keep it ticked).
+
 ## Concepts
 
 | Concept         | What it is                                                                                                                                                                                                                                                                                            |
