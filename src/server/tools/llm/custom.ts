@@ -98,7 +98,7 @@ export function createCustomLlmProvider(fetchImpl: typeof fetch = fetch): ToolPr
         example: EXAMPLES[endpoint.api],
         authorize(request, grant, ctx) {
           // No account secret: the official providers' subscription-token handling stays off.
-          const context = { ...ctx, secret: '' };
+          const context = { ...ctx, secret: '', keepUnsetLimits: true };
           return endpoint.api === 'openai' && isResponsesCall(request)
             ? bridgeResponses(rules, request, grant, context, apiBase(endpoint.url))
             : rules.authorize(request, grant, context);

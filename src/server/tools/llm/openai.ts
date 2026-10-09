@@ -109,6 +109,15 @@ function chatgptResponses(
   return { upstreamUrl: CHATGPT_RESPONSES_URL, upstreamHeaders: chatgptHeaders };
 }
 
+/** The output limit to send in place of `current`, if any (see `cappedLimit`). */
+function outputCap(current: unknown, ctx: ToolRequestContext): number | undefined {
+  if (current === undefined && ctx.keepUnsetLimits === true) {
+    checkBudget(ctx.tokensRemaining);
+    return undefined;
+  }
+  return cappedLimit(current, ctx.tokensRemaining);
+}
+
 /** Meters a Responses API answer (streamed or not) by the usage it reports. */
 export function responsesMeter(contentType: string, model: string): UsageMeter {
   return eventMeter(contentType, model, (event, usage) => {
@@ -127,7 +136,7 @@ function responses(request: ToolRequest, grant: Grant, ctx: ToolRequestContext):
   if (chatgpt) {
     routing = chatgptResponses(body, ctx);
   } else {
-    const cap = cappedLimit(body.max_output_tokens, ctx.tokensRemaining);
+    const cap = outputCap(body.max_output_tokens, ctx);
     if (cap !== undefined) body.max_output_tokens = cap;
   }
   return {
@@ -148,7 +157,7 @@ function chatCompletions(
   const body = jsonBody(request);
   const { model, stream } = generate(body, grant);
   const current = body.max_completion_tokens ?? body.max_tokens;
-  const cap = cappedLimit(current, ctx.tokensRemaining);
+  const cap = outputCap(current, ctx);
   if (cap !== undefined) {
     body.max_completion_tokens = cap;
     delete body.max_tokens;

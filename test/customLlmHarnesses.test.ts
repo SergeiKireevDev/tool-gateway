@@ -33,6 +33,8 @@ const MODEL = 'qwen3-coder';
 const TOKEN = 'endpoint-token';
 const PROOF = 'proof-from-the-shell';
 const RUN_TIMEOUT_MS = 120_000;
+/** Above any output limit pi or Codex set themselves. */
+const MAX_CLIENT_LIMIT = 65_536;
 
 type Json = Record<string, unknown>;
 
@@ -227,6 +229,9 @@ describe.skipIf(!installed).each(HARNESSES)('%s on a Chat Completions endpoint',
       expect(received.every((r) => r.auth === `Bearer ${TOKEN}`)).toBe(true);
       expect(received.every((r) => r.path === '/v1/chat/completions')).toBe(true);
       expect(received[0]?.body).toMatchObject({ model: MODEL, stream: true });
+      // The run's token budget is not sent as an output limit (servers refuse one that large).
+      const limits = received.map((r) => Number(r.body?.max_completion_tokens ?? 0));
+      expect(Math.max(...limits)).toBeLessThanOrEqual(MAX_CLIENT_LIMIT);
       const usage = gateway.llmUsage.totalsFor([done.sessionId ?? '']);
       expect(usage.calls).toBe(received.length);
     },
