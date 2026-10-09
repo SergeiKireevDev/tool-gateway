@@ -246,7 +246,11 @@ API:
 | OpenAI    | Codex (needs the endpoint to serve the Responses API), pi (`"openai-completions"`) |
 
 The endpoint has no default model, so a launch names one. The default is the first exact model in
-the template's allowlist; when the allowlist names none, the member types the model in. Claude
+the template's allowlist; when the allowlist names none, the member picks one in the launch form.
+The form proposes the models the endpoint itself lists: the gateway calls the endpoint's
+`GET /v1/models` with its bearer token (`GET /api/me/launchpad/templates/<id>/models`) and keeps
+those the template's allowlist covers. If the endpoint can't list them, the member types the model
+in. Claude
 Code's model aliases (Haiku/Sonnet/Opus, subagents) all map to that model. pi gets the endpoint as
 its own `custom` provider; its key is read from `GATEWAY_SESSION_KEY` and is not written to disk.
 When the template also grants an official model API the harness speaks, the harness uses that

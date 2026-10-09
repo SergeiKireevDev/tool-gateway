@@ -1,4 +1,6 @@
+import { isRecord } from '../json.js';
 import type { LlmEndpoint, LlmEndpointApi, ToolProvider } from '../types.js';
+import { MS_PER_SECOND } from '../../units.js';
 import { createAnthropicProvider } from './anthropic.js';
 import {
   decide,
@@ -18,6 +20,12 @@ import { createOpenAIProvider } from './openai.js';
 
 export const CUSTOM_LLM_TOOL = 'custom';
 const NAME = 'Custom LLM';
+const MODELS_TIMEOUT_SECONDS = 10;
+/** Anthropic-style model lists are paginated (20 by default): ask for the largest page. */
+const ANTHROPIC_MODELS_PAGE = 1000;
+const ANTHROPIC_VERSION = '2023-06-01';
+/** At most this many models are proposed in the launch form. */
+export const MAX_ENDPOINT_MODELS = 500;
 
 /** The official provider whose request rules an endpoint of this API follows. */
 function dialect(api: LlmEndpointApi, fetchImpl: typeof fetch): ToolProvider {
@@ -89,4 +97,47 @@ export function createCustomLlmProvider(fetchImpl: typeof fetch = fetch): ToolPr
     },
   };
   return provider;
+}
+
+/** The model IDs of a `{ data: [{ id }] }` list (OpenAI and Anthropic shape), deduplicated. */
+function modelIds(body: unknown): string[] {
+  const data = isRecord(body) ? body.data : undefined;
+  if (!Array.isArray(data)) throw new Error('The custom LLM endpoint did not return a model list');
+  const ids = data.flatMap((m: unknown) =>
+    isRecord(m) && typeof m.id === 'string' && validateModelPattern(m.id) === null ? [m.id] : [],
+  );
+  return [...new Set(ids)].slice(0, MAX_ENDPOINT_MODELS);
+}
+
+/**
+ * The models an endpoint serves, from its `GET /v1/models` (with the endpoint's token), in the
+ * endpoint's order. Throws with a message fit for the member when the list can't be read.
+ */
+export async function listEndpointModels(
+  endpoint: LlmEndpoint,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const headers = new Headers({ accept: 'application/json', 'user-agent': 'local-gateway' });
+  if (endpoint.token) headers.set('authorization', `Bearer ${endpoint.token}`);
+  let url = `${endpoint.url}/v1/models`;
+  if (endpoint.api === 'anthropic') {
+    headers.set('anthropic-version', ANTHROPIC_VERSION);
+    url += `?limit=${String(ANTHROPIC_MODELS_PAGE)}`;
+  }
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      headers,
+      redirect: 'error',
+      signal: AbortSignal.timeout(MODELS_TIMEOUT_SECONDS * MS_PER_SECOND),
+    });
+  } catch {
+    throw new Error('The custom LLM endpoint could not be reached');
+  }
+  if (!res.ok) {
+    throw new Error(
+      `The custom LLM endpoint answered HTTP ${String(res.status)} when listing its models`,
+    );
+  }
+  return modelIds(await res.json().catch(() => null));
 }

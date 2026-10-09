@@ -273,6 +273,12 @@ export function memberLaunchRoutes(
     }),
   );
   router.get(
+    '/templates/:templateId/models',
+    h(async (req, res) => ({
+      models: await launchpad.endpointModels(memberOf(res), param(req, 'templateId')),
+    })),
+  );
+  router.get(
     '/runs',
     h((req, res) =>
       launchpad.runs

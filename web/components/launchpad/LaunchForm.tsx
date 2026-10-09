@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
@@ -144,19 +144,64 @@ const firstId = (items: { id: string }[]): string => items[0]?.id ?? '';
 const typesModel = (choice: HarnessChoice | undefined): boolean =>
   choice !== undefined && choice.modelRequired && choice.models.length === 0;
 
-/** The model to run: one of the template's models, or typed in for a custom endpoint. */
-function ModelField({
-  choice,
+/** The models a template's custom LLM endpoint serves (within its allowlist), once asked. */
+interface EndpointModels {
+  templateId: string;
+  models: string[];
+  error: string | null;
+}
+
+/** Asks the gateway which models a custom LLM endpoint serves; null while loading or not custom. */
+function useEndpointModels(api: Api, templateId: string, custom: boolean): EndpointModels | null {
+  const [listed, setListed] = useState<EndpointModels | null>(null);
+  useEffect(() => {
+    if (!custom || !templateId) return;
+    let current = true;
+    api<{ models: string[] }>(
+      'GET',
+      `/launchpad/templates/${encodeURIComponent(templateId)}/models`,
+    ).then(
+      (res) => {
+        if (current) setListed({ templateId, models: res.models, error: null });
+      },
+      (err: unknown) => {
+        if (current) setListed({ templateId, models: [], error: (err as Error).message });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, templateId, custom]);
+  return custom && listed?.templateId === templateId ? listed : null;
+}
+
+/** Models to propose: the template's exact ones, then those the custom endpoint lists. */
+const modelOptions = (choice: HarnessChoice, endpoint: EndpointModels | null): string[] => [
+  ...new Set([...choice.models, ...(endpoint?.models ?? [])]),
+];
+
+/** Why the member types the model of a custom endpoint instead of picking it. */
+function typedModelHint(endpoint: EndpointModels | null): string {
+  if (!endpoint) return 'Asking the custom LLM endpoint for its models…';
+  if (endpoint.error) return `Couldn’t list the endpoint’s models (${endpoint.error})`;
+  return 'The model name the custom LLM endpoint serves';
+}
+
+/** The model of a custom endpoint whose template names none: picked from its list, or typed. */
+function RequiredModelField({
+  options,
+  endpoint,
   model,
   setModel,
 }: {
-  choice: HarnessChoice | undefined;
+  options: string[];
+  endpoint: EndpointModels | null;
   model: string;
   setModel: (model: string) => void;
 }) {
-  if (typesModel(choice)) {
+  if (options.length === 0) {
     return (
-      <Field label="Model" hint="The model name the custom LLM endpoint serves">
+      <Field label="Model" hint={typedModelHint(endpoint)}>
         <Input
           required
           value={model}
@@ -168,7 +213,48 @@ function ModelField({
       </Field>
     );
   }
-  if (!choice || choice.models.length <= 1) return null;
+  return (
+    <Field label="Model" hint="Models the custom LLM endpoint serves">
+      <Select
+        required
+        value={model}
+        onChange={(e) => {
+          setModel(e.target.value);
+        }}
+      >
+        <option value="" disabled>
+          Choose a model
+        </option>
+        {options.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/** The model to run: one of the template's models, or one its custom endpoint serves. */
+function ModelField({
+  choice,
+  endpoint,
+  model,
+  setModel,
+}: {
+  choice: HarnessChoice | undefined;
+  endpoint: EndpointModels | null;
+  model: string;
+  setModel: (model: string) => void;
+}) {
+  if (!choice) return null;
+  const options = modelOptions(choice, endpoint);
+  if (typesModel(choice)) {
+    return (
+      <RequiredModelField options={options} endpoint={endpoint} model={model} setModel={setModel} />
+    );
+  }
+  if (options.length <= 1) return null;
   return (
     <Field label="Model">
       <Select
@@ -178,7 +264,7 @@ function ModelField({
         }}
       >
         <option value="">Default ({choice.models[0]})</option>
-        {choice.models.map((m) => (
+        {options.map((m) => (
           <option key={m} value={m}>
             {m}
           </option>
@@ -443,6 +529,7 @@ export function LaunchForm({
   const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
   const choice = template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0];
   const [model, setModel] = useState('');
+  const endpoint = useEndpointModels(api, templateId, choice?.provider === 'custom');
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [when, setWhen] = useState<When>('now');
   const [time, setTime] = useState('09:00');
@@ -547,7 +634,7 @@ export function LaunchForm({
           </Select>
         </Field>
       </div>
-      <ModelField choice={choice} model={model} setModel={setModel} />
+      <ModelField choice={choice} endpoint={endpoint} model={model} setModel={setModel} />
       {ambiguous.map((x) => (
         <Field
           key={x.tool}
