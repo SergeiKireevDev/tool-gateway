@@ -82,7 +82,8 @@ export function AccountsPanel({
   kind,
 }: PanelProps & { kind: AccountKind }) {
   // This panel only shows and connects accounts of one kind: tools or model providers.
-  const tools = toolsOfKind(all.tools, kind);
+  // Custom LLM endpoints are set up in templates, not as accounts.
+  const tools = toolsOfKind(all.tools, kind).filter((t) => !t.endpointApis);
   const data = { ...all, accounts: all.accounts.filter((a) => kindOf(all.tools, a.tool) === kind) };
   const copy = COPY[kind][viewer.role];
   const [editing, setEditing] = useState<Editing>(null);

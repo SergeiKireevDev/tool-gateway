@@ -1,3 +1,5 @@
+import type { LlmEndpoint } from '../tools/types.js';
+
 export interface Account {
   id: string;
   tool: string;
@@ -29,6 +31,8 @@ export interface ToolGrant {
    * for monday.com, channel IDs for Slack). Empty = unrestricted.
    */
   resources: string[];
+  /** Tools configured per grant (custom LLM endpoints): where requests go, with which token. */
+  endpoint?: LlmEndpoint;
 }
 
 /**
@@ -79,6 +83,7 @@ export interface Member {
 
 /** A template grant bound to the account a session key uses for that tool. */
 export interface SessionGrant extends ToolGrant {
+  /** `''` for grants that carry their own `endpoint` (no account behind them). */
   accountId: string;
 }
 

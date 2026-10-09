@@ -27,7 +27,14 @@ import type {
   WebSessionRole,
 } from './store/types.js';
 import type { ToolRegistry } from './tools/registry.js';
-import type { OAuthTokens, ToolProvider } from './tools/types.js';
+import { validateEndpointUrl } from './tools/llm/common.js';
+import {
+  LLM_ENDPOINT_APIS,
+  type LlmEndpoint,
+  type LlmEndpointApi,
+  type OAuthTokens,
+  type ToolProvider,
+} from './tools/types.js';
 import {
   MS_PER_DAY,
   MS_PER_MINUTE,
@@ -92,6 +99,14 @@ export const toolGrantSchema = z.object({
   tool: z.string().min(1),
   permissions: z.array(z.string()).min(1, 'Select at least one permission'),
   resources: z.array(z.string().trim()).default([]),
+  /** Tools configured per grant (custom LLM endpoints). No `token` keeps the current one. */
+  endpoint: z
+    .object({
+      url: z.string().trim().min(1, 'Enter the endpoint URL').max(MAX_SECRET_LENGTH),
+      api: z.enum(LLM_ENDPOINT_APIS),
+      token: z.string().trim().max(MAX_SECRET_LENGTH).optional(),
+    })
+    .optional(),
 });
 
 export const templateSchema = z
@@ -196,7 +211,20 @@ export type PublicAccount = Omit<Account, 'secret' | 'ownerMemberId' | 'oauth'> 
 export type WebIdentity =
   { role: 'admin'; email: string } | { role: 'member'; email: string; member: Member };
 export type SessionStatus = 'active' | 'expired' | 'revoked';
-export type PublicSession = Omit<Session, 'keyHash' | 'issuedBy'> & {
+
+/** A grant's endpoint as the API shows it: never its token. */
+export interface PublicEndpoint {
+  url: string;
+  api: LlmEndpointApi;
+  hasToken: boolean;
+}
+export type PublicGrant<G extends ToolGrant = ToolGrant> = Omit<G, 'endpoint'> & {
+  endpoint?: PublicEndpoint;
+};
+export type PublicTemplate = Omit<Template, 'grants'> & { grants: PublicGrant[] };
+
+export type PublicSession = Omit<Session, 'keyHash' | 'issuedBy' | 'grants'> & {
+  grants: PublicGrant<SessionGrant>[];
   status: SessionStatus;
   issuedBy: SessionIssuer;
 };
@@ -215,7 +243,7 @@ export interface MemberView {
   keyHint: string;
   expiresAt: string | null;
   templates: Pick<
-    Template,
+    PublicTemplate,
     'id' | 'name' | 'description' | 'grants' | 'defaultTtlSeconds' | 'maxTtlSeconds'
   >[];
   accounts: {
@@ -238,6 +266,8 @@ export interface ToolCatalogEntry {
   resourceHelp: string;
   permissions: ToolProvider['permissions'];
   example: ToolProvider['example'];
+  /** Chat APIs a per-grant endpoint may speak, for tools configured in templates; else null. */
+  endpointApis: readonly LlmEndpointApi[] | null;
   signIn: {
     setupHelp: string;
     registerUrl: string;
@@ -262,11 +292,13 @@ export interface RunToolScope {
 
 interface BoundGrant {
   grant: ToolGrant;
-  account: Account;
+  /** Null for grants that carry their own endpoint. */
+  account: Account | null;
 }
 
 export interface ResolvedGrant {
   grant: SessionGrant;
+  /** For endpoint grants, a stand-in holding the endpoint's token as its secret. */
   account: Account;
   tool: ToolProvider;
 }
@@ -447,6 +479,7 @@ export class Gateway {
       resourceHelp: t.resourceHelp,
       permissions: t.permissions,
       example: t.example,
+      endpointApis: t.bindEndpoint ? LLM_ENDPOINT_APIS : null,
       signIn: t.deviceFlow
         ? {
             setupHelp: t.deviceFlow.setupHelp,
@@ -746,11 +779,15 @@ export class Gateway {
 
   // ---------------------------------------------------------------- templates
 
-  listTemplates(): Template[] {
-    return [...this.store.read().templates];
+  listTemplates(): PublicTemplate[] {
+    return this.store.read().templates.map(publicTemplate);
   }
 
-  private validateTemplate(input: unknown): z.infer<typeof templateSchema> {
+  /** `previous`: the template being edited, whose endpoint tokens are kept unless replaced. */
+  private validateTemplate(
+    input: unknown,
+    previous?: Template,
+  ): Omit<z.infer<typeof templateSchema>, 'grants'> & { grants: ToolGrant[] } {
     const data = templateSchema.parse(input);
     const egressDomains = data.egressDomains.map((d) => {
       const checked = checkDomainPattern(d);
@@ -759,12 +796,17 @@ export class Gateway {
     });
     return {
       ...data,
-      grants: data.grants.map((g) => this.validateGrant(g)),
+      grants: data.grants.map((g) =>
+        this.validateGrant(g, previous?.grants.find((p) => p.tool === g.tool)?.endpoint),
+      ),
       egressDomains: [...new Set(egressDomains)],
     };
   }
 
-  private validateGrant(grant: ToolGrant): ToolGrant {
+  private validateGrant(
+    grant: z.infer<typeof toolGrantSchema>,
+    previousEndpoint: LlmEndpoint | undefined,
+  ): ToolGrant {
     const tool = this.tool(grant.tool);
     const known = new Set(tool.permissions.map((p) => p.id));
     const unknown = grant.permissions.filter((p) => !known.has(p));
@@ -776,10 +818,16 @@ export class Gateway {
       const err = tool.validateResource(r);
       if (err) throw badRequest(`${tool.name}: ${err}`);
     }
-    return { tool: tool.id, permissions: [...new Set(grant.permissions)], resources };
+    const endpoint = validateEndpoint(tool, grant.endpoint, previousEndpoint);
+    return {
+      tool: tool.id,
+      permissions: [...new Set(grant.permissions)],
+      resources,
+      ...(endpoint && { endpoint }),
+    };
   }
 
-  async createTemplate(input: unknown): Promise<Template> {
+  async createTemplate(input: unknown): Promise<PublicTemplate> {
     const data = this.validateTemplate(input);
     const ts = this.now().toISOString();
     const template: Template = { id: randomId(), ...data, createdAt: ts, updatedAt: ts };
@@ -794,11 +842,13 @@ export class Gateway {
       tool: toolsOf(template),
       detail: `Created template "${data.name}"`,
     });
-    return template;
+    return publicTemplate(template);
   }
 
-  async updateTemplate(id: string, input: unknown): Promise<Template> {
-    const data = this.validateTemplate(input);
+  async updateTemplate(id: string, input: unknown): Promise<PublicTemplate> {
+    const previous = this.store.read().templates.find((x) => x.id === id);
+    if (!previous) throw notFound(TEMPLATE_NOT_FOUND);
+    const data = this.validateTemplate(input, previous);
     const updated = await this.store.update((s) => {
       const t = s.templates.find((x) => x.id === id);
       if (!t) throw notFound(TEMPLATE_NOT_FOUND);
@@ -814,7 +864,7 @@ export class Gateway {
       tool: toolsOf(updated),
       detail: `Updated template "${data.name}"`,
     });
-    return updated;
+    return publicTemplate(updated);
   }
 
   async deleteTemplate(id: string): Promise<void> {
@@ -954,7 +1004,7 @@ export class Gateway {
           id,
           name,
           description,
-          grants,
+          grants: grants.map(publicGrant),
           defaultTtlSeconds,
           maxTtlSeconds,
         })),
@@ -1169,7 +1219,7 @@ export class Gateway {
     );
     return {
       template,
-      accountIds: bound.map((b) => b.account.id),
+      accountIds: bound.flatMap((b) => (b.account ? [b.account.id] : [])),
       tools: bound.map((b) => b.grant.tool),
     };
   }
@@ -1222,8 +1272,9 @@ export class Gateway {
       }
       return [account];
     });
-    return grants.flatMap((grant) => {
+    return grants.flatMap((grant): BoundGrant[] => {
       const { tool } = grant;
+      if (grant.endpoint) return [{ grant, account: null }];
       const explicit = requested.filter((a) => a.tool === tool);
       const candidates = explicit.length ? explicit : usable.filter((a) => a.tool === tool);
       if (candidates.length === 0 && scope?.optional.includes(tool)) return [];
@@ -1263,9 +1314,10 @@ export class Gateway {
       templateName: template.name,
       grants: bound.map(({ grant, account }) => ({
         tool: grant.tool,
-        accountId: account.id,
+        accountId: account?.id ?? '',
         permissions: [...grant.permissions],
         resources: [...grant.resources],
+        ...(grant.endpoint && { endpoint: { ...grant.endpoint } }),
       })),
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + ttlSeconds * MS_PER_SECOND).toISOString(),
@@ -1286,7 +1338,9 @@ export class Gateway {
       s.sessions.push(session);
     });
     const by = issuerName(issuedBy);
-    const on = bound.map(({ account }) => `"${account.label}"`).join(', ');
+    const on = bound
+      .map(({ grant, account }) => `"${account?.label ?? grant.endpoint?.url ?? grant.tool}"`)
+      .join(', ');
     this.activity.add({
       kind: issuedBy.kind,
       tool: toolsOf(template),
@@ -1333,9 +1387,17 @@ export class Gateway {
   resolveGrant(session: Session, toolId: string): ResolvedGrant | null {
     const grant = session.grants.find((g) => g.tool === toolId);
     if (!grant) return null;
+    const tool = this.tools.get(grant.tool);
+    if (grant.endpoint) {
+      if (!tool?.bindEndpoint) throw unauthorized('Tool is no longer available');
+      return {
+        grant,
+        account: endpointAccount(grant.endpoint, session),
+        tool: tool.bindEndpoint(grant.endpoint),
+      };
+    }
     const account = this.store.read().accounts.find((a) => a.id === grant.accountId);
     if (!account) throw unauthorized('Account behind this session was removed');
-    const tool = this.tools.get(grant.tool);
     if (!tool) throw unauthorized('Tool is no longer available');
     return { grant, account, tool };
   }
@@ -1380,10 +1442,11 @@ export class Gateway {
   }
 
   private toPublicSession(s: Session): PublicSession {
-    const { keyHash: _omit, issuedBy, ...rest } = s;
+    const { keyHash: _omit, issuedBy, grants, ...rest } = s;
     const pending = this.usage.get(s.id);
     return {
       ...rest,
+      grants: grants.map(publicGrant),
       issuedBy: issuedBy ?? ADMIN_ISSUER,
       requestCount: s.requestCount + (pending?.count ?? 0),
       lastUsedAt: pending?.lastUsedAt ?? s.lastUsedAt,
@@ -1407,6 +1470,7 @@ export class Gateway {
     const usable = (a: Account): boolean =>
       a.ownerMemberId === member.id || (isShared(a) && member.accountIds.includes(a.id));
     for (const { account } of bound) {
+      if (!account) continue;
       const current = s.accounts.find((a) => a.id === account.id);
       if (!current || !usable(current)) throw forbidden('This account is not available to you');
     }
@@ -1424,6 +1488,48 @@ export class Gateway {
     }
     return n;
   }
+}
+
+/** Checks a grant's endpoint: required by tools configured per grant, refused by the others. */
+function validateEndpoint(
+  tool: ToolProvider,
+  input: z.infer<typeof toolGrantSchema>['endpoint'],
+  previous: LlmEndpoint | undefined,
+): LlmEndpoint | undefined {
+  if (!tool.bindEndpoint) {
+    if (input) throw badRequest(`${tool.name} does not take an endpoint`);
+    return undefined;
+  }
+  if (!input) throw badRequest(`${tool.name}: enter the endpoint URL and chat API`);
+  const checked = validateEndpointUrl(input.url);
+  if ('error' in checked) throw badRequest(`${tool.name}: ${checked.error}`);
+  return { url: checked.url, api: input.api, token: input.token ?? previous?.token ?? '' };
+}
+
+function publicGrant<G extends ToolGrant>(grant: G): PublicGrant<G> {
+  const { endpoint, ...rest } = grant;
+  if (!endpoint) return rest;
+  return {
+    ...rest,
+    endpoint: { url: endpoint.url, api: endpoint.api, hasToken: endpoint.token !== '' },
+  };
+}
+
+function publicTemplate(t: Template): PublicTemplate {
+  return { ...t, grants: t.grants.map(publicGrant) };
+}
+
+/** Stand-in account for an endpoint grant: its token is what the proxy sends upstream. */
+function endpointAccount(endpoint: LlmEndpoint, session: Session): Account {
+  return {
+    id: '',
+    tool: '',
+    label: new URL(endpoint.url).host,
+    secret: endpoint.token,
+    identity: { api: endpoint.api },
+    createdAt: session.createdAt,
+    lastVerifiedAt: session.createdAt,
+  };
 }
 
 /** Keys a member issued itself, or the launchpad issued for the member's runs. */

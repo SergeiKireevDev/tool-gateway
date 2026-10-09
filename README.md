@@ -226,6 +226,15 @@ Instead of an API key, an account can use a subscription:
   the ChatGPT Codex backend, so such accounts serve `POST /v1/responses` only (Codex). The gateway
   sends them with `store: false` and without `max_output_tokens`, which that backend refuses.
 
+**Custom LLM endpoints** (a self-hosted vLLM / Ollama / LiteLLM server, or any other compatible
+API) are set up in the template rather than as an account: enable **Custom LLM** under _Model
+access_ and enter its **URL**, the **chat API** it speaks (OpenAI or Anthropic) and an optional
+**bearer token**. Clients call `/proxy/custom/v1/…` with the endpoints and session key header of
+that API; the gateway applies the same checks (model allowlist, token budget, server-side tools)
+and forwards to `<URL>/v1/…` with `Authorization: Bearer <token>`. The token is never returned by
+the API (leave it blank when editing to keep it), and session keys keep the endpoint they were
+issued with.
+
 - **Token budget.** A session key may carry a `tokenBudget` (`POST /api/sessions` …
   `"tokenBudget": 2000000`). Every metered call counts input + output + cache-read + cache-write
   tokens, read from the (streamed) response. The output limit of each call (`max_tokens`,

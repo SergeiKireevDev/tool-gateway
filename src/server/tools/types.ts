@@ -141,6 +141,22 @@ export interface ToolExample {
   clientHint: string;
 }
 
+/** Chat API dialects a custom LLM endpoint can speak. */
+export const LLM_ENDPOINT_APIS = ['openai', 'anthropic'] as const;
+export type LlmEndpointApi = (typeof LLM_ENDPOINT_APIS)[number];
+
+/**
+ * A model API at an address of the admin's choosing (a self-hosted or third-party server),
+ * configured in the template grant itself rather than through an account.
+ */
+export interface LlmEndpoint {
+  /** Base URL: requests go to `<url>/v1/…`, like the official API they mimic. */
+  url: string;
+  api: LlmEndpointApi;
+  /** Sent upstream as `Authorization: Bearer …`; empty = no credential. Never returned by the API. */
+  token: string;
+}
+
 export interface ToolProvider {
   id: string;
   name: string;
@@ -177,6 +193,11 @@ export interface ToolProvider {
   deviceFlow?: DeviceFlow;
   /** "Sign in with …" through OAuth (tokens are refreshed by the gateway). */
   oauthSignIn?: OAuthSignIn;
+  /**
+   * Tools whose upstream is configured per grant (custom LLM endpoints) rather than by an
+   * account: returns the provider that serves one endpoint.
+   */
+  bindEndpoint?(endpoint: LlmEndpoint): ToolProvider;
   /** Optional response header rewriting (e.g. pagination links pointing back at the gateway). */
   rewriteResponseHeader?(name: string, value: string, proxyBaseUrl: string): string;
 }
