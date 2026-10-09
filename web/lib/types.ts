@@ -42,8 +42,9 @@ export interface Tool {
   /**
    * Present when the tool supports "Sign in with …" through OAuth. `redirectsBack`: the provider
    * returns to the gateway's callback page; otherwise the redirect address is pasted back.
+   * `troubleshooting`: what to do when the provider refuses the sign-in.
    */
-  oauthSignIn: { help: string; redirectsBack: boolean } | null;
+  oauthSignIn: { help: string; redirectsBack: boolean; troubleshooting: string | null } | null;
 }
 
 export interface DeviceFlowStart {

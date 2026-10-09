@@ -179,6 +179,7 @@ function RedirectSignIn({
       </ol>
       {(waiting || busy) && <p className="text-sm text-slate-500">Waiting for {tool.name}…</p>}
       <ErrorBanner message={error} />
+      <Troubleshooting tool={tool} />
       <details className="text-sm text-slate-600">
         <summary className="cursor-pointer">Signing in from another browser?</summary>
         <div className="mt-3">
@@ -220,6 +221,7 @@ function PasteSignIn({ tool, started, busy, error, onPaste, onCancel }: StepProp
         <li>Paste it below.</li>
       </ol>
       <ErrorBanner message={error} />
+      <Troubleshooting tool={tool} />
       <PasteForm
         busy={busy}
         onPaste={onPaste}
@@ -227,6 +229,18 @@ function PasteSignIn({ tool, started, busy, error, onPaste, onCancel }: StepProp
         onCancel={onCancel}
       />
     </div>
+  );
+}
+
+/** What to do when the provider refuses the sign-in, from the tool's catalog entry. */
+function Troubleshooting({ tool }: { tool: Tool }) {
+  const text = tool.oauthSignIn?.troubleshooting;
+  if (!text) return null;
+  return (
+    <details className="text-sm text-slate-600">
+      <summary className="cursor-pointer">{tool.name} refuses the sign-in?</summary>
+      <p className="mt-2">{text}</p>
+    </details>
   );
 }
 

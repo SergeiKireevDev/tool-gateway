@@ -115,9 +115,21 @@ without anything to copy. The gateway asks for the `gmail.modify` scope (read, o
 send; not permanent deletion) and shows the mailbox's address.
 
 It uses the [Google sign-in](#admin-sign-in-with-google) OAuth client and its
-`<GATEWAY_PUBLIC_URL>/auth/google/callback` redirect URI, so the only extra setup is to **enable
-the Gmail API** in the same Google Cloud project (and, while the app is in testing mode, add the
-mailboxes as test users).
+`<GATEWAY_PUBLIC_URL>/auth/google/callback` redirect URI. In the same Google Cloud project:
+
+1. **Enable the Gmail API** (APIs & Services → Library → Gmail API).
+2. Add the `https://www.googleapis.com/auth/gmail.modify` scope under **Google Auth Platform →
+   Data access**.
+3. Let the mailboxes sign in. While the app's publishing status is **Testing**, Google only accepts
+   the accounts listed under **Google Auth Platform → Audience → Test users** (up to 100). Anyone
+   else gets "Access blocked: … has not completed the Google verification process" (Error 403:
+   `access_denied`) and never comes back to the gateway: add their address there. Alternatively,
+   click **Publish app**. `gmail.modify` is a restricted scope, so until Google verifies the app,
+   users see a "Google hasn't verified this app" warning (Advanced → Go to …) and the app is
+   limited to 100 users. Refresh tokens issued in Testing expire after 7 days, so publishing also
+   avoids reconnecting weekly.
+
+The connect dialog repeats the test-user hint for members who hit the block.
 
 Alternatively, set `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` to a dedicated OAuth client of type
 **Desktop app**. Google then redirects to a `127.0.0.1` page instead, whose address is pasted back

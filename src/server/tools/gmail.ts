@@ -31,6 +31,12 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const LOOPBACK_REDIRECT_URI = 'http://127.0.0.1:8765/';
 /** Read, organize, draft and send; not permanent deletion or settings. */
 const SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+/**
+ * Google blocks every account but the listed test users while the OAuth consent screen is in
+ * "Testing" ("Access blocked: … has not completed the Google verification process", 403).
+ */
+const TROUBLESHOOTING =
+  'If Google answers “Access blocked: … has not completed the Google verification process” (Error 403: access_denied), the gateway’s Google Cloud app is in testing and only accepts its test users. Ask the gateway admin to add this Google address under Google Auth Platform → Audience → Test users (or to publish the app), then start again.';
 
 export interface GmailOAuthClient {
   clientId: string;
@@ -316,6 +322,7 @@ function googleSignIn(fetchImpl: typeof fetch, client: GmailOAuthClient): OAuthS
       ? 'Opens Google to sign in to the Gmail account agents will use. After approving, Google sends you back to the gateway, which connects the account.'
       : 'Opens Google to sign in to the Gmail account agents will use. After approving, your browser lands on a 127.0.0.1 page that does not load: copy that page’s full address and paste it here.',
     redirectsBack: client.redirectUri !== undefined,
+    troubleshooting: TROUBLESHOOTING,
     authorizeUrl(challenge, state) {
       const params = new URLSearchParams({
         client_id: client.clientId,

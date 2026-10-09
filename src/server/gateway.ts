@@ -260,7 +260,7 @@ export interface ToolCatalogEntry {
   name: string;
   kind: 'tool' | 'llm';
   /** Present when the tool offers "Sign in with …" through OAuth. */
-  oauthSignIn: { help: string; redirectsBack: boolean } | null;
+  oauthSignIn: { help: string; redirectsBack: boolean; troubleshooting: string | null } | null;
   credentialHelp: string;
   credentialPlaceholder: string;
   resourceHelp: string;
@@ -476,7 +476,11 @@ export class Gateway {
       name: t.name,
       kind: t.kind ?? 'tool',
       oauthSignIn: t.oauthSignIn
-        ? { help: t.oauthSignIn.help, redirectsBack: t.oauthSignIn.redirectsBack ?? false }
+        ? {
+            help: t.oauthSignIn.help,
+            redirectsBack: t.oauthSignIn.redirectsBack ?? false,
+            troubleshooting: t.oauthSignIn.troubleshooting ?? null,
+          }
         : null,
       credentialHelp: t.credentialHelp,
       credentialPlaceholder: t.credentialPlaceholder,

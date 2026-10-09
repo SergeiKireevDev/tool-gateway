@@ -132,6 +132,8 @@ export interface OAuthSignIn {
    * the dialog that started the sign-in; otherwise the user pastes the address they landed on.
    */
   redirectsBack?: boolean;
+  /** What to do when the provider refuses the sign-in (for example an app still in testing). */
+  troubleshooting?: string;
   authorizeUrl(challenge: string, state: string): string;
   exchange(code: string, state: string, verifier: string): Promise<OAuthTokens>;
   refresh(refreshToken: string): Promise<OAuthTokens>;

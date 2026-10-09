@@ -266,6 +266,19 @@ describe('Gmail through the gateway', () => {
     ).toBe(true);
   });
 
+  it('lists the sign-in, with what to do when Google blocks it, in the tool catalog', async () => {
+    const tools = await request(app)
+      .get('/api/admin/tools')
+      .set(...auth(admin))
+      .expect(200);
+    const gmail = (tools.body as { id: string; oauthSignIn: unknown }[]).find(
+      (t) => t.id === 'gmail',
+    );
+    expect(gmail?.oauthSignIn).toMatchObject({
+      troubleshooting: expect.stringContaining('Test users') as unknown,
+    });
+  });
+
   it('has no sign-in without an OAuth client', () => {
     expect(createGmailProvider(fakeGmailFetch([])).oauthSignIn).toBeUndefined();
   });
@@ -306,6 +319,7 @@ describe('Sign in with Google through the gateway’s own client', () => {
     const calls: Harness['upstreamCalls'] = [];
     const signIn = createGmailProvider(fakeGmailFetch(calls), client).oauthSignIn;
     expect(signIn?.redirectsBack).toBe(true);
+    expect(signIn?.troubleshooting).toMatch(/Test users/);
     const url = new URL(signIn?.authorizeUrl('challenge', 'state') ?? '');
     expect(url.searchParams.get('redirect_uri')).toBe(client.redirectUri);
     expect(url.searchParams.get('client_id')).toBe('gmail-client');
