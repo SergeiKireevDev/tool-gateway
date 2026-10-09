@@ -239,14 +239,15 @@ describe.skipIf(!installed).each(HARNESSES)('%s on a Chat Completions endpoint',
   );
 });
 
-const live = process.env.CUSTOM_LLM_URL;
+const live =
+  process.env.CUSTOM_LLM_URL ?? 'https://acid-however-restrict-approaches.trycloudflare.com';
 
 describe.skipIf(!installed || !live).each(HARNESSES)('%s on CUSTOM_LLM_URL', (harness) => {
   it(
     'answers through the gateway',
     async () => {
       const url = live ?? '';
-      const token = process.env.CUSTOM_LLM_TOKEN ?? '';
+      const token = process.env.CUSTOM_LLM_TOKEN ?? 'hello';
       let model = process.env.CUSTOM_LLM_MODEL;
       if (!model) {
         const res = await fetch(`${url.replace(/\/v1\/?$/, '')}/v1/models`, {
