@@ -108,15 +108,21 @@ the workspace, user and granted scopes.
 
 ## Connecting Gmail
 
-The recommended way is **Sign in with Google**, which the gateway keeps refreshed. In Google Cloud
-Console, enable the Gmail API, then create an OAuth client ID of type **Desktop app** and set
-`GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` (an app in testing mode only lets its test users sign
-in). **Accounts → Connect account → Gmail → Sign in** then opens Google; after approving, paste the
-address of the `127.0.0.1` page your browser lands on. The gateway asks for the `gmail.modify`
-scope (read, organize, draft and send; not permanent deletion) and shows the mailbox's address.
+The recommended way is **Sign in with Google**, which the gateway keeps refreshed. Admins and
+members both use it from **Accounts → Connect account → Gmail → Sign in with Gmail**: Google opens
+in a popup and, after approving, sends the browser back to the gateway, which connects the account
+without anything to copy. The gateway asks for the `gmail.modify` scope (read, organize, draft and
+send; not permanent deletion) and shows the mailbox's address.
 
-Without an OAuth client, an access token (`ya29.…`) can be pasted, but Google expires it within an
-hour.
+It uses the [Google sign-in](#admin-sign-in-with-google) OAuth client and its
+`<GATEWAY_PUBLIC_URL>/auth/google/callback` redirect URI, so the only extra setup is to **enable
+the Gmail API** in the same Google Cloud project (and, while the app is in testing mode, add the
+mailboxes as test users).
+
+Alternatively, set `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` to a dedicated OAuth client of type
+**Desktop app**. Google then redirects to a `127.0.0.1` page instead, whose address is pasted back
+into the dialog. Without any OAuth client, an access token (`ya29.…`) can be pasted, but Google
+expires it within an hour.
 
 ## Concepts
 

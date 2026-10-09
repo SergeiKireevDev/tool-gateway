@@ -5,7 +5,7 @@ import express, {
   type Response,
 } from 'express';
 import { ZodError } from 'zod';
-import type { GatewayConfig } from '../config.js';
+import { GOOGLE_CALLBACK_PATH, type GatewayConfig } from '../config.js';
 import { forbidden, HttpError, notFound, unauthorized } from '../errors.js';
 import { ADMIN, type Gateway } from '../gateway.js';
 import { HTTP, isClientError } from '../httpStatus.js';
@@ -55,7 +55,7 @@ export function createApp(
     options.googleSignIn !== undefined
       ? options.googleSignIn
       : config.google &&
-        new GoogleSignIn(config.google, `${config.publicUrl}/auth/google/callback`);
+        new GoogleSignIn(config.google, `${config.publicUrl}${GOOGLE_CALLBACK_PATH}`);
   app.use(adminAuthRoutes(gateway, config, google));
 
   const admin = express.Router();

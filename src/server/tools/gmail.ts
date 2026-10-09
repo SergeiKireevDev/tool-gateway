@@ -23,17 +23,20 @@ const USER_AGENT = 'local-gateway';
 const JSON_TYPE = 'application/json';
 const CONTENT_TYPE = 'content-type';
 
-// "Sign in with Google": a Desktop app OAuth client of the admin's Google Cloud project.
+// "Sign in with Google": the gateway's Google sign-in client (a Web application, redirecting back
+// to the gateway), or a dedicated Desktop app client of the admin's Google Cloud project.
 const AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 /** Desktop clients accept any loopback redirect without registering it. */
-const REDIRECT_URI = 'http://127.0.0.1:8765/';
+const LOOPBACK_REDIRECT_URI = 'http://127.0.0.1:8765/';
 /** Read, organize, draft and send; not permanent deletion or settings. */
 const SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 
 export interface GmailOAuthClient {
   clientId: string;
   clientSecret: string;
+  /** A redirect URI on the gateway (Web application client); the loopback one when absent. */
+  redirectUri?: string;
 }
 
 const PERM = {
@@ -307,13 +310,17 @@ function googleSignIn(fetchImpl: typeof fetch, client: GmailOAuthClient): OAuthS
     const tokens = tokensOf(json, refreshToken);
     return { ...tokens, identity: await profile(fetchImpl, tokens.access) };
   };
+  const redirectUri = client.redirectUri ?? LOOPBACK_REDIRECT_URI;
   return {
-    help: 'Opens Google to sign in to the Gmail account agents will use. After approving, your browser lands on a 127.0.0.1 page that does not load: copy that page’s full address and paste it here.',
+    help: client.redirectUri
+      ? 'Opens Google to sign in to the Gmail account agents will use. After approving, Google sends you back to the gateway, which connects the account.'
+      : 'Opens Google to sign in to the Gmail account agents will use. After approving, your browser lands on a 127.0.0.1 page that does not load: copy that page’s full address and paste it here.',
+    redirectsBack: client.redirectUri !== undefined,
     authorizeUrl(challenge, state) {
       const params = new URLSearchParams({
         client_id: client.clientId,
         response_type: 'code',
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: redirectUri,
         scope: SCOPE,
         code_challenge: challenge,
         code_challenge_method: 'S256',
@@ -327,7 +334,7 @@ function googleSignIn(fetchImpl: typeof fetch, client: GmailOAuthClient): OAuthS
       token({
         grant_type: 'authorization_code',
         code,
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: redirectUri,
         code_verifier: verifier,
       }),
     refresh: (refreshToken) =>
@@ -343,7 +350,7 @@ export function createGmailProvider(
     id: 'gmail',
     name: 'Gmail',
     credentialHelp:
-      'Prefer "Sign in with Google" (set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET): the gateway then refreshes the token itself. A pasted OAuth access token (ya29.…) works too, but Google expires it within an hour.',
+      'Prefer "Sign in with Google" (available once Google sign-in or GMAIL_CLIENT_ID is configured): the gateway then refreshes the token itself. A pasted OAuth access token (ya29.…) works too, but Google expires it within an hour.',
     credentialPlaceholder: 'ya29.…',
     resourceHelp:
       'Who mail may be sent to: one address (ada@example.com) or domain (*@example.com) per line. Leave empty to allow any recipient. Reading, labels and drafts are not limited by it.',

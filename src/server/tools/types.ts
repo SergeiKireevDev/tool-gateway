@@ -127,6 +127,11 @@ export interface OAuthTokens {
 export interface OAuthSignIn {
   /** Explains the steps in the UI. */
   help: string;
+  /**
+   * The provider redirects back to the gateway (`GOOGLE_CALLBACK_PATH`), which hands the code to
+   * the dialog that started the sign-in; otherwise the user pastes the address they landed on.
+   */
+  redirectsBack?: boolean;
   authorizeUrl(challenge: string, state: string): string;
   exchange(code: string, state: string, verifier: string): Promise<OAuthTokens>;
   refresh(refreshToken: string): Promise<OAuthTokens>;

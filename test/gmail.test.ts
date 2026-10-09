@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/server/http/app.js';
 import { createGmailProvider, parseAddressList, recipientsOf } from '../src/server/tools/gmail.js';
 import type { AuthzDecision, Grant } from '../src/server/tools/types.js';
-import { createHarness, fakeGmailFetch, type Harness } from './helpers.js';
+import { createHarness, fakeGmailFetch, GMAIL_CLIENT, type Harness } from './helpers.js';
 
 const gmail = createGmailProvider(fakeGmailFetch([]));
 const ME = '/gmail/v1/users/me';
@@ -268,5 +268,59 @@ describe('Gmail through the gateway', () => {
 
   it('has no sign-in without an OAuth client', () => {
     expect(createGmailProvider(fakeGmailFetch([])).oauthSignIn).toBeUndefined();
+  });
+
+  it('hands Google redirects for a sign-in in progress to the UI callback page', async () => {
+    const start = await request(app)
+      .post('/api/admin/sign-ins')
+      .set(...auth(admin))
+      .send({ tool: 'gmail', label: 'Ada' })
+      .expect(201);
+    const state = new URL(start.body.authorizeUrl as string).searchParams.get('state') ?? '';
+    const back = await request(app)
+      .get(`/auth/google/callback?state=${state}&code=good-code&scope=x`)
+      .expect(303);
+    const landed = new URL(back.headers.location ?? '', h.config.publicUrl);
+    expect(landed.pathname).toBe('/sign-in/callback');
+    expect(landed.searchParams.get('state')).toBe(state);
+    expect(landed.searchParams.get('code')).toBe('good-code');
+    // The dialog completes the sign-in with the address the callback page hands it.
+    await request(app)
+      .post(`/api/admin/sign-ins/${start.body.flowId as string}/complete`)
+      .set(...auth(admin))
+      .send({ input: landed.href })
+      .expect(201);
+
+    // Once used (or for any other state), the callback is an ordinary login again.
+    const login = await request(app)
+      .get(`/auth/google/callback?state=${state}&code=good-code`)
+      .expect(303);
+    expect(login.headers.location).toMatch(/^\/\?login_error=/);
+  });
+});
+
+describe('Sign in with Google through the gateway’s own client', () => {
+  const client = { ...GMAIL_CLIENT, redirectUri: 'http://gateway.test/auth/google/callback' };
+
+  it('redirects back to the gateway and exchanges the code for that address', async () => {
+    const calls: Harness['upstreamCalls'] = [];
+    const signIn = createGmailProvider(fakeGmailFetch(calls), client).oauthSignIn;
+    expect(signIn?.redirectsBack).toBe(true);
+    const url = new URL(signIn?.authorizeUrl('challenge', 'state') ?? '');
+    expect(url.searchParams.get('redirect_uri')).toBe(client.redirectUri);
+    expect(url.searchParams.get('client_id')).toBe('gmail-client');
+    const tokens = await signIn?.exchange('good-code', 'state', 'verifier');
+    expect(tokens?.identity).toMatchObject({ login: 'ada@example.com' });
+    const exchange = calls.find((c) => c.url === 'https://oauth2.googleapis.com/token');
+    expect(new URLSearchParams(exchange?.init.body as string).get('redirect_uri')).toBe(
+      client.redirectUri,
+    );
+  });
+
+  it('keeps the pasted loopback redirect for a Desktop app client', () => {
+    const signIn = createGmailProvider(fakeGmailFetch([]), GMAIL_CLIENT).oauthSignIn;
+    expect(signIn?.redirectsBack).toBe(false);
+    const url = new URL(signIn?.authorizeUrl('challenge', 'state') ?? '');
+    expect(url.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:8765/');
   });
 });

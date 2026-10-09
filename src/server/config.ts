@@ -13,10 +13,19 @@ export interface GoogleSignInConfig {
   adminEmails: string[];
 }
 
-/** OAuth client ("Desktop app") for "Sign in with Google" on Gmail accounts. */
+/** Where Google sends admins and members back after signing in (registered in Google Cloud). */
+export const GOOGLE_CALLBACK_PATH = '/auth/google/callback';
+
+/** OAuth client for "Sign in with Google" on Gmail accounts. */
 export interface GmailOAuthConfig {
   clientId: string;
   clientSecret: string;
+  /**
+   * Set when the client is the gateway's own Google sign-in client (a Web application): Google
+   * then redirects back to the gateway, which hands the code to the dialog. Absent for a
+   * dedicated Desktop app client, whose loopback redirect address is pasted back.
+   */
+  redirectUri?: string;
 }
 
 export interface LaunchpadConfig {
@@ -51,7 +60,10 @@ export interface GatewayConfig {
   publicUrl: string;
   /** Admin sign-in with Google; null when not configured. */
   google: GoogleSignInConfig | null;
-  /** Gmail sign-in; null when not configured (Gmail tokens can still be pasted). */
+  /**
+   * Gmail sign-in: `GMAIL_CLIENT_ID`/`GMAIL_CLIENT_SECRET`, else the Google sign-in client; null
+   * when neither is configured (Gmail tokens can still be pasted).
+   */
   gmail: GmailOAuthConfig | null;
 }
 
@@ -81,15 +93,7 @@ export function loadConfig(env: Env = process.env): GatewayConfig {
   );
   if (!URL.canParse(publicUrl)) throw new Error(`Invalid GATEWAY_PUBLIC_URL: ${publicUrl}`);
 
-  const clientId = read(env, 'GOOGLE_CLIENT_ID');
-  const clientSecret = read(env, 'GOOGLE_CLIENT_SECRET');
-  if (Boolean(clientId) !== Boolean(clientSecret)) {
-    throw new Error('Set both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (or neither)');
-  }
-  const adminEmails = (read(env, 'GATEWAY_ADMIN_EMAILS') ?? '')
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
+  const google = readGoogle(env);
 
   return {
     host,
@@ -102,18 +106,46 @@ export function loadConfig(env: Env = process.env): GatewayConfig {
       read(env, 'GATEWAY_KEY_FILE') ?? path.join(homedir(), '.local-gateway', 'master.key'),
     ),
     publicUrl,
-    google: clientId && clientSecret ? { clientId, clientSecret, adminEmails } : null,
-    gmail: readGmail(env),
+    google,
+    gmail: readGmail(env, google, publicUrl),
   };
 }
 
-function readGmail(env: Env): GmailOAuthConfig | null {
+function readGoogle(env: Env): GoogleSignInConfig | null {
+  const clientId = read(env, 'GOOGLE_CLIENT_ID');
+  const clientSecret = read(env, 'GOOGLE_CLIENT_SECRET');
+  if (Boolean(clientId) !== Boolean(clientSecret)) {
+    throw new Error('Set both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (or neither)');
+  }
+  const adminEmails = (read(env, 'GATEWAY_ADMIN_EMAILS') ?? '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  return clientId && clientSecret ? { clientId, clientSecret, adminEmails } : null;
+}
+
+/**
+ * A dedicated (Desktop app) client when set; otherwise the Google sign-in client, which Google
+ * redirects back to the gateway with.
+ */
+function readGmail(
+  env: Env,
+  google: GoogleSignInConfig | null,
+  publicUrl: string,
+): GmailOAuthConfig | null {
   const clientId = read(env, 'GMAIL_CLIENT_ID');
   const clientSecret = read(env, 'GMAIL_CLIENT_SECRET');
   if (Boolean(clientId) !== Boolean(clientSecret)) {
     throw new Error('Set both GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET (or neither)');
   }
-  return clientId && clientSecret ? { clientId, clientSecret } : null;
+  if (clientId && clientSecret) return { clientId, clientSecret };
+  return google
+    ? {
+        clientId: google.clientId,
+        clientSecret: google.clientSecret,
+        redirectUri: `${publicUrl}${GOOGLE_CALLBACK_PATH}`,
+      }
+    : null;
 }
 
 function readVmHost(env: Env): string | null {

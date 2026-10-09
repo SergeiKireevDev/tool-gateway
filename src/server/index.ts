@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import nextModule from 'next';
 import { openGateway } from './bootstrap.js';
-import { loadConfig, loadEnvFile, vmPublicUrl } from './config.js';
+import { GOOGLE_CALLBACK_PATH, loadConfig, loadEnvFile, vmPublicUrl } from './config.js';
 import { createApp, createVmApp } from './http/app.js';
 import { attachEgressProxy } from './http/egressProxy.js';
 
@@ -49,7 +49,9 @@ async function main(): Promise<void> {
     console.info(`Local gateway listening on ${config.publicUrl} (${dev ? 'dev' : 'production'})`);
     console.info(`  store: ${config.storeFile}\n  key:   ${config.keyFile}`);
     if (config.google) {
-      console.info(`  Google sign-in: on — redirect URI ${config.publicUrl}/auth/google/callback`);
+      console.info(
+        `  Google sign-in: on — redirect URI ${config.publicUrl}${GOOGLE_CALLBACK_PATH}`,
+      );
       if (config.google.adminEmails.length === 0) {
         console.warn('  ⚠ GATEWAY_ADMIN_EMAILS is empty: nobody can sign in with Google.');
       }
