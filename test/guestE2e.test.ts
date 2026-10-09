@@ -198,17 +198,16 @@ describe('a real runner with a fake harness (local driver)', () => {
       templateId: tpl.id,
       harness: 'claude-code',
     });
-    const [plan] = launchpad.runs.workflowRuns(wf.id);
-    expect(await waitFor(plan?.id ?? '')).toBe('succeeded');
-    const exec = launchpad.runs.workflowRuns(wf.id)[1];
-    expect(exec?.harness).toBe('script');
-    expect(await waitFor(exec?.id ?? '')).toBe('succeeded');
-
-    const done = workflows.view(launchpad.runs.requireWorkflow(wf.id));
+    // The workflow stays active between its steps, until the script is done.
+    let done = workflows.view(wf);
+    for (let i = 0; i < 200 && ['queued', 'provisioning', 'running'].includes(done.status); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      done = workflows.view(wf);
+    }
     expect(done.status).toBe('succeeded');
-    expect(done.steps[1]?.run?.finalMessage).toMatch(
-      /^issues 200\nllm 200 openai qwen3\nanthropic 40[13]$/,
-    );
+    const exec = done.steps[1]?.run;
+    expect(exec?.harness).toBe('script');
+    expect(exec?.finalMessage).toMatch(/^issues 200\nllm 200 openai qwen3\nanthropic 40[13]$/);
     const lines = launchpad.runs.events(exec?.id ?? '').filter((e) => e.type === 'assistant_text');
     expect(lines.map((e) => e.text)).toEqual(expect.arrayContaining(['issues 200']));
   }, 30_000);
