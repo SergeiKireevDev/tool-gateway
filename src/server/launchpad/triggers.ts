@@ -116,6 +116,10 @@ function toTrigger(r: TriggerRow): Trigger {
   };
 }
 
+/** A trigger's name when none is given: the first line of its instructions. */
+const defaultName = (instructions: string): string =>
+  clip(instructions.split('\n')[0] ?? 'Webhook agent', MAX_NAME_LENGTH);
+
 /** Whether an event type is one a trigger listens to: equal, or a sub-type (`issues.opened`). */
 export function matchesEventTypes(patterns: readonly string[], eventType: string | null): boolean {
   if (patterns.length === 0) return true;
@@ -174,7 +178,7 @@ export class Triggers {
         id,
         member.id,
         member.name,
-        req.name ?? clip(req.instructions.split('\n')[0] ?? 'Webhook agent', MAX_NAME_LENGTH),
+        req.name ?? defaultName(req.instructions),
         req.webhookId,
         JSON.stringify([...new Set(req.eventTypes)]),
         JSON.stringify(req.filters),
@@ -190,6 +194,36 @@ export class Triggers {
     this.gateway.activity.add({
       kind: 'launchpad',
       detail: `Member "${member.name}" added a ${plan.harness} agent trigger on a webhook`,
+    });
+    return this.require(id);
+  }
+
+  /**
+   * Replaces what a trigger does and listens to (by its member only): checked like a new trigger.
+   * Its name stays unless a new one is given; whether it is paused does not change.
+   */
+  edit(member: Member, id: string, input: unknown): Trigger {
+    const trigger = this.visible({ kind: 'member', member }, id);
+    const req = triggerSchema.parse(input);
+    if (!this.webhooks.visible(req.webhookId, { kind: 'member', member })) {
+      throw notFound('Webhook not found');
+    }
+    const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
+    this.update(id, {
+      name: req.name ?? trigger.name,
+      webhook_id: req.webhookId,
+      event_types: JSON.stringify([...new Set(req.eventTypes)]),
+      filters: JSON.stringify(req.filters),
+      instructions: redact(req.instructions),
+      harness: plan.harness,
+      model: plan.model,
+      template_id: plan.template.id,
+      account_ids: JSON.stringify(plan.accountIds),
+      updated_at: this.now().toISOString(),
+    });
+    this.gateway.activity.add({
+      kind: 'launchpad',
+      detail: `Member "${member.name}" edited the agent trigger "${trigger.name}"`,
     });
     return this.require(id);
   }

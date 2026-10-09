@@ -96,6 +96,11 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
   trigger their agents.
 - **Limits.** A trigger has at most 3 runs queued or running; further deliveries are skipped (and
   logged in Activity). The usual concurrency limits and token budget apply to each run.
+- **Editing.** The member can change everything a trigger does and listens to (**Edit** in the
+  triggers table, or `PUT /api/me/launchpad/triggers/<id>` with the same body as when creating
+  it). The new settings are checked like a new trigger's; the name stays unless one is given, and
+  a paused trigger stays paused. Runs already launched keep the instructions they started with.
+  The admin can't edit a member's trigger.
 - **Stopping.** Like schedules, a trigger stops when its member's key is rotated or revoked, when the
   member is deleted or expired, or when a launch fails. The member can resume it; the admin can
   pause it. Deleting the webhook leaves the trigger without events.

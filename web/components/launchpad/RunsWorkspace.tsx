@@ -40,6 +40,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const [runsFilter, setRunsFilter] = useState<RunsFilter | null>(null);
   const [memberFilter, setMemberFilter] = useState('');
   const [launching, setLaunching] = useState(false);
+  const [editing, setEditing] = useState<Trigger | null>(null);
 
   const load = useCallback(() => {
     const query = new URLSearchParams();
@@ -186,6 +187,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         triggers={triggers}
         showMember={admin}
         canResume={!admin}
+        {...(admin ? {} : { onEdit: setEditing })}
         onToggle={(t, enabled) => {
           toggle(`/launchpad/triggers/${t.id}`, enabled);
         }}
@@ -221,6 +223,31 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
             }}
             onTriggered={() => {
               setLaunching(false);
+              void load();
+            }}
+          />
+        </Modal>
+      )}
+      {options && editing && (
+        <Modal
+          wide
+          open
+          title={`Edit “${editing.name}”`}
+          onClose={() => {
+            setEditing(null);
+          }}
+        >
+          <LaunchForm
+            key={editing.id}
+            api={api}
+            options={options}
+            accounts={accounts}
+            webhooks={webhooks}
+            editing={editing}
+            onLaunched={() => undefined}
+            onScheduled={() => undefined}
+            onTriggered={() => {
+              setEditing(null);
               void load();
             }}
           />

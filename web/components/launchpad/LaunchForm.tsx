@@ -314,6 +314,12 @@ const FILTER_FIELDS: FilterField[] = [
   },
 ];
 
+const toDraft = (f: TriggerFilters): FilterDraft => ({
+  contains: f.contains.join(', '),
+  statusChangedTo: f.statusChangedTo.join(', '),
+  assignedTo: f.assignedTo.join(', '),
+});
+
 const toFilters = (f: FilterDraft): TriggerFilters => ({
   contains: splitList(f.contains),
   statusChangedTo: splitList(f.statusChangedTo),
@@ -445,6 +451,9 @@ function TaskField({
 /** What the form holds when it is sent. */
 interface Draft {
   when: When;
+  /** The trigger being edited, if any: then the form saves it instead of creating one. */
+  triggerId: string | null;
+  name: string;
   prompt: string;
   templateId: string;
   harness: string;
@@ -477,9 +486,10 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   if (d.when === 'now') return { path: '/launchpad/runs', body: { ...launch, prompt: d.prompt } };
   if (d.when === 'webhook') {
     return {
-      path: '/launchpad/triggers',
+      path: d.triggerId ? `/launchpad/triggers/${d.triggerId}` : '/launchpad/triggers',
       body: {
         ...launch,
+        ...(d.name.trim() ? { name: d.name.trim() } : {}),
         instructions: d.prompt,
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
@@ -503,12 +513,82 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   };
 }
 
-/** Launch an agent now, schedule it, or trigger it on webhook events. */
+/** The accounts a trigger uses, by tool: the ones picked in the form. */
+function pickedAccounts(accounts: Account[], accountIds: string[]): Record<string, string> {
+  return Object.fromEntries(
+    accounts.filter((a) => accountIds.includes(a.id)).map((a) => [a.tool, a.id]),
+  );
+}
+
+/** What the form starts from: the trigger being edited, or defaults for a new agent. */
+function initialValues(
+  editing: Trigger | null,
+  templates: LaunchOptions['templates'],
+  accounts: Account[],
+  webhooks: WebhookOption[],
+) {
+  const has = (items: { id: string }[], id: string | undefined): id is string =>
+    items.some((x) => x.id === id);
+  const templateId = has(templates, editing?.templateId) ? editing.templateId : firstId(templates);
+  const template = templates.find((t) => t.id === templateId);
+  return {
+    when: (editing ? 'webhook' : 'now') as When,
+    name: editing?.name ?? '',
+    prompt: editing?.instructions ?? '',
+    templateId,
+    harness: editing?.harness ?? template?.harnesses[0]?.harness ?? 'claude-code',
+    model: editing?.model ?? '',
+    picked: editing ? pickedAccounts(accounts, editing.accountIds) : {},
+    webhookId: has(webhooks, editing?.webhookId) ? editing.webhookId : firstId(webhooks),
+    eventTypes: editing?.eventTypes.join(', ') ?? '',
+    filters: editing ? toDraft(editing.filters) : NO_FILTERS,
+  };
+}
+
+/** The VM's limits, and the submit button. */
+function FormFooter({
+  timeoutSeconds,
+  label,
+  disabled,
+}: {
+  timeoutSeconds: number;
+  label: string;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <p className="text-xs text-slate-500">
+        Runs in a disposable VM that can only reach the gateway. Stops after{' '}
+        {formatDuration(timeoutSeconds)} at most.
+      </p>
+      <Button type="submit" disabled={disabled}>
+        {label}
+      </Button>
+    </div>
+  );
+}
+
+/** The trigger's name, when editing one. */
+function NameField({ name, setName }: { name: string; setName: (v: string) => void }) {
+  return (
+    <Field label="Name" hint="Empty: keep the current name.">
+      <Input
+        value={name}
+        onChange={(e) => {
+          setName(e.target.value);
+        }}
+      />
+    </Field>
+  );
+}
+
+/** Launch an agent now, schedule it, or trigger it on webhook events; or edit a trigger. */
 export function LaunchForm({
   api,
   options,
   accounts,
   webhooks,
+  editing = null,
   onLaunched,
   onScheduled,
   onTriggered,
@@ -518,27 +598,31 @@ export function LaunchForm({
   accounts: Account[];
   /** The member's webhooks, for triggers. */
   webhooks: WebhookOption[];
+  /** A trigger to edit: the form starts from its settings and saves it. */
+  editing?: Trigger | null;
   onLaunched: (run: Run) => void;
   onScheduled: (schedule: Schedule) => void;
   onTriggered: (trigger: Trigger) => void;
 }) {
   const usable = options.templates.filter((t) => t.harnesses.length > 0);
-  const [prompt, setPrompt] = useState('');
-  const [templateId, setTemplateId] = useState(usable[0]?.id ?? '');
+  const [init] = useState(() => initialValues(editing, usable, accounts, webhooks));
+  const [name, setName] = useState(init.name);
+  const [prompt, setPrompt] = useState(init.prompt);
+  const [templateId, setTemplateId] = useState(init.templateId);
   const template = usable.find((t) => t.id === templateId);
-  const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
+  const [harness, setHarness] = useState(init.harness);
   const choice = template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0];
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(init.model);
   const endpoint = useEndpointModels(api, templateId, choice?.provider === 'custom');
-  const [picked, setPicked] = useState<Record<string, string>>({});
-  const [when, setWhen] = useState<When>('now');
+  const [picked, setPicked] = useState(init.picked);
+  const [when, setWhen] = useState(init.when);
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState(1);
   const [day, setDay] = useState(1);
   const [timezone, setTimezone] = useState(browserTimeZone);
-  const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
-  const [eventTypes, setEventTypes] = useState('');
-  const [filters, setFilters] = useState(NO_FILTERS);
+  const [webhookId, setWebhookId] = useState(init.webhookId);
+  const [eventTypes, setEventTypes] = useState(init.eventTypes);
+  const [filters, setFilters] = useState(init.filters);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -561,6 +645,8 @@ export function LaunchForm({
     setError(null);
     const request = requestFor({
       when,
+      triggerId: editing?.id ?? null,
+      name,
       prompt,
       templateId,
       harness: choice?.harness ?? harness,
@@ -575,7 +661,8 @@ export function LaunchForm({
       filters,
     });
     try {
-      const sent = await api<Run | Schedule | Trigger>('POST', request.path, request.body);
+      const method = editing ? 'PUT' : 'POST';
+      const sent = await api<Run | Schedule | Trigger>(method, request.path, request.body);
       if (when === 'now') onLaunched(sent as Run);
       else if (when === 'webhook') onTriggered(sent as Trigger);
       else onScheduled(sent as Schedule);
@@ -594,6 +681,7 @@ export function LaunchForm({
         void submit();
       }}
     >
+      {editing && <NameField name={name} setName={setName} />}
       <TaskField trigger={when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
       <div className="grid gap-3 sm:grid-cols-2">
         <Field
@@ -658,20 +746,22 @@ export function LaunchForm({
           </Select>
         </Field>
       ))}
-      <Field label="When">
-        <Select
-          value={when}
-          onChange={(e) => {
-            setWhen(e.target.value as When);
-          }}
-        >
-          {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
-            <option key={w} value={w}>
-              {WHEN_LABELS[w]}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      {!editing && (
+        <Field label="When">
+          <Select
+            value={when}
+            onChange={(e) => {
+              setWhen(e.target.value as When);
+            }}
+          >
+            {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
+              <option key={w} value={w}>
+                {WHEN_LABELS[w]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}
@@ -697,20 +787,13 @@ export function LaunchForm({
         />
       )}
       <ErrorBanner message={error} />
-      <div className="flex items-center justify-between gap-4">
-        <p className="text-xs text-slate-500">
-          Runs in a disposable VM that can only reach the gateway. Stops after{' '}
-          {formatDuration(options.defaultTimeoutSeconds)} at most.
-        </p>
-        <Button
-          type="submit"
-          disabled={
-            busy || !ready({ when, prompt, webhookId }) || (typesModel(choice) && !model.trim())
-          }
-        >
-          {SUBMIT_LABELS[when]}
-        </Button>
-      </div>
+      <FormFooter
+        timeoutSeconds={options.defaultTimeoutSeconds}
+        label={editing ? 'Save trigger' : SUBMIT_LABELS[when]}
+        disabled={
+          busy || !ready({ when, prompt, webhookId }) || (typesModel(choice) && !model.trim())
+        }
+      />
     </form>
   );
 }

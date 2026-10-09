@@ -295,7 +295,7 @@ admin creates webhooks under **Webhooks**, and members create their own.
   trigger holds the agent's instructions, permission template, harness and model; the
   instructions go into the agent's system prompt and the (redacted) payload is its task. Event
   types and deterministic filters (payload contains a keyword, status changed to, assigned to)
-  pick the deliveries that launch it. See [docs/launchpad.md](docs/launchpad.md#webhook-triggers).
+  pick the deliveries that launch it. The member can edit a trigger later. See [docs/launchpad.md](docs/launchpad.md#webhook-triggers).
 
 ## Connecting Linear
 
