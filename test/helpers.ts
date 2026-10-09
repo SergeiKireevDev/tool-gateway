@@ -116,6 +116,8 @@ export function fakeSlackFetch(calls: Harness['upstreamCalls']): typeof fetch {
 
 /** A custom LLM endpoint: answers like Anthropic on `/v1/messages`, like OpenAI elsewhere. */
 export const CUSTOM_LLM_URL = 'https://llm.example.com/';
+/** What the fake custom LLM endpoint lists at `GET /v1/models`. */
+export const CUSTOM_LLM_MODELS = ['qwen3', 'llama-4', 'gpt-6', 'qwen3'];
 
 /** Usage every fake LLM answer reports: 100 input, 50 output, 10 cache reads, 5 cache writes. */
 export const FAKE_LLM_TOTAL = 165;
@@ -197,6 +199,9 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
     const key =
       headers.get('x-api-key') ?? headers.get('x-goog-api-key') ?? headers.get('authorization');
     if (key?.endsWith('bad-key')) return Promise.resolve(new Response('{}', { status: 401 }));
+    if (url.startsWith(`${CUSTOM_LLM_URL}v1/models`)) {
+      return Promise.resolve(Response.json({ data: CUSTOM_LLM_MODELS.map((id) => ({ id })) }));
+    }
     if ((init.method ?? 'GET') === 'GET') return Promise.resolve(Response.json({ data: [] }));
     // A key revoked after it was connected: providers echo part of it in their error.
     if (key?.endsWith('revoked-key')) {

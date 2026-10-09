@@ -1209,10 +1209,7 @@ export class Gateway {
     accountIds: readonly string[],
     scope?: RunToolScope,
   ): { template: Template; accountIds: string[]; tools: string[] } {
-    const template = member.templateIds.includes(templateId)
-      ? this.store.read().templates.find((t) => t.id === templateId)
-      : undefined;
-    if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
+    const template = this.memberTemplate(member, templateId);
     const bound = this.pickAccounts(
       template,
       [...new Set(accountIds)],
@@ -1224,6 +1221,15 @@ export class Gateway {
       accountIds: bound.flatMap((b) => (b.account ? [b.account.id] : [])),
       tools: bound.map((b) => b.grant.tool),
     };
+  }
+
+  /** A template the member may use, as stored (endpoint tokens included: keep it server-side). */
+  memberTemplate(member: Member, templateId: string): Template {
+    const template = member.templateIds.includes(templateId)
+      ? this.store.read().templates.find((t) => t.id === templateId)
+      : undefined;
+    if (!template) throw forbidden(TEMPLATE_NOT_AVAILABLE);
+    return template;
   }
 
   /** The member's current key generation, or null when it is gone or expired. */

@@ -1,10 +1,19 @@
 import { z } from 'zod';
-import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized } from '../errors.js';
+import {
+  badGateway,
+  badRequest,
+  conflict,
+  forbidden,
+  HttpError,
+  notFound,
+  unauthorized,
+} from '../errors.js';
 import type { Gateway, RunToolScope } from '../gateway.js';
 import type { CryptoBox } from '../store/crypto.js';
 import { randomId, randomToken } from '../store/crypto.js';
 import type { Member, SessionIssuer, Template, ToolGrant } from '../store/types.js';
 import { modelAllowed } from '../tools/llm/common.js';
+import { listEndpointModels } from '../tools/llm/custom.js';
 import type { LlmEndpointApi } from '../tools/types.js';
 import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_MINUTE } from '../units.js';
 import {
@@ -95,6 +104,8 @@ export interface LaunchpadDeps {
   /** Gateway base URL as seen from inside the VMs. */
   vmGatewayUrl: string;
   now?: () => Date;
+  /** Reaches custom LLM endpoints, to list their models. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Which model API a template gives a harness, and the model to use by default. */
@@ -180,6 +191,30 @@ export class Launchpad {
         },
       ];
     });
+  }
+
+  /**
+   * The models a template's custom LLM endpoint serves that the template's allowlist covers, for
+   * the member to pick from when launching an agent. Asked from the endpoint itself.
+   */
+  async endpointModels(member: Member, templateId: string): Promise<string[]> {
+    if (!this.deps.runs.memberLaunch(member.id).launchEnabled) {
+      throw forbidden('Launching agents is disabled for you');
+    }
+    const template = this.deps.gateway.memberTemplate(member, templateId);
+    const grant = template.grants.find(
+      (g) => g.tool === CUSTOM_PROVIDER && g.permissions.includes('llm:invoke'),
+    );
+    if (!grant?.endpoint) {
+      throw badRequest(`Template "${template.name}" gives no custom LLM endpoint`);
+    }
+    let models: string[];
+    try {
+      models = await listEndpointModels(grant.endpoint, this.deps.fetchImpl);
+    } catch (err) {
+      throw badGateway((err as Error).message);
+    }
+    return models.filter((m) => modelAllowed(grant, m));
   }
 
   /**
