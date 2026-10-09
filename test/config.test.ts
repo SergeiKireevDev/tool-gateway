@@ -24,6 +24,23 @@ describe('loadConfig', () => {
     expect(config.publicUrl).toBe('http://localhost:7420');
   });
 
+  it('signs in to Gmail with the Google sign-in client unless a dedicated one is set', () => {
+    const google = {
+      GOOGLE_CLIENT_ID: 'id',
+      GOOGLE_CLIENT_SECRET: 'secret',
+      GATEWAY_PUBLIC_URL: 'https://gw.example.com/',
+    };
+    expect(loadConfig(google).gmail).toEqual({
+      clientId: 'id',
+      clientSecret: 'secret',
+      redirectUri: 'https://gw.example.com/auth/google/callback',
+    });
+    expect(
+      loadConfig({ ...google, GMAIL_CLIENT_ID: 'desktop', GMAIL_CLIENT_SECRET: 'shh' }).gmail,
+    ).toEqual({ clientId: 'desktop', clientSecret: 'shh' });
+    expect(loadConfig({}).gmail).toBeNull();
+  });
+
   it('refuses half-configured Google credentials', () => {
     expect(() => loadConfig({ GOOGLE_CLIENT_ID: 'id' })).toThrow(/both/);
   });

@@ -201,6 +201,29 @@ export function eventMeter(
   };
 }
 
+const MAX_ENDPOINT_URL_LENGTH = 2048;
+
+/** Checks and normalizes an endpoint's base URL (no trailing slash). */
+export function validateEndpointUrl(raw: string): { url: string } | { error: string } {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return { error: 'The endpoint URL is not a valid URL' };
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { error: 'The endpoint URL must start with https:// or http://' };
+  }
+  if (url.username || url.password) {
+    return { error: 'Put the endpoint credential in the bearer token, not in the URL' };
+  }
+  if (url.search || url.hash)
+    return { error: 'The endpoint URL must not have a query or fragment' };
+  const normalized = `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  if (normalized.length > MAX_ENDPOINT_URL_LENGTH) return { error: 'The endpoint URL is too long' };
+  return { url: normalized };
+}
+
 /** Only these request headers reach an LLM upstream (besides the injected credential). */
 export function forwardHeaders(incoming: Headers, names: readonly string[]): Headers {
   const out = new Headers({ 'user-agent': 'local-gateway' });

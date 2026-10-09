@@ -1,12 +1,24 @@
 import { z } from 'zod';
-import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized } from '../errors.js';
+import {
+  badGateway,
+  badRequest,
+  conflict,
+  forbidden,
+  HttpError,
+  notFound,
+  unauthorized,
+} from '../errors.js';
 import type { Gateway, RunToolScope } from '../gateway.js';
 import type { CryptoBox } from '../store/crypto.js';
 import { randomId, randomToken } from '../store/crypto.js';
-import type { Member, SessionIssuer, Template } from '../store/types.js';
+import type { Member, SessionIssuer, Template, ToolGrant } from '../store/types.js';
 import { modelAllowed } from '../tools/llm/common.js';
+import { listEndpointModels } from '../tools/llm/custom.js';
+import type { LlmEndpointApi } from '../tools/types.js';
 import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_MINUTE } from '../units.js';
 import {
+  CUSTOM_PROVIDER,
+  HARNESS_ENDPOINT_APIS,
   HARNESS_PROVIDERS,
   HARNESSES,
   type Harness,
@@ -92,6 +104,8 @@ export interface LaunchpadDeps {
   /** Gateway base URL as seen from inside the VMs. */
   vmGatewayUrl: string;
   now?: () => Date;
+  /** Reaches custom LLM endpoints, to list their models. */
+  fetchImpl?: typeof fetch;
 }
 
 /** Which model API a template gives a harness, and the model to use by default. */
@@ -100,6 +114,37 @@ export interface HarnessChoice {
   provider: LlmProvider;
   /** Exact models in the template's allowlist (empty = any model). */
   models: string[];
+  /**
+   * The harness has no default model for this API (custom endpoints): the launch must name one
+   * when `models` is empty.
+   */
+  modelRequired: boolean;
+}
+
+/** What `harnessChoices` reads of a grant (stored, session or public grants all fit). */
+type ChoiceGrant = Pick<ToolGrant, 'tool' | 'permissions' | 'resources'> & {
+  endpoint?: { api: LlmEndpointApi };
+};
+
+/** Whether a grant gives a harness this model API: calls allowed, and a chat API it speaks. */
+function grantServes(harness: Harness, provider: LlmProvider, grant: ChoiceGrant): boolean {
+  if (grant.tool !== provider || !grant.permissions.includes('llm:invoke')) return false;
+  if (provider !== CUSTOM_PROVIDER) return true;
+  return (
+    grant.endpoint !== undefined && HARNESS_ENDPOINT_APIS[harness].includes(grant.endpoint.api)
+  );
+}
+
+/** The model API grant a harness uses among these, in its order of preference. */
+function harnessGrant<G extends ChoiceGrant>(
+  harness: Harness,
+  grants: readonly G[],
+): G | undefined {
+  for (const provider of HARNESS_PROVIDERS[harness]) {
+    const grant = grants.find((g) => grantServes(harness, provider, g));
+    if (grant) return grant;
+  }
+  return undefined;
 }
 
 /**
@@ -132,17 +177,44 @@ export class Launchpad {
   // ---------------------------------------------------------------- launching
 
   /** Harnesses a template can run, given the model APIs it grants. */
-  harnessChoices(template: Pick<Template, 'grants'>): HarnessChoice[] {
+  harnessChoices(template: { grants: readonly ChoiceGrant[] }): HarnessChoice[] {
     return HARNESSES.flatMap((harness) => {
-      const provider = HARNESS_PROVIDERS[harness].find((p) =>
-        template.grants.some((g) => g.tool === p && g.permissions.includes('llm:invoke')),
-      );
-      if (!provider) return [];
-      const grant = template.grants.find((g) => g.tool === provider);
+      const grant = harnessGrant(harness, template.grants);
+      if (!grant) return [];
+      const provider = grant.tool as LlmProvider;
       return [
-        { harness, provider, models: (grant?.resources ?? []).filter((r) => !r.includes('*')) },
+        {
+          harness,
+          provider,
+          models: grant.resources.filter((r) => !r.includes('*')),
+          modelRequired: provider === CUSTOM_PROVIDER,
+        },
       ];
     });
+  }
+
+  /**
+   * The models a template's custom LLM endpoint serves that the template's allowlist covers, for
+   * the member to pick from when launching an agent. Asked from the endpoint itself.
+   */
+  async endpointModels(member: Member, templateId: string): Promise<string[]> {
+    if (!this.deps.runs.memberLaunch(member.id).launchEnabled) {
+      throw forbidden('Launching agents is disabled for you');
+    }
+    const template = this.deps.gateway.memberTemplate(member, templateId);
+    const grant = template.grants.find(
+      (g) => g.tool === CUSTOM_PROVIDER && g.permissions.includes('llm:invoke'),
+    );
+    if (!grant?.endpoint) {
+      throw badRequest(`Template "${template.name}" gives no custom LLM endpoint`);
+    }
+    let models: string[];
+    try {
+      models = await listEndpointModels(grant.endpoint, this.deps.fetchImpl);
+    } catch (err) {
+      throw badGateway((err as Error).message);
+    }
+    return models.filter((m) => modelAllowed(grant, m));
   }
 
   /**
@@ -170,7 +242,13 @@ export class Launchpad {
     // The model API the run uses: one the template grants and the member has an account for.
     const covered = plan.template.grants.filter((g) => plan.tools.includes(g.tool));
     const choice = this.harnessChoices({ grants: covered }).find((c) => c.harness === req.harness);
-    if (!choice) throw badRequest(`No ${needs} account available`);
+    if (!choice) {
+      // Custom endpoints need no account: only the official APIs the template grants can be missing.
+      const missing = HARNESS_PROVIDERS[req.harness].filter((p) =>
+        plan.template.grants.some((g) => grantServes(req.harness, p, g)),
+      );
+      throw badRequest(`No ${missing.join(' or ')} account available`);
+    }
     const timeoutSeconds = Math.min(
       settings.defaultTimeoutSeconds,
       settings.maxTimeoutSeconds,
@@ -219,7 +297,15 @@ export class Launchpad {
   }
 
   private pickModel(template: Template, choice: HarnessChoice, requested?: string): string | null {
-    if (requested === undefined) return choice.models[0] ?? null;
+    if (requested === undefined) {
+      const model = choice.models[0] ?? null;
+      if (model === null && choice.modelRequired) {
+        throw badRequest(
+          `Template "${template.name}" gives a custom LLM endpoint: name the model to use`,
+        );
+      }
+      return model;
+    }
     const grant = template.grants.find((g) => g.tool === choice.provider);
     if (!grant || !modelAllowed(grant, requested)) {
       throw badRequest(`Model "${requested}" is not allowed by template "${template.name}"`);
@@ -313,20 +399,21 @@ export class Launchpad {
           permissions: entry.permissions.filter((p) => g.permissions.includes(p.id)),
           resources: g.resources,
           resourceHelp: entry.resourceHelp,
+          example: entry.example,
         },
       ];
     });
-    const provider = HARNESS_PROVIDERS[run.harness].find((p) =>
-      session.grants.some((g) => g.tool === p),
-    );
-    if (!provider) throw new Error(`The session key gives no model access for ${run.harness}`);
+    const llm = harnessGrant(run.harness, session.grants);
+    if (!llm) throw new Error(`The session key gives no model access for ${run.harness}`);
+    const api = llm.endpoint?.api;
+    if (api && run.model === null) throw new Error('No model set for the custom LLM endpoint');
     return {
       runId: run.id,
       runToken,
       gatewayUrl: this.deps.vmGatewayUrl,
       sessionKey: key,
       harness: run.harness,
-      llm: { provider, model: run.model },
+      llm: { provider: llm.tool as LlmProvider, model: run.model, ...(api && { api }) },
       gatewayTools: grants.map((g) => gatewayToolName(g.tool)),
       egressDomains: session.egressDomains ?? [],
       prompt: run.prompt,
@@ -534,14 +621,16 @@ export class Launchpad {
 }
 
 /**
- * What a run's key covers: the model APIs the harness can't use are left out; when the harness
- * can use several (pi), those without an account are too.
+ * What a run's key covers: the model APIs the harness can't use (custom endpoints speaking
+ * another chat API included) are left out; when the harness can use several, those without an
+ * account are too.
  */
 function runToolScope(harness: Harness): RunToolScope {
   const providers: readonly string[] = HARNESS_PROVIDERS[harness];
   return {
     drop: LLM_PROVIDERS.filter((p) => !providers.includes(p)),
     optional: providers.length > 1 ? providers : [],
+    endpointApis: HARNESS_ENDPOINT_APIS[harness],
   };
 }
 

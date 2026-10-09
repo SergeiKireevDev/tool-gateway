@@ -1,3 +1,4 @@
+import type { ToolExample } from '../tools/types.js';
 import type { Harness } from './protocol.js';
 
 export interface PromptGrant {
@@ -6,6 +7,8 @@ export interface PromptGrant {
   permissions: { id: string; label: string; description: string }[];
   resources: string[];
   resourceHelp: string;
+  /** A sample request, shown as the tool's call arguments. */
+  example?: ToolExample | null;
 }
 
 export interface PromptContext {
@@ -26,6 +29,17 @@ export const gatewayToolName = (tool: string): string => `gateway_${tool}`;
 export const OUT_DIR = '/home/agent/out';
 export const MEMORY_FILE = '/home/agent/MEMORY.md';
 
+/** Arguments of a gateway tool call for a tool's sample request. */
+function exampleArgs(example: ToolExample): string {
+  let body: unknown;
+  try {
+    body = example.body === undefined ? undefined : (JSON.parse(example.body) as unknown);
+  } catch {
+    body = example.body;
+  }
+  return JSON.stringify({ method: example.method, path: example.path, body });
+}
+
 function describeGrant(g: PromptGrant): string {
   const perms = g.permissions.map((p) => `  - ${p.label} (\`${p.id}\`): ${p.description}`);
   const listed = g.resources.map((r) => '`' + r + '`').join(', ');
@@ -33,7 +47,27 @@ function describeGrant(g: PromptGrant): string {
     g.resources.length === 0
       ? '  - Not limited to specific resources.'
       : `  - Only these resources: ${listed}.`;
-  return [`- **${g.name}** — tool \`${gatewayToolName(g.tool)}\``, ...perms, scope].join('\n');
+  const example = g.example ? [`  - Example arguments: \`${exampleArgs(g.example)}\``] : [];
+  return [
+    `- **${g.name}** — tool \`${gatewayToolName(g.tool)}\`, API root \`$GATEWAY_URL/proxy/${g.tool}\``,
+    ...perms,
+    scope,
+    ...example,
+  ].join('\n');
+}
+
+/**
+ * How to call the gateway tools: weaker models don't find them on their own (they probe MCP
+ * resources or the environment), so spell out the arguments and the plain HTTP fallback.
+ */
+function toolUsage(grants: PromptGrant[]): string {
+  const sample = grants[0]?.tool ?? 'github';
+  return `They come from the MCP server named \`gateway\` (your harness may show them prefixed with the server name, e.g. \`mcp__gateway__${gatewayToolName(sample)}\`). Each is one generic HTTP tool for that service's API; call it with:
+- \`method\`: \`GET\`, \`POST\`, \`PUT\`, \`PATCH\` or \`DELETE\`
+- \`path\`: the API path relative to the tool's API root, starting with \`/\` (the service's own API, e.g. \`/repos/<owner>/<repo>/issues\` for GitHub)
+- \`query\` (optional): query string parameters, as an object
+- \`body\` (optional): the JSON request body, as an object
+The result is the HTTP status line followed by the response body. Don't look for the tools elsewhere (MCP resources, files): call them directly. If they really aren't available to you, make the same requests over HTTP from the shell, e.g. \`curl -sS -H "Authorization: Bearer $GATEWAY_SESSION_KEY" "$GATEWAY_URL/proxy/${sample}/<path>"\` (\`GATEWAY_URL\` and \`GATEWAY_SESSION_KEY\` are set in your environment; the gateway adds the service's credentials).`;
 }
 
 function gitSection(grants: PromptGrant[]): string {
@@ -76,7 +110,7 @@ ${networkLine(ctx.egressDomains ?? [])}
 ## Third-party tools
 You reach these only through the gateway MCP tools below. Each call is checked against the permissions granted to this run and logged.
 ${tools}
-
+${ctx.grants.length > 0 ? `\n${toolUsage(ctx.grants)}\n` : ''}
 ${gitSection(ctx.grants)}If a call is refused with HTTP 403 and an \`x-gateway-denied\` header, the gateway's policy forbids it. Don't retry it or look for a way around it: do what you can within your permissions and explain what you couldn't do.
 
 ## Results

@@ -21,6 +21,15 @@ async function launch(cookie: string, extra: object = {}): Promise<string> {
   return res.body.id as string;
 }
 
+/** Ends the latest run, so the next launch boots a VM rather than queueing. */
+async function finishLast(): Promise<void> {
+  await t
+    .runner(t.driver.lastConfig().runToken, 'post', '/finish')
+    .send({ outcome: 'succeeded', finalMessage: null, memory: null, error: null })
+    .expect(200);
+  await settle(t.launchpad);
+}
+
 const minutes = (n: number): void => {
   t.clock.now = new Date(t.clock.now.getTime() + n * 60_000);
 };
@@ -63,6 +72,10 @@ describe('a run, end to end', () => {
     expect(config.runToken).toMatch(/^gwr_/);
     expect(config.systemPrompt).toContain('gateway_github');
     expect(config.systemPrompt).toContain('`o/r`');
+    // How to call the tools, with an example and a plain HTTP fallback, for weaker models.
+    expect(config.systemPrompt).toContain('Example arguments: `{"method":"GET","path":"/user"}`');
+    expect(config.systemPrompt).toContain('$GATEWAY_URL/proxy/github');
+    expect(config.systemPrompt).toContain('mcp__gateway__gateway_github');
     expect(JSON.stringify(run.body)).not.toContain(config.runToken);
     expect(JSON.stringify(run.body)).not.toContain(config.sessionKey);
 
@@ -196,6 +209,198 @@ describe('launch checks', () => {
       .send(launchBody({ templateId, harness: 'codex' }))
       .expect(400);
     expect(codex.body.message).toBe('No openai account available');
+  });
+
+  it('runs agents on a custom LLM endpoint whose chat API they speak', async () => {
+    const customTemplate = async (api: string, models: string[] = []) => {
+      const res = await t
+        .admin('post', '/templates')
+        .send({
+          name: `custom ${api}`,
+          grants: [
+            { tool: 'github', permissions: ['issues:read'], resources: ['o/r'] },
+            {
+              tool: 'custom',
+              permissions: ['llm:invoke'],
+              resources: models,
+              endpoint: { url: 'https://llm.example.com', api, token: 'endpoint-token' },
+            },
+          ],
+          defaultTtlSeconds: 3600,
+          maxTtlSeconds: 4 * 3600,
+        })
+        .expect(201);
+      return res.body.id as string;
+    };
+    const anthropicApi = await customTemplate('anthropic');
+    const openaiApi = await customTemplate('openai', ['qwen3', 'llama-*']);
+    const alice = await t.member('alice', [anthropicApi, openaiApi]);
+
+    const options = await t.portal(alice.cookie, 'get', '').expect(200);
+    const choices = Object.fromEntries(
+      (options.body.templates as { id: string; harnesses: object[] }[]).map((x) => [
+        x.id,
+        x.harnesses,
+      ]),
+    );
+    expect(choices[anthropicApi]).toEqual([
+      { harness: 'claude-code', provider: 'custom', models: [], modelRequired: true },
+      { harness: 'pi', provider: 'custom', models: [], modelRequired: true },
+    ]);
+    expect(choices[openaiApi]).toEqual([
+      { harness: 'codex', provider: 'custom', models: ['qwen3'], modelRequired: true },
+      { harness: 'pi', provider: 'custom', models: ['qwen3'], modelRequired: true },
+    ]);
+
+    // No default model on a custom endpoint: the launch names one, unless the template does.
+    const unnamed = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ templateId: anthropicApi }))
+      .expect(400);
+    expect(unnamed.body.message).toContain('name the model');
+    await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ templateId: anthropicApi, harness: 'codex', model: 'qwen3' }))
+      .expect(400);
+
+    await launch(alice.cookie, { templateId: anthropicApi, model: 'qwen3' });
+    const config = t.driver.lastConfig();
+    expect(config.llm).toEqual({ provider: 'custom', model: 'qwen3', api: 'anthropic' });
+    expect(JSON.stringify(t.driver.specs.at(-1))).not.toContain('endpoint-token');
+    const session = await request(t.vmApp)
+      .get('/api/session')
+      .set('authorization', `Bearer ${config.sessionKey}`)
+      .expect(200);
+    expect((session.body.grants as { tool: string }[]).map((g) => g.tool)).toEqual([
+      'github',
+      'custom',
+    ]);
+    await finishLast();
+
+    await launch(alice.cookie, { templateId: openaiApi, harness: 'codex' });
+    expect(t.driver.lastConfig().llm).toEqual({
+      provider: 'custom',
+      model: 'qwen3',
+      api: 'openai',
+    });
+    await launch(alice.cookie, { templateId: openaiApi, harness: 'pi', model: 'llama-4' });
+    expect(t.driver.lastConfig().llm).toEqual({
+      provider: 'custom',
+      model: 'llama-4',
+      api: 'openai',
+    });
+    await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ templateId: openaiApi, harness: 'pi', model: 'gpt-6' }))
+      .expect(400);
+  });
+
+  it('proposes the models a custom LLM endpoint serves, within the template’s allowlist', async () => {
+    const customTemplate = async (api: string, models: string[]) => {
+      const res = await t
+        .admin('post', '/templates')
+        .send({
+          name: `custom ${api}`,
+          grants: [
+            {
+              tool: 'custom',
+              permissions: ['llm:invoke'],
+              resources: models,
+              endpoint: { url: 'https://llm.example.com/', api, token: 'endpoint-token' },
+            },
+          ],
+          defaultTtlSeconds: 3600,
+          maxTtlSeconds: 4 * 3600,
+        })
+        .expect(201);
+      return res.body.id as string;
+    };
+    const anyModel = await customTemplate('anthropic', []);
+    const someModels = await customTemplate('openai', ['qwen*', 'llama-4']);
+    const alice = await t.member('alice', [anyModel, someModels, t.ids.template]);
+
+    const all = await t.portal(alice.cookie, 'get', `/templates/${anyModel}/models`).expect(200);
+    expect(all.body).toEqual({ models: ['qwen3', 'llama-4', 'gpt-6'] });
+    const call = t.upstreamCalls.at(-1);
+    expect(call?.url).toBe('https://llm.example.com/v1/models?limit=1000');
+    const headers = new Headers(call?.init.headers);
+    expect(headers.get('authorization')).toBe('Bearer endpoint-token');
+    expect(headers.get('anthropic-version')).toBe('2023-06-01');
+
+    const some = await t.portal(alice.cookie, 'get', `/templates/${someModels}/models`).expect(200);
+    expect(some.body).toEqual({ models: ['qwen3', 'llama-4'] });
+    expect(t.upstreamCalls.at(-1)?.url).toBe('https://llm.example.com/v1/models');
+
+    await t.portal(alice.cookie, 'get', `/templates/${t.ids.template}/models`).expect(400);
+    const bob = await t.member('bob', [t.ids.template]);
+    await t.portal(bob.cookie, 'get', `/templates/${anyModel}/models`).expect(403);
+    await t
+      .admin('put', `/launchpad/members/${alice.id}`)
+      .send({ launchEnabled: false, maxConcurrent: null })
+      .expect(200);
+    await t.portal(alice.cookie, 'get', `/templates/${anyModel}/models`).expect(403);
+  });
+
+  it('reports a custom LLM endpoint whose model list can’t be read', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'bad endpoint',
+        grants: [
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: [],
+            endpoint: { url: 'https://llm.example.com', api: 'openai', token: 'bad-key' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const alice = await t.member('alice', [tpl.body.id as string]);
+    const res = await t
+      .portal(alice.cookie, 'get', `/templates/${tpl.body.id as string}/models`)
+      .expect(502);
+    expect(res.body.message).toBe(
+      'The custom LLM endpoint answered HTTP 401 when listing its models',
+    );
+  });
+
+  it('leaves custom endpoints the harness can’t talk to out of the run’s key', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'anthropic + openai-style endpoint',
+        grants: [
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: [] },
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: [],
+            endpoint: { url: 'https://llm.example.com', api: 'openai' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const templateId = tpl.body.id as string;
+    const alice = await t.member('alice', [templateId]);
+    const tools = async (harness: string, model?: string) => {
+      await launch(alice.cookie, { templateId, harness, ...(model && { model }) });
+      const config = t.driver.lastConfig();
+      const session = await request(t.vmApp)
+        .get('/api/session')
+        .set('authorization', `Bearer ${config.sessionKey}`)
+        .expect(200);
+      await finishLast();
+      return [config.llm.provider, (session.body.grants as { tool: string }[]).map((g) => g.tool)];
+    };
+    expect(await tools('claude-code')).toEqual(['anthropic', ['anthropic']]);
+    expect(await tools('codex', 'qwen3')).toEqual(['custom', ['custom']]);
+    // pi prefers the official API it has an account for; the endpoint stays usable.
+    expect(await tools('pi')).toEqual(['anthropic', ['anthropic', 'custom']]);
   });
 
   it('gives the run its template’s internet access', async () => {

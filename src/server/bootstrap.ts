@@ -13,9 +13,11 @@ import { CryptoBox } from './store/crypto.js';
 import { EncryptedStore } from './store/store.js';
 import { LlmUsageLog } from './llmUsage.js';
 import { createGitHubProvider } from './tools/github.js';
+import { createGmailProvider } from './tools/gmail.js';
 import { createLinearProvider } from './tools/linear.js';
 import { createAnthropicProvider } from './tools/llm/anthropic.js';
 import { createGeminiProvider } from './tools/llm/gemini.js';
+import { createCustomLlmProvider } from './tools/llm/custom.js';
 import { createOpenAIProvider } from './tools/llm/openai.js';
 import { createMondayProvider } from './tools/monday.js';
 import { ToolRegistry } from './tools/registry.js';
@@ -39,9 +41,11 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
     createMondayProvider(),
     createSlackProvider(),
     createLinearProvider(),
+    createGmailProvider(fetch, config.gmail),
     createAnthropicProvider(),
     createOpenAIProvider(),
     createGeminiProvider(),
+    createCustomLlmProvider(),
   ]);
   const gateway = new Gateway(store, crypto, tools, new ActivityLog(db), new LlmUsageLog(db));
   gateway.setAdminEmails(config.google?.adminEmails ?? []);

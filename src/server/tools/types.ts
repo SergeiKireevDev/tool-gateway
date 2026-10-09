@@ -27,6 +27,11 @@ export interface ToolRequestContext {
   secret: string;
   /** LLM tokens the session may still use, or null when it has no token budget. */
   tokensRemaining: number | null;
+  /**
+   * Leave output limits the client didn't set unset (the budget is then checked between calls):
+   * self-hosted servers refuse limits beyond their context window, such as a whole token budget.
+   */
+  keepUnsetLimits?: boolean;
 }
 
 /** Tokens one LLM call used, normalized across providers (cached input is not counted twice). */
@@ -74,6 +79,11 @@ export interface AuthzAllowed {
   upstreamHeaders?: (secret: string, incoming: Headers) => Headers;
   /** LLM calls: meters the (streamed) response, given its content type, for token budgets. */
   meter?: (contentType: string) => UsageMeter;
+  /**
+   * Rewrites the upstream response before it is metered and relayed (e.g. an API served on top of
+   * another one). Auth errors are handled before, on the upstream response itself.
+   */
+  transformResponse?: (upstream: Response) => Promise<Response>;
 }
 
 export type AuthzDecision = AuthzAllowed | { allowed: false; reason: string };
@@ -127,6 +137,11 @@ export interface OAuthTokens {
 export interface OAuthSignIn {
   /** Explains the steps in the UI. */
   help: string;
+  /**
+   * The provider redirects back to the gateway (`GOOGLE_CALLBACK_PATH`), which hands the code to
+   * the dialog that started the sign-in; otherwise the user pastes the address they landed on.
+   */
+  redirectsBack?: boolean;
   authorizeUrl(challenge: string, state: string): string;
   exchange(code: string, state: string, verifier: string): Promise<OAuthTokens>;
   refresh(refreshToken: string): Promise<OAuthTokens>;
@@ -139,6 +154,22 @@ export interface ToolExample {
   body?: string;
   /** Client library hint, e.g. `Octokit baseUrl`. */
   clientHint: string;
+}
+
+/** Chat API dialects a custom LLM endpoint can speak. */
+export const LLM_ENDPOINT_APIS = ['openai', 'anthropic'] as const;
+export type LlmEndpointApi = (typeof LLM_ENDPOINT_APIS)[number];
+
+/**
+ * A model API at an address of the admin's choosing (a self-hosted or third-party server),
+ * configured in the template grant itself rather than through an account.
+ */
+export interface LlmEndpoint {
+  /** Base URL: requests go to `<url>/v1/…`, like the official API they mimic. */
+  url: string;
+  api: LlmEndpointApi;
+  /** Sent upstream as `Authorization: Bearer …`; empty = no credential. Never returned by the API. */
+  token: string;
 }
 
 export interface ToolProvider {
@@ -177,6 +208,11 @@ export interface ToolProvider {
   deviceFlow?: DeviceFlow;
   /** "Sign in with …" through OAuth (tokens are refreshed by the gateway). */
   oauthSignIn?: OAuthSignIn;
+  /**
+   * Tools whose upstream is configured per grant (custom LLM endpoints) rather than by an
+   * account: returns the provider that serves one endpoint.
+   */
+  bindEndpoint?(endpoint: LlmEndpoint): ToolProvider;
   /** Optional response header rewriting (e.g. pagination links pointing back at the gateway). */
   rewriteResponseHeader?(name: string, value: string, proxyBaseUrl: string): string;
 }

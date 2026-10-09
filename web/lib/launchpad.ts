@@ -86,6 +86,8 @@ export interface HarnessChoice {
   harness: Harness;
   provider: string;
   models: string[];
+  /** No default model (custom endpoints): the member names one when `models` is empty. */
+  modelRequired: boolean;
 }
 
 export interface LaunchTemplate {

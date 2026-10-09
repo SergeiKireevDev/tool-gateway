@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
   HARNESS_LABELS,
+  type HarnessChoice,
   type LaunchOptions,
   type Preset,
   type Run,
@@ -138,6 +139,140 @@ function RecurrenceFields({
 }
 
 const firstId = (items: { id: string }[]): string => items[0]?.id ?? '';
+
+/** Whether the member must type the model: the API has no default and the template names none. */
+const typesModel = (choice: HarnessChoice | undefined): boolean =>
+  choice !== undefined && choice.modelRequired && choice.models.length === 0;
+
+/** The models a template's custom LLM endpoint serves (within its allowlist), once asked. */
+interface EndpointModels {
+  templateId: string;
+  models: string[];
+  error: string | null;
+}
+
+/** Asks the gateway which models a custom LLM endpoint serves; null while loading or not custom. */
+function useEndpointModels(api: Api, templateId: string, custom: boolean): EndpointModels | null {
+  const [listed, setListed] = useState<EndpointModels | null>(null);
+  useEffect(() => {
+    if (!custom || !templateId) return;
+    let current = true;
+    api<{ models: string[] }>(
+      'GET',
+      `/launchpad/templates/${encodeURIComponent(templateId)}/models`,
+    ).then(
+      (res) => {
+        if (current) setListed({ templateId, models: res.models, error: null });
+      },
+      (err: unknown) => {
+        if (current) setListed({ templateId, models: [], error: (err as Error).message });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, templateId, custom]);
+  return custom && listed?.templateId === templateId ? listed : null;
+}
+
+/** Models to propose: the template's exact ones, then those the custom endpoint lists. */
+const modelOptions = (choice: HarnessChoice, endpoint: EndpointModels | null): string[] => [
+  ...new Set([...choice.models, ...(endpoint?.models ?? [])]),
+];
+
+/** Why the member types the model of a custom endpoint instead of picking it. */
+function typedModelHint(endpoint: EndpointModels | null): string {
+  if (!endpoint) return 'Asking the custom LLM endpoint for its models…';
+  if (endpoint.error) return `Couldn’t list the endpoint’s models (${endpoint.error})`;
+  return 'The model name the custom LLM endpoint serves';
+}
+
+/** The model of a custom endpoint whose template names none: picked from its list, or typed. */
+function RequiredModelField({
+  options,
+  endpoint,
+  model,
+  setModel,
+}: {
+  options: string[];
+  endpoint: EndpointModels | null;
+  model: string;
+  setModel: (model: string) => void;
+}) {
+  if (options.length === 0) {
+    return (
+      <Field label="Model" hint={typedModelHint(endpoint)}>
+        <Input
+          required
+          value={model}
+          placeholder="e.g. qwen3-coder"
+          onChange={(e) => {
+            setModel(e.target.value);
+          }}
+        />
+      </Field>
+    );
+  }
+  return (
+    <Field label="Model" hint="Models the custom LLM endpoint serves">
+      <Select
+        required
+        value={model}
+        onChange={(e) => {
+          setModel(e.target.value);
+        }}
+      >
+        <option value="" disabled>
+          Choose a model
+        </option>
+        {options.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+/** The model to run: one of the template's models, or one its custom endpoint serves. */
+function ModelField({
+  choice,
+  endpoint,
+  model,
+  setModel,
+}: {
+  choice: HarnessChoice | undefined;
+  endpoint: EndpointModels | null;
+  model: string;
+  setModel: (model: string) => void;
+}) {
+  if (!choice) return null;
+  const options = modelOptions(choice, endpoint);
+  if (typesModel(choice)) {
+    return (
+      <RequiredModelField options={options} endpoint={endpoint} model={model} setModel={setModel} />
+    );
+  }
+  if (options.length <= 1) return null;
+  return (
+    <Field label="Model">
+      <Select
+        value={model}
+        onChange={(e) => {
+          setModel(e.target.value);
+        }}
+      >
+        <option value="">Default ({choice.models[0]})</option>
+        {options.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
 
 /** "issues.opened, Issue" → ["issues.opened", "Issue"] */
 function splitList(value: string): string[] {
@@ -478,6 +613,7 @@ export function LaunchForm({
   const [harness, setHarness] = useState(init.harness);
   const choice = template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0];
   const [model, setModel] = useState(init.model);
+  const endpoint = useEndpointModels(api, templateId, choice?.provider === 'custom');
   const [picked, setPicked] = useState(init.picked);
   const [when, setWhen] = useState(init.when);
   const [time, setTime] = useState('09:00');
@@ -498,8 +634,8 @@ export function LaunchForm({
   if (usable.length === 0) {
     return (
       <p className="text-sm text-slate-600">
-        None of your templates gives access to a model API (Anthropic, OpenAI or Gemini), which
-        agents need. Ask the gateway admin.
+        None of your templates gives access to a model API (Anthropic, OpenAI, Gemini or a custom
+        LLM endpoint), which agents need. Ask the gateway admin.
       </p>
     );
   }
@@ -515,7 +651,7 @@ export function LaunchForm({
       templateId,
       harness: choice?.harness ?? harness,
       accountIds: ambiguous.map((x) => picked[x.tool] ?? x.options[0]?.id ?? '').filter(Boolean),
-      model,
+      model: model.trim(),
       time,
       weekday,
       day,
@@ -586,23 +722,7 @@ export function LaunchForm({
           </Select>
         </Field>
       </div>
-      {choice && choice.models.length > 1 && (
-        <Field label="Model">
-          <Select
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-            }}
-          >
-            <option value="">Default ({choice.models[0]})</option>
-            {choice.models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      )}
+      <ModelField choice={choice} endpoint={endpoint} model={model} setModel={setModel} />
       {ambiguous.map((x) => (
         <Field
           key={x.tool}
@@ -670,7 +790,9 @@ export function LaunchForm({
       <FormFooter
         timeoutSeconds={options.defaultTimeoutSeconds}
         label={editing ? 'Save trigger' : SUBMIT_LABELS[when]}
-        disabled={busy || !ready({ when, prompt, webhookId })}
+        disabled={
+          busy || !ready({ when, prompt, webhookId }) || (typesModel(choice) && !model.trim())
+        }
       />
     </form>
   );

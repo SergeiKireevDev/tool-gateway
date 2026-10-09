@@ -10,6 +10,12 @@ function GrantRow({ grant: g, tools }: { grant: ToolGrant; tools: Tool[] }) {
         <p className="mb-1.5 text-xs font-medium tracking-wide text-slate-500 uppercase">
           {toolName(tools, g.tool)} permissions
         </p>
+        {g.endpoint && (
+          <p className="mb-1.5 font-mono text-xs break-all text-slate-700">
+            {g.endpoint.url} · {g.endpoint.api} API
+            {g.endpoint.hasToken ? ' · bearer token' : ''}
+          </p>
+        )}
         <div className="flex flex-wrap gap-1.5">
           {g.permissions.map((p) => (
             <Badge key={p} tone={p.endsWith(':read') ? 'slate' : 'amber'}>

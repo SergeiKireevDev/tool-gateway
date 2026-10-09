@@ -1,0 +1,275 @@
+import request from 'supertest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { createApp } from '../src/server/http/app.js';
+import { createHarness, FAKE_LLM_TOTAL, type Harness } from './helpers.js';
+
+let h: Harness;
+let app: ReturnType<typeof createApp>;
+let admin: string;
+
+const TOKEN = 'custom-endpoint-token';
+const BASE = 'https://llm.example.com/base';
+
+const adminCall = (method: 'get' | 'post' | 'put', path: string, body?: object) => {
+  const req = request(app)[method](`/api/admin${path}`).set('authorization', `Bearer ${admin}`);
+  return body ? req.send(body) : req;
+};
+
+const template = (endpoint: object, extra: object = {}) => ({
+  name: 'Custom model agents',
+  grants: [{ tool: 'custom', permissions: ['llm:invoke'], resources: [], endpoint, ...extra }],
+  defaultTtlSeconds: 600,
+  maxTtlSeconds: 3600,
+});
+
+async function keyFrom(templateId: string, tokenBudget?: number): Promise<string> {
+  const res = await adminCall('post', '/sessions', {
+    templateId,
+    ...(tokenBudget ? { tokenBudget } : {}),
+  }).expect(201);
+  return res.body.key as string;
+}
+
+const lastCall = () => {
+  const call = h.upstreamCalls.at(-1);
+  if (!call) throw new Error('no upstream call');
+  return {
+    url: call.url,
+    headers: new Headers(call.init.headers),
+    body: JSON.parse(Buffer.from(call.init.body as Buffer).toString('utf8')) as Record<
+      string,
+      unknown
+    >,
+  };
+};
+
+const chat = (key: string, model = 'llama-4') =>
+  request(app)
+    .post('/proxy/custom/v1/chat/completions')
+    .set('authorization', `Bearer ${key}`)
+    .send({ model, messages: [] });
+
+beforeEach(async () => {
+  h = await createHarness();
+  app = createApp(h.gateway, h.config, { fetch: h.fetch });
+  admin = await h.gateway.rotateAdminToken();
+});
+
+describe('custom LLM templates', () => {
+  it('is in the catalog as a model API configured in templates', async () => {
+    const tools = await adminCall('get', '/tools').expect(200);
+    const custom = (tools.body as { id: string; kind: string; endpointApis: unknown }[]).find(
+      (t) => t.id === 'custom',
+    );
+    expect(custom).toMatchObject({ kind: 'llm', endpointApis: ['openai', 'anthropic'] });
+    await adminCall('post', '/accounts', { tool: 'custom', label: 'x', secret: 'y' }).expect(422);
+  });
+
+  it('stores the endpoint but never returns its token', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: `${BASE}/`, api: 'openai', token: TOKEN }),
+    ).expect(201);
+    expect(created.body.grants[0].endpoint).toEqual({ url: BASE, api: 'openai', hasToken: true });
+    const listed = await adminCall('get', '/templates').expect(200);
+    expect(JSON.stringify(listed.body)).not.toContain(TOKEN);
+
+    const key = await keyFrom(created.body.id as string);
+    const sessions = await adminCall('get', '/sessions').expect(200);
+    expect(JSON.stringify(sessions.body)).not.toContain(TOKEN);
+    const introspect = await request(app)
+      .get('/api/session')
+      .set('authorization', `Bearer ${key}`)
+      .expect(200);
+    expect(JSON.stringify(introspect.body)).not.toContain(TOKEN);
+    expect(introspect.body.grants[0]).toMatchObject({ tool: 'custom', kind: 'llm' });
+  });
+
+  it('requires a valid endpoint for custom grants, and only for them', async () => {
+    await adminCall('post', '/templates', template({ url: 'ftp://x', api: 'openai' })).expect(400);
+    await adminCall(
+      'post',
+      '/templates',
+      template({ url: 'https://user:pw@llm.example.com', api: 'openai' }),
+    ).expect(400);
+    await adminCall('post', '/templates', template({ url: BASE, api: 'gemini' })).expect(400);
+    const missing = template({});
+    delete (missing.grants[0] as { endpoint?: object }).endpoint;
+    await adminCall('post', '/templates', missing).expect(400);
+    await adminCall('post', '/templates', {
+      ...template({}),
+      grants: [
+        { tool: 'github', permissions: ['contents:read'], endpoint: { url: BASE, api: 'openai' } },
+      ],
+    }).expect(400);
+  });
+
+  it('keeps the token when an edit leaves it out', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: BASE, api: 'openai', token: TOKEN }),
+    ).expect(201);
+    const id = created.body.id as string;
+    const edited = await adminCall(
+      'put',
+      `/templates/${id}`,
+      template({ url: BASE, api: 'openai' }),
+    ).expect(200);
+    expect(edited.body.grants[0].endpoint.hasToken).toBe(true);
+    await chat(await keyFrom(id)).expect(200);
+    expect(lastCall().headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+describe('custom LLM proxy', () => {
+  it('forwards OpenAI-style calls to the endpoint with its token, checking models and budget', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: BASE, api: 'openai', token: TOKEN }, { resources: ['llama-*'] }),
+    ).expect(201);
+    const key = await keyFrom(created.body.id as string, 1000);
+    await chat(key).expect(200);
+    const call = lastCall();
+    expect(call.url).toBe(`${BASE}/v1/chat/completions`);
+    expect(call.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    // No limit is added where the client set none: servers refuse limits beyond their context.
+    expect(call.body).not.toHaveProperty('max_completion_tokens');
+    const session = await request(app)
+      .get('/api/session')
+      .set('authorization', `Bearer ${key}`)
+      .expect(200);
+    expect(session.body.tokensRemaining).toBe(1000 - FAKE_LLM_TOTAL);
+
+    await request(app)
+      .post('/proxy/custom/v1/chat/completions')
+      .set('authorization', `Bearer ${key}`)
+      .send({ model: 'llama-4', messages: [], max_tokens: 4000 })
+      .expect(200);
+    expect(lastCall().body).toMatchObject({ max_completion_tokens: 1000 - FAKE_LLM_TOTAL });
+
+    // Without a limit to cap, a spent budget stops the next call.
+    const small = await keyFrom(created.body.id as string, 100);
+    await chat(small).expect(200);
+    expect((await chat(small).expect(403)).body.message).toContain('budget');
+
+    const denied = await chat(key, 'gpt-5').expect(403);
+    expect(denied.body.message).toContain('allowlist');
+    await request(app)
+      .post('/proxy/custom/v1/messages')
+      .set('authorization', `Bearer ${key}`)
+      .send({ model: 'llama-4', messages: [] })
+      .expect(403);
+  });
+
+  it('serves the Responses API (Codex) on top of Chat Completions', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: `${BASE}/v1/`, api: 'openai', token: TOKEN }, { resources: ['llama-*'] }),
+    ).expect(201);
+    const key = await keyFrom(created.body.id as string, 1000);
+    const responses = (body: object) =>
+      request(app)
+        .post('/proxy/custom/v1/responses')
+        .set('authorization', `Bearer ${key}`)
+        .send({ model: 'llama-4', ...body });
+    const res = await responses({
+      instructions: 'Be brief',
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+      tools: [
+        { type: 'function', name: 'shell', parameters: { type: 'object' } },
+        { type: 'namespace', name: 'agents', tools: [{ type: 'function', name: 'spawn' }] },
+      ],
+      stream: true,
+    }).expect(200);
+    // A URL pasted with its `/v1` still gets one `/v1`.
+    const call = lastCall();
+    expect(call.url).toBe(`${BASE}/v1/chat/completions`);
+    expect(call.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(call.body).toMatchObject({
+      model: 'llama-4',
+      messages: [
+        { role: 'system', content: 'Be brief' },
+        { role: 'user', content: 'Hi' },
+      ],
+      tools: [{ type: 'function', function: { name: 'shell' } }],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    expect(call.body).not.toHaveProperty('max_completion_tokens');
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    const events = res.text
+      .split('\n')
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => JSON.parse(l.slice('data: '.length)) as { type: string });
+    expect(events.map((e) => e.type)).toEqual([
+      'response.created',
+      'response.in_progress',
+      'response.completed',
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      response: { status: 'completed', usage: { input_tokens: 110, output_tokens: 55 } },
+    });
+    // Metered from the translated answer.
+    const session = await request(app)
+      .get('/api/session')
+      .set('authorization', `Bearer ${key}`)
+      .expect(200);
+    expect(session.body.tokensRemaining).toBe(1000 - FAKE_LLM_TOTAL);
+
+    const plain = await responses({ input: 'Hi' }).expect(200);
+    expect(plain.body).toMatchObject({ object: 'response', status: 'completed', output: [] });
+    expect((await responses({ model: 'gpt-5', input: 'Hi' }).expect(403)).body.message).toContain(
+      'allowlist',
+    );
+    const hosted = await responses({ input: 'Hi', tools: [{ type: 'web_search' }] }).expect(403);
+    expect(hosted.body.message).toContain('Responses API');
+  });
+
+  it('forwards Anthropic-style calls, accepting the key as x-api-key', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: BASE, api: 'anthropic', token: TOKEN }),
+    ).expect(201);
+    const key = await keyFrom(created.body.id as string);
+    await request(app)
+      .post('/proxy/custom/v1/messages')
+      .set('x-api-key', key)
+      .set('anthropic-version', '2023-06-01')
+      .send({ model: 'qwen-3', max_tokens: 256, messages: [] })
+      .expect(200);
+    const call = lastCall();
+    expect(call.url).toBe(`${BASE}/v1/messages`);
+    expect(call.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(call.headers.get('x-api-key')).toBeNull();
+    expect(call.headers.get('anthropic-version')).toBe('2023-06-01');
+  });
+
+  it('sends no credential to endpoints without a token', async () => {
+    const created = await adminCall('post', '/templates', template({ url: BASE, api: 'openai' }));
+    await chat(await keyFrom(created.body.id as string)).expect(200);
+    expect(lastCall().headers.get('authorization')).toBeNull();
+  });
+
+  it('keeps the endpoint a key was issued with when the template changes', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: BASE, api: 'openai', token: TOKEN }),
+    ).expect(201);
+    const id = created.body.id as string;
+    const key = await keyFrom(id);
+    await adminCall(
+      'put',
+      `/templates/${id}`,
+      template({ url: 'https://llm.example.com/other', api: 'openai', token: 'new-token' }),
+    ).expect(200);
+    await chat(key).expect(200);
+    expect(lastCall().url).toBe(`${BASE}/v1/chat/completions`);
+    expect(lastCall().headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+  });
+});

@@ -231,8 +231,10 @@ function IssueModal({
   };
 
   const tooLong = template !== undefined && ttl > template.maxTtlSeconds;
-  const chosen = template?.grants.map((g) => accountIds[g.tool] ?? '') ?? [];
-  const missingAccount = chosen.length === 0 || chosen.includes('');
+  // Custom LLM grants carry their own endpoint: no account to pick for them.
+  const accountGrants = template?.grants.filter((g) => !g.endpoint) ?? [];
+  const chosen = accountGrants.map((g) => accountIds[g.tool] ?? '');
+  const missingAccount = template === undefined || chosen.includes('');
 
   const submit = async (): Promise<void> => {
     setBusy(true);
@@ -278,12 +280,10 @@ function IssueModal({
         {template && (
           <p className="-mt-2 text-xs text-slate-500">{grantsScope(template.grants, data.tools)}</p>
         )}
-        {template?.grants.map((g) => (
+        {accountGrants.map((g) => (
           <AccountSelect
             key={g.tool}
-            label={
-              template.grants.length > 1 ? `${toolName(data.tools, g.tool)} account` : 'Account'
-            }
+            label={accountGrants.length > 1 ? `${toolName(data.tools, g.tool)} account` : 'Account'}
             accounts={data.accounts.filter((a) => a.tool === g.tool)}
             value={accountIds[g.tool] ?? ''}
             onChange={(id) => {

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { Harness, RunEvent, RunnerConfig } from '../server/launchpad/protocol.js';
+import type { LlmEndpointApi } from '../server/tools/types.js';
 
 /**
  * Harness adapters: how to start each agent CLI headless against the gateway (model API and
@@ -82,6 +83,25 @@ function baseEnv(ctx: LaunchContext): Record<string, string> {
 const mcpScript = (ctx: LaunchContext): string => path.join(ctx.guestDir, 'mcp.js');
 const proxy = (ctx: LaunchContext, provider: string): string =>
   `${ctx.config.gatewayUrl}/proxy/${provider}`;
+
+/** Claude Code's model aliases: on a custom endpoint they all map to the run's model. */
+const CLAUDE_MODEL_ENVS = [
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+];
+
+/**
+ * A custom endpoint serves only the models its server has: background calls Claude Code makes
+ * with its own model choices (titles, subagents…) use the run's model too.
+ */
+function claudeModelEnv(config: RunnerConfig): Record<string, string> {
+  const { provider, model } = config.llm;
+  if (provider !== 'custom' || !model) return {};
+  return Object.fromEntries(CLAUDE_MODEL_ENVS.map((name) => [name, model]));
+}
 
 const toolCall = (tool: string, callId: string | undefined, input: unknown): EventDraft => ({
   type: 'tool_call',
@@ -176,8 +196,9 @@ export const claudeCode: HarnessAdapter = {
       ],
       env: {
         ...baseEnv(ctx),
-        ANTHROPIC_BASE_URL: proxy(ctx, 'anthropic'),
+        ANTHROPIC_BASE_URL: proxy(ctx, config.llm.provider),
         ANTHROPIC_AUTH_TOKEN: config.sessionKey,
+        ...claudeModelEnv(config),
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         DISABLE_AUTOUPDATER: '1',
         DISABLE_TELEMETRY: '1',
@@ -219,6 +240,9 @@ export const claudeCode: HarnessAdapter = {
 // ------------------------------------------------------------------ Codex
 
 const toml = (value: string): string => JSON.stringify(value);
+
+/** Codex `error` records that are only warnings. */
+const CODEX_WARNINGS = [/^Model metadata for .* not found/];
 
 /** Tool name of a Codex item: MCP calls by tool, shell commands as `shell`, others by type. */
 function codexTool(item: Json): string {
@@ -272,7 +296,10 @@ export const codex: HarnessAdapter = {
         '--dangerously-bypass-approvals-and-sandbox',
         ...override('model_provider', toml('gateway')),
         ...override('model_providers.gateway.name', toml('gateway')),
-        ...override('model_providers.gateway.base_url', toml(`${proxy(ctx, 'openai')}/v1`)),
+        ...override(
+          'model_providers.gateway.base_url',
+          toml(`${proxy(ctx, config.llm.provider)}/v1`),
+        ),
         ...override('model_providers.gateway.env_key', toml('GATEWAY_SESSION_KEY')),
         ...override('model_providers.gateway.wire_api', toml('responses')),
         ...override(`mcp_servers.${MCP_SERVER}.command`, toml(ctx.nodeBin)),
@@ -282,6 +309,8 @@ export const codex: HarnessAdapter = {
           `{ GATEWAY_URL = ${toml(config.gatewayUrl)}, GATEWAY_SESSION_KEY = ${toml(config.sessionKey)} }`,
         ),
         ...override('developer_instructions', toml(config.systemPrompt)),
+        // A custom endpoint has no hosted web search: Codex would offer the model a tool it lacks.
+        ...(config.llm.provider === 'custom' ? override('web_search', toml('disabled')) : []),
         ...(config.llm.model ? ['--model', config.llm.model] : []),
         config.prompt,
       ],
@@ -309,8 +338,11 @@ export const codex: HarnessAdapter = {
         state.error = message ?? 'Codex turn failed';
         return [{ type: 'error', text: state.error }];
       }
-      case 'error':
-        return [{ type: 'error', text: str(record.message) ?? 'Codex error' }];
+      case 'error': {
+        const text = str(record.message) ?? 'Codex error';
+        // A warning, not a failure: Codex knows no metadata (context window…) for custom models.
+        return [{ type: CODEX_WARNINGS.some((w) => w.test(text)) ? 'status' : 'error', text }];
+      }
       default:
         return [];
     }
@@ -427,6 +459,47 @@ const PI_PROVIDER: Record<string, { id: string; keyEnv: string; baseUrl: (gw: st
     },
   };
 
+/** pi's `api` for each chat API a custom endpoint can speak. */
+const PI_ENDPOINT_API: Record<LlmEndpointApi, { api: string; path: string }> = {
+  anthropic: { api: 'anthropic-messages', path: '' },
+  openai: { api: 'openai-completions', path: '/v1' },
+};
+
+interface PiSetup {
+  /** pi's `models.json`. */
+  models: Json;
+  /** For `--model`; null = pi's default for the only provider it has a key for. */
+  model: string | null;
+  env: Record<string, string>;
+}
+
+/** A custom endpoint, declared to pi as its own provider with the run's model. */
+function piCustom(ctx: LaunchContext): PiSetup {
+  const { provider, model, api } = ctx.config.llm;
+  if (!api || !model) throw new Error('pi needs the chat API and model of a custom endpoint');
+  const endpoint = PI_ENDPOINT_API[api];
+  const custom = {
+    baseUrl: `${proxy(ctx, provider)}${endpoint.path}`,
+    api: endpoint.api,
+    // Read from the environment when pi calls the endpoint: the key is not written to disk.
+    apiKey: '$GATEWAY_SESSION_KEY',
+    models: [{ id: model }],
+  };
+  return { models: { providers: { [provider]: custom } }, model: `${provider}/${model}`, env: {} };
+}
+
+function piSetup(ctx: LaunchContext): PiSetup {
+  const { provider, model } = ctx.config.llm;
+  if (provider === 'custom') return piCustom(ctx);
+  const official = PI_PROVIDER[provider];
+  if (!official) throw new Error(`pi can't use ${provider}`);
+  return {
+    models: { providers: { [official.id]: { baseUrl: official.baseUrl(ctx.config.gatewayUrl) } } },
+    model: model ? `${official.id}/${model}` : null,
+    env: { [official.keyEnv]: ctx.config.sessionKey },
+  };
+}
+
 function piAssistant(message: Json, state: HarnessState): EventDraft[] {
   const content = Array.isArray(message.content) ? (message.content as unknown[]) : [];
   const events: EventDraft[] = [];
@@ -449,12 +522,8 @@ function piAssistant(message: Json, state: HarnessState): EventDraft[] {
 export const pi: HarnessAdapter = {
   launch(ctx) {
     const { config } = ctx;
-    const provider = PI_PROVIDER[config.llm.provider];
-    if (!provider) throw new Error(`pi can't use ${config.llm.provider}`);
+    const setup = piSetup(ctx);
     const agentDir = path.join(ctx.home, '.pi', 'agent');
-    const models = {
-      providers: { [provider.id]: { baseUrl: provider.baseUrl(config.gatewayUrl) } },
-    };
     return {
       command: 'pi',
       args: [
@@ -466,11 +535,11 @@ export const pi: HarnessAdapter = {
         '--append-system-prompt',
         config.systemPrompt,
         // Without a model, pi picks its default for the only provider it has a key for.
-        ...(config.llm.model ? ['--model', `${provider.id}/${config.llm.model}`] : []),
+        ...(setup.model ? ['--model', setup.model] : []),
         config.prompt,
       ],
-      env: { ...baseEnv(ctx), PI_CODING_AGENT_DIR: agentDir, [provider.keyEnv]: config.sessionKey },
-      files: [{ path: path.join(agentDir, 'models.json'), content: JSON.stringify(models) }],
+      env: { ...baseEnv(ctx), PI_CODING_AGENT_DIR: agentDir, ...setup.env },
+      files: [{ path: path.join(agentDir, 'models.json'), content: JSON.stringify(setup.models) }],
       dirs: [],
     };
   },

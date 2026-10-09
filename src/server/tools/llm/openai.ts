@@ -8,6 +8,7 @@ import type {
   ToolProvider,
   ToolRequest,
   ToolRequestContext,
+  UsageMeter,
 } from '../types.js';
 import {
   CHATGPT_RESPONSES_URL,
@@ -42,15 +43,28 @@ import {
 const API = 'https://api.openai.com';
 /** Tool types executed by the client; everything else runs at OpenAI (web search, remote MCP…). */
 const CLIENT_TOOL_TYPES = new Set(['function', 'custom', 'local_shell', 'shell', 'apply_patch']);
+/** A named group of tools (Codex sends its sub-agent tools as one): checked by its members. */
+const NAMESPACE_TOOL_TYPE = 'namespace';
+
+/** The first server-side tool among `tools`, looking inside namespaces (groups of tools). */
+function serverTool(tools: unknown): string | null {
+  for (const tool of Array.isArray(tools) ? (tools as unknown[]) : []) {
+    const type = isRecord(tool) && typeof tool.type === 'string' ? tool.type : 'unknown';
+    if (type === NAMESPACE_TOOL_TYPE && isRecord(tool)) {
+      const inner = serverTool(tool.tools);
+      if (inner !== null) return inner;
+    } else if (!CLIENT_TOOL_TYPES.has(type)) {
+      return type;
+    }
+  }
+  return null;
+}
 
 function checkServerTools(body: Record<string, unknown>, grant: Grant): void {
   if (grant.permissions.includes(LLM_PERM.SERVER_TOOLS)) return;
-  const tools = Array.isArray(body.tools) ? (body.tools as unknown[]) : [];
-  for (const tool of tools) {
-    const type = isRecord(tool) && typeof tool.type === 'string' ? tool.type : 'unknown';
-    if (!CLIENT_TOOL_TYPES.has(type)) {
-      throw new Denied(`Server-side tool "${type}" needs permission "${LLM_PERM.SERVER_TOOLS}"`);
-    }
+  const type = serverTool(body.tools);
+  if (type !== null) {
+    throw new Denied(`Server-side tool "${type}" needs permission "${LLM_PERM.SERVER_TOOLS}"`);
   }
 }
 
@@ -95,6 +109,25 @@ function chatgptResponses(
   return { upstreamUrl: CHATGPT_RESPONSES_URL, upstreamHeaders: chatgptHeaders };
 }
 
+/** The output limit to send in place of `current`, if any (see `cappedLimit`). */
+function outputCap(current: unknown, ctx: ToolRequestContext): number | undefined {
+  if (current === undefined && ctx.keepUnsetLimits === true) {
+    checkBudget(ctx.tokensRemaining);
+    return undefined;
+  }
+  return cappedLimit(current, ctx.tokensRemaining);
+}
+
+/** Meters a Responses API answer (streamed or not) by the usage it reports. */
+export function responsesMeter(contentType: string, model: string): UsageMeter {
+  return eventMeter(contentType, model, (event, usage) => {
+    if (!isRecord(event)) return;
+    // Streams end with `response.completed` (or `.incomplete` / `.failed`) carrying usage.
+    const response = isRecord(event.response) ? event.response : event;
+    foldResponsesUsage(response.usage, usage);
+  });
+}
+
 function responses(request: ToolRequest, grant: Grant, ctx: ToolRequestContext): AuthzDecision {
   const body = jsonBody(request);
   const { model, stream } = generate(body, grant);
@@ -103,7 +136,7 @@ function responses(request: ToolRequest, grant: Grant, ctx: ToolRequestContext):
   if (chatgpt) {
     routing = chatgptResponses(body, ctx);
   } else {
-    const cap = cappedLimit(body.max_output_tokens, ctx.tokensRemaining);
+    const cap = outputCap(body.max_output_tokens, ctx);
     if (cap !== undefined) body.max_output_tokens = cap;
   }
   return {
@@ -112,13 +145,7 @@ function responses(request: ToolRequest, grant: Grant, ctx: ToolRequestContext):
     permission: LLM_PERM.INVOKE,
     detail: `responses ${model}${stream ? ' (stream)' : ''}`,
     body: canonical(body),
-    meter: (contentType) =>
-      eventMeter(contentType, model, (event, usage) => {
-        if (!isRecord(event)) return;
-        // Streams end with `response.completed` (or `.incomplete` / `.failed`) carrying usage.
-        const response = isRecord(event.response) ? event.response : event;
-        foldResponsesUsage(response.usage, usage);
-      }),
+    meter: (contentType) => responsesMeter(contentType, model),
   };
 }
 
@@ -130,7 +157,7 @@ function chatCompletions(
   const body = jsonBody(request);
   const { model, stream } = generate(body, grant);
   const current = body.max_completion_tokens ?? body.max_tokens;
-  const cap = cappedLimit(current, ctx.tokensRemaining);
+  const cap = outputCap(current, ctx);
   if (cap !== undefined) {
     body.max_completion_tokens = cap;
     delete body.max_tokens;

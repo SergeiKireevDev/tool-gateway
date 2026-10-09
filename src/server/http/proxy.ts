@@ -126,11 +126,14 @@ async function forward(
     decision.detail ? `${decision.permission} · ${decision.detail}` : decision.permission,
   );
   if (await refusedCredential(tool, upstream, res)) return;
-  await relay(upstream, req, res, {
+  const response = decision.transformResponse
+    ? await decision.transformResponse(upstream)
+    : upstream;
+  await relay(response, req, res, {
     rewriteHeader: (name, value) =>
       tool.rewriteResponseHeader?.(name, value, `${config.publicUrl}${prefix}`) ?? value,
     observe: decision.observeResponse,
-    meter: usageMeter(gateway, session.id, tool.id, decision, upstream),
+    meter: usageMeter(gateway, session.id, tool.id, decision, response),
   });
 }
 

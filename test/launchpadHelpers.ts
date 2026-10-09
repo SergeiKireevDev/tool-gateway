@@ -84,6 +84,7 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     crypto: h.crypto,
     vmGatewayUrl: 'http://172.30.0.1:7420',
     now: () => h.clock.now,
+    fetchImpl: h.fetch,
   });
   const scheduler = new Scheduler(h.db, h.gateway, launchpad, () => h.clock.now);
   launchpad.onFinished((run) => {

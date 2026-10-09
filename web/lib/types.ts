@@ -35,10 +35,15 @@ export interface Tool {
   resourceHelp: string;
   permissions: PermissionDef[];
   example: ToolExample;
+  /** Chat APIs a per-template endpoint may speak (custom LLM); null for account-based tools. */
+  endpointApis: LlmEndpointApi[] | null;
   /** Present when the tool supports interactive sign-in (OAuth device flow). */
   signIn: SignInConfig | null;
-  /** Present when the tool supports "Sign in with …" through OAuth (paste back the redirect). */
-  oauthSignIn: { help: string } | null;
+  /**
+   * Present when the tool supports "Sign in with …" through OAuth. `redirectsBack`: the provider
+   * returns to the gateway's callback page; otherwise the redirect address is pasted back.
+   */
+  oauthSignIn: { help: string; redirectsBack: boolean } | null;
 }
 
 export interface DeviceFlowStart {
@@ -72,11 +77,26 @@ export interface Account {
   owner: AccountOwner;
 }
 
+export type LlmEndpointApi = 'openai' | 'anthropic';
+
+/** A custom LLM endpoint configured in a template (its token is never returned). */
+export interface LlmEndpoint {
+  url: string;
+  api: LlmEndpointApi;
+  hasToken: boolean;
+}
+
 /** What a template grants on one tool. Empty resources = unrestricted. */
 export interface ToolGrant {
   tool: string;
   permissions: string[];
   resources: string[];
+  endpoint?: LlmEndpoint;
+}
+
+/** A grant as sent when saving a template: no `token` keeps the endpoint's current one. */
+export interface ToolGrantInput extends Omit<ToolGrant, 'endpoint'> {
+  endpoint?: Omit<LlmEndpoint, 'hasToken'> & { token?: string };
 }
 
 /** What every viewer sees of a template (members get only this). */
@@ -100,7 +120,7 @@ export interface Template extends TemplateSummary {
 export interface TemplateInput {
   name: string;
   description: string;
-  grants: ToolGrant[];
+  grants: ToolGrantInput[];
   egressDomains: string[];
   defaultTtlSeconds: number;
   maxTtlSeconds: number;

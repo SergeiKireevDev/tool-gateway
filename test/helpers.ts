@@ -11,10 +11,12 @@ import { EncryptedStore } from '../src/server/store/store.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
 import { createLinearProvider } from '../src/server/tools/linear.js';
 import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
+import { createCustomLlmProvider } from '../src/server/tools/llm/custom.js';
 import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
+import { createGmailProvider } from '../src/server/tools/gmail.js';
 import { createSlackProvider } from '../src/server/tools/slack.js';
 
 export interface Harness {
@@ -112,6 +114,11 @@ export function fakeSlackFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+/** A custom LLM endpoint: answers like Anthropic on `/v1/messages`, like OpenAI elsewhere. */
+export const CUSTOM_LLM_URL = 'https://llm.example.com/';
+/** What the fake custom LLM endpoint lists at `GET /v1/models`. */
+export const CUSTOM_LLM_MODELS = ['qwen3', 'llama-4', 'gpt-6', 'qwen3'];
+
 /** Usage every fake LLM answer reports: 100 input, 50 output, 10 cache reads, 5 cache writes. */
 export const FAKE_LLM_TOTAL = 165;
 
@@ -192,6 +199,9 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
     const key =
       headers.get('x-api-key') ?? headers.get('x-goog-api-key') ?? headers.get('authorization');
     if (key?.endsWith('bad-key')) return Promise.resolve(new Response('{}', { status: 401 }));
+    if (url.startsWith(`${CUSTOM_LLM_URL}v1/models`)) {
+      return Promise.resolve(Response.json({ data: CUSTOM_LLM_MODELS.map((id) => ({ id })) }));
+    }
     if ((init.method ?? 'GET') === 'GET') return Promise.resolve(Response.json({ data: [] }));
     // A key revoked after it was connected: providers echo part of it in their error.
     if (key?.endsWith('revoked-key')) {
@@ -201,8 +211,18 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
       string,
       unknown
     >;
-    return Promise.resolve(fakeLlmAnswer(url, body));
+    return Promise.resolve(fakeLlmAnswer(customAsOfficial(url), body));
   };
+}
+
+/** The official API URL a custom endpoint's request mimics. */
+function customAsOfficial(url: string): string {
+  if (!url.startsWith(CUSTOM_LLM_URL)) return url;
+  const path = new URL(url).pathname;
+  const host = path.endsWith('/v1/messages')
+    ? 'https://api.anthropic.com'
+    : 'https://api.openai.com';
+  return `${host}${path.slice(path.indexOf('/v1/'))}`;
 }
 
 /** A ChatGPT access token (unsigned JWT) for account `acct_1`, generation `n`. */
@@ -313,6 +333,44 @@ export function fakeLinearFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+export const GMAIL_CLIENT = { clientId: 'gmail-client', clientSecret: 'gmail-secret' };
+
+/**
+ * Fake Google: the token endpoint (codes and refresh tokens starting with `good`), and Gmail's
+ * `profile` for any token but `ya29.bad`; other calls echo.
+ */
+export function fakeGmailFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (url === 'https://oauth2.googleapis.com/token') {
+      const form = new URLSearchParams(init.body as string);
+      const grant = form.get('code') ?? form.get('refresh_token') ?? '';
+      if (!grant.startsWith('good')) {
+        return Promise.resolve(Response.json({ error: 'invalid_grant' }, { status: 400 }));
+      }
+      const first = form.get('grant_type') === 'authorization_code';
+      return Promise.resolve(
+        Response.json({
+          access_token: first ? 'ya29.first' : 'ya29.refreshed',
+          expires_in: 3599,
+          ...(first ? { refresh_token: 'good-refresh' } : {}),
+        }),
+      );
+    }
+    const auth = new Headers(init.headers).get('authorization');
+    if (url.endsWith('/gmail/v1/users/me/profile')) {
+      if (auth === 'Bearer ya29.bad') {
+        return Promise.resolve(Response.json({ error: { code: 401 } }, { status: 401 }));
+      }
+      return Promise.resolve(Response.json({ emailAddress: 'ada@example.com', messagesTotal: 42 }));
+    }
+    return Promise.resolve(
+      Response.json({ url, method: init.method ?? 'GET', body: init.body ?? null }),
+    );
+  };
+}
+
 const LLM_HOSTS = [
   'https://auth.openai.com/',
   'https://chatgpt.com/',
@@ -320,7 +378,10 @@ const LLM_HOSTS = [
   'https://api.anthropic.com/',
   'https://api.openai.com/',
   'https://generativelanguage.googleapis.com/',
+  CUSTOM_LLM_URL,
 ];
+
+const GOOGLE_HOSTS = ['https://gmail.googleapis.com/', 'https://oauth2.googleapis.com/'];
 
 /** Routes upstream calls to the fake API of the tool they are for. */
 function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
@@ -329,8 +390,10 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const slack = fakeSlackFetch(calls);
   const llm = fakeLlmFetch(calls);
   const linear = fakeLinearFetch(calls);
+  const gmail = fakeGmailFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
+    if (GOOGLE_HOSTS.some((host) => url.startsWith(host))) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
@@ -407,6 +470,7 @@ export async function createHarness(): Promise<Harness> {
     keyFile: path.join(dir, 'key', 'master.key'),
     publicUrl: 'http://gateway.test',
     google: null,
+    gmail: null,
   };
   const upstreamCalls: Harness['upstreamCalls'] = [];
   const fetch = fakeUpstreams(upstreamCalls);
@@ -422,9 +486,11 @@ export async function createHarness(): Promise<Harness> {
       createMondayProvider(fetch),
       createSlackProvider(fetch),
       createLinearProvider(fetch),
+      createGmailProvider(fetch, GMAIL_CLIENT),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),
+      createCustomLlmProvider(fetch),
     ]),
     new ActivityLog(db),
     new LlmUsageLog(db),
