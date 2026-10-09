@@ -5,6 +5,7 @@ import { HTTP } from '../server/httpStatus.js';
 import { BYTES_PER_MIB } from '../server/units.js';
 import { HARNESSES, LLM_PROVIDERS } from '../server/launchpad/protocol.js';
 import type { VmSpec } from '../server/launchpad/vmDriver.js';
+import { LLM_ENDPOINT_APIS } from '../server/tools/types.js';
 import { VmdError, type VmManager } from './vmManager.js';
 
 const SOCKET_MODE = 0o660;
@@ -25,7 +26,11 @@ const specSchema = z.object({
     gatewayUrl: z.string(),
     sessionKey: z.string(),
     harness: z.enum(HARNESSES),
-    llm: z.object({ provider: z.enum(LLM_PROVIDERS), model: z.string().nullable() }),
+    llm: z.object({
+      provider: z.enum(LLM_PROVIDERS),
+      model: z.string().nullable(),
+      api: z.enum(LLM_ENDPOINT_APIS).optional(),
+    }),
     gatewayTools: z.array(z.string()),
     prompt: z.string(),
     systemPrompt: z.string(),

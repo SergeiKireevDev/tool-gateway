@@ -243,3 +243,58 @@ describe('pi', () => {
     expect(state.finalMessage).toBe('Bye');
   });
 });
+
+describe('custom LLM endpoints', () => {
+  const custom = (harness: RunnerConfig['harness'], api: 'openai' | 'anthropic') => ({
+    ...ctx,
+    config: { ...config, harness, llm: { provider: 'custom' as const, model: 'qwen3', api } },
+  });
+
+  it('points Claude Code at the endpoint and maps its model aliases to the run’s model', () => {
+    const launch = claudeCode.launch(custom('claude-code', 'anthropic'));
+    expect(launch.env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'http://172.30.0.1:7420/proxy/custom',
+      ANTHROPIC_AUTH_TOKEN: 'gws_key',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'qwen3',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'qwen3',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'qwen3',
+    });
+    expect(launch.args).toEqual(expect.arrayContaining(['--model', 'qwen3']));
+    // The official API keeps Claude Code's own model choices.
+    expect(claudeCode.launch(ctx).env).not.toHaveProperty('ANTHROPIC_DEFAULT_HAIKU_MODEL');
+  });
+
+  it('points Codex at the endpoint', () => {
+    const launch = codex.launch(custom('codex', 'openai'));
+    expect(launch.args).toContain(
+      'model_providers.gateway.base_url="http://172.30.0.1:7420/proxy/custom/v1"',
+    );
+    expect(launch.args).toEqual(expect.arrayContaining(['--model', 'qwen3']));
+  });
+
+  it('declares the endpoint to pi as a provider, its key read from the environment', () => {
+    const openai = pi.launch(custom('pi', 'openai'));
+    expect(openai.args).toEqual(expect.arrayContaining(['--model', 'custom/qwen3']));
+    expect(openai.env.GATEWAY_SESSION_KEY).toBe('gws_key');
+    expect(openai.files[0]?.content).not.toContain('gws_key');
+    expect(JSON.parse(openai.files[0]?.content ?? '{}')).toEqual({
+      providers: {
+        custom: {
+          baseUrl: 'http://172.30.0.1:7420/proxy/custom/v1',
+          api: 'openai-completions',
+          apiKey: '$GATEWAY_SESSION_KEY',
+          models: [{ id: 'qwen3' }],
+        },
+      },
+    });
+    const anthropic = pi.launch(custom('pi', 'anthropic'));
+    expect(JSON.parse(anthropic.files[0]?.content ?? '{}')).toMatchObject({
+      providers: {
+        custom: { baseUrl: 'http://172.30.0.1:7420/proxy/custom', api: 'anthropic-messages' },
+      },
+    });
+    expect(() =>
+      pi.launch({ ...ctx, config: { ...config, llm: { provider: 'custom', model: null } } }),
+    ).toThrow(/chat API and model/);
+  });
+});

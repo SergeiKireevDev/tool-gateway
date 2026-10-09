@@ -5,6 +5,7 @@ import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
   HARNESS_LABELS,
+  type HarnessChoice,
   type LaunchOptions,
   type Preset,
   type Run,
@@ -138,6 +139,54 @@ function RecurrenceFields({
 }
 
 const firstId = (items: { id: string }[]): string => items[0]?.id ?? '';
+
+/** Whether the member must type the model: the API has no default and the template names none. */
+const typesModel = (choice: HarnessChoice | undefined): boolean =>
+  choice !== undefined && choice.modelRequired && choice.models.length === 0;
+
+/** The model to run: one of the template's models, or typed in for a custom endpoint. */
+function ModelField({
+  choice,
+  model,
+  setModel,
+}: {
+  choice: HarnessChoice | undefined;
+  model: string;
+  setModel: (model: string) => void;
+}) {
+  if (typesModel(choice)) {
+    return (
+      <Field label="Model" hint="The model name the custom LLM endpoint serves">
+        <Input
+          required
+          value={model}
+          placeholder="e.g. qwen3-coder"
+          onChange={(e) => {
+            setModel(e.target.value);
+          }}
+        />
+      </Field>
+    );
+  }
+  if (!choice || choice.models.length <= 1) return null;
+  return (
+    <Field label="Model">
+      <Select
+        value={model}
+        onChange={(e) => {
+          setModel(e.target.value);
+        }}
+      >
+        <option value="">Default ({choice.models[0]})</option>
+        {choice.models.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
 
 /** "issues.opened, Issue" → ["issues.opened", "Issue"] */
 function splitList(value: string): string[] {
@@ -414,8 +463,8 @@ export function LaunchForm({
   if (usable.length === 0) {
     return (
       <p className="text-sm text-slate-600">
-        None of your templates gives access to a model API (Anthropic, OpenAI or Gemini), which
-        agents need. Ask the gateway admin.
+        None of your templates gives access to a model API (Anthropic, OpenAI, Gemini or a custom
+        LLM endpoint), which agents need. Ask the gateway admin.
       </p>
     );
   }
@@ -429,7 +478,7 @@ export function LaunchForm({
       templateId,
       harness: choice?.harness ?? harness,
       accountIds: ambiguous.map((x) => picked[x.tool] ?? x.options[0]?.id ?? '').filter(Boolean),
-      model,
+      model: model.trim(),
       time,
       weekday,
       day,
@@ -498,23 +547,7 @@ export function LaunchForm({
           </Select>
         </Field>
       </div>
-      {choice && choice.models.length > 1 && (
-        <Field label="Model">
-          <Select
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-            }}
-          >
-            <option value="">Default ({choice.models[0]})</option>
-            {choice.models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      )}
+      <ModelField choice={choice} model={model} setModel={setModel} />
       {ambiguous.map((x) => (
         <Field
           key={x.tool}
@@ -582,7 +615,12 @@ export function LaunchForm({
           Runs in a disposable VM that can only reach the gateway. Stops after{' '}
           {formatDuration(options.defaultTimeoutSeconds)} at most.
         </p>
-        <Button type="submit" disabled={busy || !ready({ when, prompt, webhookId })}>
+        <Button
+          type="submit"
+          disabled={
+            busy || !ready({ when, prompt, webhookId }) || (typesModel(choice) && !model.trim())
+          }
+        >
           {SUBMIT_LABELS[when]}
         </Button>
       </div>

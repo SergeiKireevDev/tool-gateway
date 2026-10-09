@@ -1,3 +1,5 @@
+import type { LlmEndpointApi } from '../tools/types.js';
+
 /**
  * Contract between the launchpad (gateway side) and the runner inside an agent microVM. The
  * runner reads a `RunnerConfig` from its config drive, then reports to the gateway's VM listener
@@ -17,15 +19,25 @@ export const CONFIG_DRIVE_BYTES = MIB;
 export const HARNESSES = ['claude-code', 'codex', 'gemini', 'pi'] as const;
 export type Harness = (typeof HARNESSES)[number];
 
-export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini'] as const;
+/** `custom`: an endpoint configured in the template, speaking one of `LLM_ENDPOINT_APIS`. */
+export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'custom'] as const;
 export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+export const CUSTOM_PROVIDER = 'custom' satisfies LlmProvider;
 
 /** Model APIs each harness can talk to, in order of preference. */
 export const HARNESS_PROVIDERS: Record<Harness, readonly LlmProvider[]> = {
+  'claude-code': ['anthropic', CUSTOM_PROVIDER],
+  codex: ['openai', CUSTOM_PROVIDER],
+  gemini: ['gemini'],
+  pi: ['anthropic', 'openai', 'gemini', CUSTOM_PROVIDER],
+};
+
+/** Chat APIs of custom endpoints each harness can talk to (Codex needs OpenAI's Responses API). */
+export const HARNESS_ENDPOINT_APIS: Record<Harness, readonly LlmEndpointApi[]> = {
   'claude-code': ['anthropic'],
   codex: ['openai'],
-  gemini: ['gemini'],
-  pi: ['anthropic', 'openai', 'gemini'],
+  gemini: [],
+  pi: ['anthropic', 'openai'],
 };
 
 /** Everything the runner needs, written to the VM's config drive (readable by root only). */
@@ -38,8 +50,11 @@ export interface RunnerConfig {
   /** The agent's session key: tools and LLM calls through the gateway. */
   sessionKey: string;
   harness: Harness;
-  /** Model API (through the gateway) and model the harness uses; null model = its default. */
-  llm: { provider: LlmProvider; model: string | null };
+  /**
+   * Model API (through the gateway) and model the harness uses; null model = its default.
+   * `api`: the chat API of a custom endpoint (always set, with a model, for `custom`).
+   */
+  llm: { provider: LlmProvider; model: string | null; api?: LlmEndpointApi };
   /** MCP tool names of the gateway tools, for harnesses that allowlist tools. */
   gatewayTools: string[];
   /**

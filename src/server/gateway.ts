@@ -283,11 +283,13 @@ export interface ToolCatalogEntry {
 /** A template grant with the account chosen for it at issuance. */
 /**
  * Which of a template's tools an agent run's key covers: `drop` grants are left out (model APIs
- * the harness can't use); `optional` grants are left out when no account is available for them.
+ * the harness can't use), and so are endpoint grants whose chat API is not in `endpointApis`;
+ * `optional` grants are left out when no account is available for them.
  */
 export interface RunToolScope {
   drop: readonly string[];
   optional: readonly string[];
+  endpointApis: readonly LlmEndpointApi[];
 }
 
 interface BoundGrant {
@@ -1256,7 +1258,10 @@ export class Gateway {
   ): BoundGrant[] {
     const usable = this.usableAccounts(actor);
     const dropped = (tool: string) => scope?.drop.includes(tool) ?? false;
-    const grants = template.grants.filter((g) => !dropped(g.tool));
+    const grants = template.grants.filter(
+      (g) =>
+        !dropped(g.tool) && !(scope && g.endpoint && !scope.endpointApis.includes(g.endpoint.api)),
+    );
     const requested = requestedIds.flatMap((id) => {
       const account = usable.find((a) => a.id === id);
       if (!account) {
