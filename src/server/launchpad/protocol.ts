@@ -16,8 +16,19 @@ export const RUN_TOKEN_PREFIX = 'gwr_';
 /** Size of the raw config drive; the JSON config is NUL-padded to it. */
 export const CONFIG_DRIVE_BYTES = MIB;
 
+/** Agent CLIs a member can launch. */
 export const HARNESSES = ['claude-code', 'codex', 'gemini', 'pi'] as const;
 export type Harness = (typeof HARNESSES)[number];
+/**
+ * The execution container: no agent CLI, the runner runs a script written beforehand (by a
+ * workflow's planning step). The script reaches a custom LLM endpoint and the template's tools.
+ */
+export const SCRIPT_HARNESS = 'script';
+/** Everything a run can start: the agent CLIs and the execution container. */
+export const RUN_HARNESSES = [...HARNESSES, SCRIPT_HARNESS] as const;
+export type RunHarness = (typeof RUN_HARNESSES)[number];
+/** The file the planning step of a workflow writes its script to, in its output files. */
+export const SCRIPT_FILE = 'script.mjs';
 
 /** `custom`: an endpoint configured in the template, speaking one of `LLM_ENDPOINT_APIS`. */
 export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'custom'] as const;
@@ -25,19 +36,21 @@ export type LlmProvider = (typeof LLM_PROVIDERS)[number];
 export const CUSTOM_PROVIDER = 'custom' satisfies LlmProvider;
 
 /** Model APIs each harness can talk to, in order of preference. */
-export const HARNESS_PROVIDERS: Record<Harness, readonly LlmProvider[]> = {
+export const HARNESS_PROVIDERS: Record<RunHarness, readonly LlmProvider[]> = {
   'claude-code': ['anthropic', CUSTOM_PROVIDER],
   codex: ['openai', CUSTOM_PROVIDER],
   gemini: ['gemini'],
   pi: ['anthropic', 'openai', 'gemini', CUSTOM_PROVIDER],
+  [SCRIPT_HARNESS]: [CUSTOM_PROVIDER],
 };
 
 /** Chat APIs of custom endpoints each harness can talk to (Codex needs OpenAI's Responses API). */
-export const HARNESS_ENDPOINT_APIS: Record<Harness, readonly LlmEndpointApi[]> = {
+export const HARNESS_ENDPOINT_APIS: Record<RunHarness, readonly LlmEndpointApi[]> = {
   'claude-code': ['anthropic'],
   codex: ['openai'],
   gemini: [],
   pi: ['anthropic', 'openai'],
+  [SCRIPT_HARNESS]: ['anthropic', 'openai'],
 };
 
 /** Everything the runner needs, written to the VM's config drive (readable by root only). */
@@ -49,7 +62,7 @@ export interface RunnerConfig {
   gatewayUrl: string;
   /** The agent's session key: tools and LLM calls through the gateway. */
   sessionKey: string;
-  harness: Harness;
+  harness: RunHarness;
   /**
    * Model API (through the gateway) and model the harness uses; null model = its default.
    * `api`: the chat API of a custom endpoint (always set, with a model, for `custom`).
@@ -62,7 +75,9 @@ export interface RunnerConfig {
    * sets `HTTPS_PROXY` for the agent. Absent in configs from older gateways.
    */
   egressDomains?: string[];
+  /** The task; for the `script` harness, the script itself. */
   prompt: string;
+  /** Unused by the `script` harness. */
   systemPrompt: string;
   /** `MEMORY.md` carried over from the previous run of a schedule, or null. */
   memory: string | null;

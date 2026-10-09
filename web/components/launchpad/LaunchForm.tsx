@@ -7,6 +7,7 @@ import {
   HARNESS_LABELS,
   type HarnessChoice,
   type LaunchOptions,
+  type LaunchTemplate,
   type Preset,
   type Run,
   type Schedule,
@@ -14,6 +15,7 @@ import {
   type TriggerFilters,
   type WebhookOption,
   WEEKDAYS,
+  type Workflow,
 } from '@/lib/launchpad';
 import type { Account } from '@/lib/types';
 import { Button, ErrorBanner, Field, Input, Select, Textarea } from '../ui';
@@ -36,6 +38,8 @@ const SUBMIT_LABELS: Record<When, string> = {
   monthly: CREATE_SCHEDULE,
   webhook: 'Create trigger',
 };
+/** Workflows are picked among the templates: their select value is the template's, prefixed. */
+const WORKFLOW_PREFIX = 'workflow:';
 const LAST_DAY = 28;
 const DAYS = Array.from({ length: LAST_DAY }, (_, i) => i + 1);
 const MINUTES_PER_HOUR = 60;
@@ -144,6 +148,23 @@ const firstId = (items: { id: string }[]): string => items[0]?.id ?? '';
 const typesModel = (choice: HarnessChoice | undefined): boolean =>
   choice !== undefined && choice.modelRequired && choice.models.length === 0;
 
+/** Whether the model the member must type is still missing. */
+const lacksModel = (choice: HarnessChoice | undefined, model: string): boolean =>
+  typesModel(choice) && !model.trim();
+
+/** Whether the form can be sent: what its request needs, and the models to type. */
+function complete(d: {
+  when: When;
+  prompt: string;
+  webhookId: string;
+  choice: HarnessChoice | undefined;
+  model: string;
+  executor: HarnessChoice | undefined;
+  executorModel: string;
+}): boolean {
+  return ready(d) && !lacksModel(d.choice, d.model) && !lacksModel(d.executor, d.executorModel);
+}
+
 /** The models a template's custom LLM endpoint serves (within its allowlist), once asked. */
 interface EndpointModels {
   templateId: string;
@@ -189,11 +210,13 @@ function typedModelHint(endpoint: EndpointModels | null): string {
 
 /** The model of a custom endpoint whose template names none: picked from its list, or typed. */
 function RequiredModelField({
+  label,
   options,
   endpoint,
   model,
   setModel,
 }: {
+  label: string;
   options: string[];
   endpoint: EndpointModels | null;
   model: string;
@@ -201,7 +224,7 @@ function RequiredModelField({
 }) {
   if (options.length === 0) {
     return (
-      <Field label="Model" hint={typedModelHint(endpoint)}>
+      <Field label={label} hint={typedModelHint(endpoint)}>
         <Input
           required
           value={model}
@@ -214,7 +237,7 @@ function RequiredModelField({
     );
   }
   return (
-    <Field label="Model" hint="Models the custom LLM endpoint serves">
+    <Field label={label} hint="Models the custom LLM endpoint serves">
       <Select
         required
         value={model}
@@ -237,11 +260,13 @@ function RequiredModelField({
 
 /** The model to run: one of the template's models, or one its custom endpoint serves. */
 function ModelField({
+  label = 'Model',
   choice,
   endpoint,
   model,
   setModel,
 }: {
+  label?: string;
   choice: HarnessChoice | undefined;
   endpoint: EndpointModels | null;
   model: string;
@@ -251,12 +276,18 @@ function ModelField({
   const options = modelOptions(choice, endpoint);
   if (typesModel(choice)) {
     return (
-      <RequiredModelField options={options} endpoint={endpoint} model={model} setModel={setModel} />
+      <RequiredModelField
+        label={label}
+        options={options}
+        endpoint={endpoint}
+        model={model}
+        setModel={setModel}
+      />
     );
   }
   if (options.length <= 1) return null;
   return (
-    <Field label="Model">
+    <Field label={label}>
       <Select
         value={model}
         onChange={(e) => {
@@ -445,6 +476,9 @@ function TaskField({
 /** What the form holds when it is sent. */
 interface Draft {
   when: When;
+  /** A workflow: plan with the agent, then run its script on `executorModel`. */
+  workflow: boolean;
+  executorModel: string;
   prompt: string;
   templateId: string;
   harness: string;
@@ -474,6 +508,10 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
     accountIds: d.accountIds,
     ...(d.model ? { model: d.model } : {}),
   };
+  if (d.workflow) {
+    const executor = d.executorModel ? { executorModel: d.executorModel } : {};
+    return { path: '/launchpad/workflows', body: { ...launch, ...executor, prompt: d.prompt } };
+  }
   if (d.when === 'now') return { path: '/launchpad/runs', body: { ...launch, prompt: d.prompt } };
   if (d.when === 'webhook') {
     return {
@@ -503,6 +541,133 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   };
 }
 
+/** The templates, then the workflows of those that can run one: picked like any template. */
+function TemplateSelect({
+  templates,
+  value,
+  onChange,
+}: {
+  templates: LaunchTemplate[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const workflows = templates.filter((t) => t.workflow);
+  return (
+    <Select
+      value={value}
+      onChange={(e) => {
+        onChange(e.target.value);
+      }}
+    >
+      {templates.map((t) => (
+        <option key={t.id} value={t.id}>
+          {t.name}
+        </option>
+      ))}
+      {workflows.length > 0 && (
+        <optgroup label="Workflows: plan, then execute">
+          {workflows.map((t) => (
+            <option key={t.id} value={`${WORKFLOW_PREFIX}${t.id}`}>
+              {t.name} · plan, then execute
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </Select>
+  );
+}
+
+/** What a workflow does, and the model its script runs on. */
+function WorkflowFields({
+  choice,
+  endpoint,
+  model,
+  setModel,
+}: {
+  choice: HarnessChoice;
+  endpoint: EndpointModels | null;
+  model: string;
+  setModel: (model: string) => void;
+}) {
+  return (
+    <>
+      <p className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-900">
+        Two steps. <strong>Plan</strong>: the planning agent writes a script for the task, without
+        access to the template’s tools. <strong>Execute</strong>: the script runs on its own, with
+        the template’s tools and its custom LLM endpoint only.
+      </p>
+      <ModelField
+        label="Script model (custom LLM endpoint)"
+        choice={choice}
+        endpoint={endpoint}
+        model={model}
+        setModel={setModel}
+      />
+    </>
+  );
+}
+
+/**
+ * What runs: a template (or a workflow, picked like one), its agent and their models. The
+ * custom LLM endpoint is asked for its models when the agent or the workflow's script uses it.
+ */
+function useAgentChoice(api: Api, usable: LaunchTemplate[]) {
+  const [selection, setSelection] = useState(usable[0]?.id ?? '');
+  const workflow = selection.startsWith(WORKFLOW_PREFIX);
+  const templateId = workflow ? selection.slice(WORKFLOW_PREFIX.length) : selection;
+  const template = usable.find((t) => t.id === templateId);
+  const harnesses = (workflow ? template?.workflow?.planners : template?.harnesses) ?? [];
+  const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
+  const choice = harnesses.find((h) => h.harness === harness) ?? harnesses[0];
+  const [model, setModel] = useState('');
+  const executor = workflow ? template?.workflow?.executor : undefined;
+  const [executorModel, setExecutorModel] = useState('');
+  const endpoint = useEndpointModels(
+    api,
+    templateId,
+    choice?.provider === 'custom' || executor !== undefined,
+  );
+  return {
+    selection,
+    setSelection,
+    workflow,
+    templateId,
+    template,
+    harnesses,
+    harness,
+    setHarness,
+    choice,
+    model,
+    setModel,
+    executor,
+    executorModel,
+    setExecutorModel,
+    endpoint,
+  };
+}
+
+function SubmitRow({
+  timeoutSeconds,
+  label,
+  disabled,
+}: {
+  timeoutSeconds: number;
+  label: string;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <p className="text-xs text-slate-500">
+        Runs in a disposable VM that can only reach the gateway. Stops after{' '}
+        {formatDuration(timeoutSeconds)} at most.
+      </p>
+      <Button type="submit" disabled={disabled}>
+        {label}
+      </Button>
+    </div>
+  );
+}
+
 /** Launch an agent now, schedule it, or trigger it on webhook events. */
 export function LaunchForm({
   api,
@@ -512,6 +677,7 @@ export function LaunchForm({
   onLaunched,
   onScheduled,
   onTriggered,
+  onWorkflow,
 }: {
   api: Api;
   options: LaunchOptions;
@@ -521,17 +687,31 @@ export function LaunchForm({
   onLaunched: (run: Run) => void;
   onScheduled: (schedule: Schedule) => void;
   onTriggered: (trigger: Trigger) => void;
+  onWorkflow: (workflow: Workflow) => void;
 }) {
   const usable = options.templates.filter((t) => t.harnesses.length > 0);
   const [prompt, setPrompt] = useState('');
-  const [templateId, setTemplateId] = useState(usable[0]?.id ?? '');
-  const template = usable.find((t) => t.id === templateId);
-  const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
-  const choice = template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0];
-  const [model, setModel] = useState('');
-  const endpoint = useEndpointModels(api, templateId, choice?.provider === 'custom');
+  const {
+    selection,
+    setSelection,
+    workflow,
+    templateId,
+    template,
+    harnesses,
+    harness,
+    setHarness,
+    choice,
+    model,
+    setModel,
+    executor,
+    executorModel,
+    setExecutorModel,
+    endpoint,
+  } = useAgentChoice(api, usable);
   const [picked, setPicked] = useState<Record<string, string>>({});
-  const [when, setWhen] = useState<When>('now');
+  const [chosenWhen, setWhen] = useState<When>('now');
+  // Workflows run once, now.
+  const when: When = workflow ? 'now' : chosenWhen;
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState(1);
   const [day, setDay] = useState(1);
@@ -561,6 +741,8 @@ export function LaunchForm({
     setError(null);
     const request = requestFor({
       when,
+      workflow,
+      executorModel: executorModel.trim(),
       prompt,
       templateId,
       harness: choice?.harness ?? harness,
@@ -575,8 +757,13 @@ export function LaunchForm({
       filters,
     });
     try {
-      const sent = await api<Run | Schedule | Trigger>('POST', request.path, request.body);
-      if (when === 'now') onLaunched(sent as Run);
+      const sent = await api<Run | Schedule | Trigger | Workflow>(
+        'POST',
+        request.path,
+        request.body,
+      );
+      if (workflow) onWorkflow(sent as Workflow);
+      else if (when === 'now') onLaunched(sent as Run);
       else if (when === 'webhook') onTriggered(sent as Trigger);
       else onScheduled(sent as Schedule);
     } catch (err) {
@@ -594,7 +781,7 @@ export function LaunchForm({
         void submit();
       }}
     >
-      <TaskField trigger={when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
+      <TaskField trigger={!workflow && when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
       <div className="grid gap-3 sm:grid-cols-2">
         <Field
           label="Permissions"
@@ -604,21 +791,17 @@ export function LaunchForm({
               : undefined
           }
         >
-          <Select
-            value={templateId}
-            onChange={(e) => {
-              setTemplateId(e.target.value);
+          <TemplateSelect
+            templates={usable}
+            value={selection}
+            onChange={(value) => {
+              setSelection(value);
               setModel('');
+              setExecutorModel('');
             }}
-          >
-            {usable.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </Select>
+          />
         </Field>
-        <Field label="Agent">
+        <Field label={workflow ? 'Planning agent' : 'Agent'}>
           <Select
             value={choice?.harness ?? harness}
             onChange={(e) => {
@@ -626,7 +809,7 @@ export function LaunchForm({
               setModel('');
             }}
           >
-            {template?.harnesses.map((h) => (
+            {harnesses.map((h) => (
               <option key={h.harness} value={h.harness}>
                 {HARNESS_LABELS[h.harness]} ({h.provider})
               </option>
@@ -634,7 +817,21 @@ export function LaunchForm({
           </Select>
         </Field>
       </div>
-      <ModelField choice={choice} endpoint={endpoint} model={model} setModel={setModel} />
+      <ModelField
+        label={workflow ? 'Planning model' : 'Model'}
+        choice={choice}
+        endpoint={endpoint}
+        model={model}
+        setModel={setModel}
+      />
+      {executor && (
+        <WorkflowFields
+          choice={executor}
+          endpoint={endpoint}
+          model={executorModel}
+          setModel={setExecutorModel}
+        />
+      )}
       {ambiguous.map((x) => (
         <Field
           key={x.tool}
@@ -658,20 +855,22 @@ export function LaunchForm({
           </Select>
         </Field>
       ))}
-      <Field label="When">
-        <Select
-          value={when}
-          onChange={(e) => {
-            setWhen(e.target.value as When);
-          }}
-        >
-          {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
-            <option key={w} value={w}>
-              {WHEN_LABELS[w]}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      {!workflow && (
+        <Field label="When">
+          <Select
+            value={when}
+            onChange={(e) => {
+              setWhen(e.target.value as When);
+            }}
+          >
+            {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
+              <option key={w} value={w}>
+                {WHEN_LABELS[w]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}
@@ -697,20 +896,13 @@ export function LaunchForm({
         />
       )}
       <ErrorBanner message={error} />
-      <div className="flex items-center justify-between gap-4">
-        <p className="text-xs text-slate-500">
-          Runs in a disposable VM that can only reach the gateway. Stops after{' '}
-          {formatDuration(options.defaultTimeoutSeconds)} at most.
-        </p>
-        <Button
-          type="submit"
-          disabled={
-            busy || !ready({ when, prompt, webhookId }) || (typesModel(choice) && !model.trim())
-          }
-        >
-          {SUBMIT_LABELS[when]}
-        </Button>
-      </div>
+      <SubmitRow
+        timeoutSeconds={options.defaultTimeoutSeconds}
+        label={workflow ? 'Launch workflow' : SUBMIT_LABELS[when]}
+        disabled={
+          busy || !complete({ when, prompt, webhookId, choice, model, executor, executorModel })
+        }
+      />
     </form>
   );
 }

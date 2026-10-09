@@ -2,17 +2,20 @@
 import type { ActivityEntry } from './types';
 
 export type Harness = 'claude-code' | 'codex' | 'gemini' | 'pi';
+/** What a run starts: an agent CLI, or the execution container running a workflow's script. */
+export type RunHarness = Harness | 'script';
 export type RunStatus =
   'queued' | 'provisioning' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
 
 export const ACTIVE_STATUSES: readonly RunStatus[] = ['queued', 'provisioning', 'running'];
 export const isActive = (status: RunStatus): boolean => ACTIVE_STATUSES.includes(status);
 
-export const HARNESS_LABELS: Record<Harness, string> = {
+export const HARNESS_LABELS: Record<RunHarness, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
   gemini: 'Gemini CLI',
   pi: 'pi',
+  script: 'Script',
 };
 
 export interface Run {
@@ -21,7 +24,10 @@ export interface Run {
   memberName: string;
   scheduleId: string | null;
   triggerId: string | null;
-  harness: Harness;
+  /** The workflow the run is a step of, and which step. */
+  workflowId: string | null;
+  workflowStep: WorkflowStep | null;
+  harness: RunHarness;
   model: string | null;
   prompt: string;
   /** A webhook trigger's instructions (the prompt is then the event). */
@@ -83,7 +89,7 @@ export interface ModelUsage {
 }
 
 export interface HarnessChoice {
-  harness: Harness;
+  harness: RunHarness;
   provider: string;
   models: string[];
   /** No default model (custom endpoints): the member names one when `models` is empty. */
@@ -97,6 +103,38 @@ export interface LaunchTemplate {
   tools: string[];
   maxTtlSeconds: number;
   harnesses: HarnessChoice[];
+  /** The workflow the template can run (plan, then execute), or null. */
+  workflow: WorkflowChoice | null;
+}
+
+/** A workflow's planning agents, and the custom LLM endpoint its script runs on. */
+export interface WorkflowChoice {
+  planners: HarnessChoice[];
+  executor: HarnessChoice;
+}
+
+export type WorkflowStep = 'plan' | 'execute';
+
+export const WORKFLOW_STEP_LABELS: Record<WorkflowStep, string> = {
+  plan: 'Plan',
+  execute: 'Execute',
+};
+
+/** A frontier agent writes a script for the task, then the execution container runs it. */
+export interface Workflow {
+  id: string;
+  memberId: string;
+  memberName: string;
+  prompt: string;
+  templateId: string;
+  templateName: string;
+  plannerHarness: Harness;
+  plannerModel: string | null;
+  executorModel: string;
+  status: RunStatus;
+  statusReason: string | null;
+  createdAt: string;
+  steps: { step: WorkflowStep; harness: RunHarness; model: string | null; run: Run | null }[];
 }
 
 export interface LaunchOptions {

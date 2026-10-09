@@ -9,6 +9,7 @@ import { RunStore } from './launchpad/runStore.js';
 import { Scheduler } from './launchpad/scheduler.js';
 import { Triggers } from './launchpad/triggers.js';
 import { VmdDriver } from './launchpad/vmdDriver.js';
+import { Workflows } from './launchpad/workflows.js';
 import { CryptoBox } from './store/crypto.js';
 import { EncryptedStore } from './store/store.js';
 import { LlmUsageLog } from './llmUsage.js';
@@ -30,6 +31,7 @@ export interface Services {
   scheduler: Scheduler | null;
   webhooks: Webhooks;
   triggers: Triggers | null;
+  workflows: Workflows | null;
 }
 
 export async function openGateway(config: GatewayConfig): Promise<Services> {
@@ -63,7 +65,13 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
       triggers.onDelivery(delivery);
     });
   }
-  return { gateway, db, launchpad, scheduler, webhooks, triggers };
+  const workflows = launchpad && new Workflows(gateway, launchpad);
+  if (launchpad && workflows) {
+    launchpad.onFinished((run) => {
+      workflows.onRunFinished(run);
+    });
+  }
+  return { gateway, db, launchpad, scheduler, webhooks, triggers, workflows };
 }
 
 function openLaunchpad(

@@ -1,7 +1,13 @@
 import type { Database } from '../db/database.js';
 import { SECONDS_PER_HOUR } from '../units.js';
 import { redact, redactDeep } from '../db/redact.js';
-import { type Harness, type RunEvent, type RunEventType, RUNNER_LIMITS } from './protocol.js';
+import {
+  type Harness,
+  type RunEvent,
+  type RunEventType,
+  type RunHarness,
+  RUNNER_LIMITS,
+} from './protocol.js';
 
 export const RUN_STATUSES = [
   'queued',
@@ -16,6 +22,10 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 export const ACTIVE_STATUSES: readonly RunStatus[] = ['queued', 'provisioning', 'running'];
 export const isActive = (status: RunStatus): boolean => ACTIVE_STATUSES.includes(status);
 
+/** Steps of a workflow, in order: a frontier agent writes a script, the execution container runs it. */
+export const WORKFLOW_STEPS = ['plan', 'execute'] as const;
+export type WorkflowStep = (typeof WORKFLOW_STEPS)[number];
+
 export interface Run {
   id: string;
   memberId: string;
@@ -23,7 +33,10 @@ export interface Run {
   scheduleId: string | null;
   /** The webhook trigger that launched the run, if any. */
   triggerId: string | null;
-  harness: Harness;
+  /** The workflow the run is a step of, and which step, if any. */
+  workflowId: string | null;
+  workflowStep: WorkflowStep | null;
+  harness: RunHarness;
   model: string | null;
   prompt: string;
   /** A trigger's instructions, added to the system prompt (the prompt is then the event). */
@@ -56,6 +69,8 @@ export type NewRun = Pick<
   | 'memberName'
   | 'scheduleId'
   | 'triggerId'
+  | 'workflowId'
+  | 'workflowStep'
   | 'harness'
   | 'model'
   | 'prompt'
@@ -69,6 +84,61 @@ export type NewRun = Pick<
   | 'memoryIn'
   | 'createdAt'
 >;
+
+/**
+ * A multi-step workflow: a frontier agent (`plannerHarness`) writes a script for the task, then the
+ * execution container runs it on the template's custom LLM endpoint (`executorModel`) and tools.
+ * Its status comes from its step runs.
+ */
+export interface Workflow {
+  id: string;
+  memberId: string;
+  memberName: string;
+  prompt: string;
+  templateId: string;
+  templateName: string;
+  accountIds: string[];
+  plannerHarness: Harness;
+  plannerModel: string | null;
+  executorModel: string;
+  /** Why the workflow stopped between steps (e.g. the planner wrote no script), or null. */
+  failure: string | null;
+  createdAt: string;
+}
+
+export type NewWorkflow = Omit<Workflow, 'failure'>;
+
+interface WorkflowRow {
+  id: string;
+  member_id: string;
+  member_name: string;
+  prompt: string;
+  template_id: string;
+  template_name: string;
+  account_ids: string;
+  planner_harness: Harness;
+  planner_model: string | null;
+  executor_model: string;
+  failure: string | null;
+  created_at: string;
+}
+
+function toWorkflow(r: WorkflowRow): Workflow {
+  return {
+    id: r.id,
+    memberId: r.member_id,
+    memberName: r.member_name,
+    prompt: r.prompt,
+    templateId: r.template_id,
+    templateName: r.template_name,
+    accountIds: JSON.parse(r.account_ids) as string[],
+    plannerHarness: r.planner_harness,
+    plannerModel: r.planner_model,
+    executorModel: r.executor_model,
+    failure: r.failure,
+    createdAt: r.created_at,
+  };
+}
 
 export interface StoredEvent extends Omit<RunEvent, 'data'> {
   data: unknown;
@@ -86,7 +156,8 @@ export interface RunFilter {
   status?: RunStatus;
   scheduleId?: string;
   triggerId?: string;
-  harness?: Harness;
+  workflowId?: string;
+  harness?: RunHarness;
   /** Runs created before this ISO time (paging, newest first). */
   before?: string;
   limit?: number;
@@ -132,7 +203,9 @@ interface RunRow {
   member_name: string;
   schedule_id: string | null;
   trigger_id: string | null;
-  harness: Harness;
+  workflow_id: string | null;
+  workflow_step: WorkflowStep | null;
+  harness: RunHarness;
   model: string | null;
   prompt: string;
   instructions: string | null;
@@ -178,6 +251,8 @@ function toRun(r: RunRow): Run {
     memberName: r.member_name,
     scheduleId: r.schedule_id,
     triggerId: r.trigger_id,
+    workflowId: r.workflow_id,
+    workflowStep: r.workflow_step,
     harness: r.harness,
     model: r.model,
     prompt: r.prompt,
@@ -241,10 +316,10 @@ export class RunStore {
   insert(run: NewRun): Run {
     this.db.sql
       .prepare(
-        `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, harness, model, prompt,
-           instructions, template_id, template_name, account_ids, run_token_hash, status, timeout_seconds,
-           token_budget, key_generation, memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, workflow_id,
+           workflow_step, harness, model, prompt, instructions, template_id, template_name, account_ids,
+           run_token_hash, status, timeout_seconds, token_budget, key_generation, memory_in, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -252,6 +327,8 @@ export class RunStore {
         run.memberName,
         run.scheduleId,
         run.triggerId,
+        run.workflowId,
+        run.workflowStep,
         run.harness,
         run.model,
         redact(run.prompt),
@@ -330,6 +407,7 @@ export class RunStore {
     add('status = ?', filter.status);
     add('schedule_id = ?', filter.scheduleId);
     add('trigger_id = ?', filter.triggerId);
+    add('workflow_id = ?', filter.workflowId);
     add('harness = ?', filter.harness);
     add('created_at < ?', filter.before);
     const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, filter.limit ?? DEFAULT_LIST_LIMIT));
@@ -364,6 +442,64 @@ export class RunStore {
       )
       .get(triggerId) as { n: number };
     return row.n;
+  }
+
+  // ---------------------------------------------------------------- workflows
+
+  insertWorkflow(wf: NewWorkflow): Workflow {
+    this.db.sql
+      .prepare(
+        `INSERT INTO workflows (id, member_id, member_name, prompt, template_id, template_name,
+           account_ids, planner_harness, planner_model, executor_model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        wf.id,
+        wf.memberId,
+        wf.memberName,
+        redact(wf.prompt),
+        wf.templateId,
+        wf.templateName,
+        JSON.stringify(wf.accountIds),
+        wf.plannerHarness,
+        wf.plannerModel,
+        wf.executorModel,
+        wf.createdAt,
+      );
+    return this.requireWorkflow(wf.id);
+  }
+
+  workflow(id: string): Workflow | null {
+    const row = this.db.sql.prepare('SELECT * FROM workflows WHERE id = ?').get(id) as
+      WorkflowRow | undefined;
+    return row ? toWorkflow(row) : null;
+  }
+
+  requireWorkflow(id: string): Workflow {
+    const wf = this.workflow(id);
+    if (!wf) throw new Error(`Workflow ${id} not found`);
+    return wf;
+  }
+
+  /** Workflows, newest first; a member's only when `memberId` is set. */
+  workflows(memberId?: string, limit = DEFAULT_LIST_LIMIT): Workflow[] {
+    const where = memberId ? 'WHERE member_id = ?' : '';
+    const rows = this.db.sql
+      .prepare(`SELECT * FROM workflows ${where} ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .all(...(memberId ? [memberId] : []), limit) as unknown as WorkflowRow[];
+    return rows.map(toWorkflow);
+  }
+
+  failWorkflow(id: string, failure: string): void {
+    this.db.sql.prepare('UPDATE workflows SET failure = ? WHERE id = ?').run(failure, id);
+  }
+
+  /** The step runs of a workflow, in launch order. */
+  workflowRuns(workflowId: string): Run[] {
+    const rows = this.db.sql
+      .prepare('SELECT * FROM runs WHERE workflow_id = ? ORDER BY created_at, id')
+      .all(workflowId) as unknown as RunRow[];
+    return rows.map(toRun);
   }
 
   // ---------------------------------------------------------------- events

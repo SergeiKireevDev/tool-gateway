@@ -163,4 +163,24 @@ export const MIGRATIONS: readonly string[] = [
 
   // 7: deterministic trigger filters (contains / status changed to / assigned to)
   `ALTER TABLE triggers ADD COLUMN filters TEXT NOT NULL DEFAULT '{}';`,
+
+  // 8: multi-step workflows (plan with a frontier agent, then run its script); their runs are steps
+  `CREATE TABLE workflows (
+     id TEXT PRIMARY KEY,
+     member_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     prompt TEXT NOT NULL,
+     template_id TEXT NOT NULL,
+     template_name TEXT NOT NULL,
+     account_ids TEXT NOT NULL,
+     planner_harness TEXT NOT NULL,
+     planner_model TEXT,
+     executor_model TEXT NOT NULL,
+     failure TEXT,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX workflows_member ON workflows (member_id, created_at);
+   ALTER TABLE runs ADD COLUMN workflow_id TEXT;
+   ALTER TABLE runs ADD COLUMN workflow_step TEXT;
+   CREATE INDEX runs_workflow ON runs (workflow_id);`,
 ];

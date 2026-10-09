@@ -21,14 +21,15 @@ import {
   HARNESS_ENDPOINT_APIS,
   HARNESS_PROVIDERS,
   HARNESSES,
-  type Harness,
   LLM_PROVIDERS,
   type LlmProvider,
+  type RunHarness,
   RUN_TOKEN_PREFIX,
   type RunEvent,
   type RunnerConfig,
   type RunnerFinishBody,
   RUNNER_LIMITS,
+  SCRIPT_HARNESS,
 } from './protocol.js';
 import {
   ACTIVE_STATUSES,
@@ -38,9 +39,12 @@ import {
   type RunPatch,
   type RunStatus,
   type RunStore,
+  type Workflow,
+  type WorkflowStep,
 } from './runStore.js';
 import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
+import { buildPlannerPrompt } from './workflowPrompt.js';
 
 /** Session keys outlive the run's timeout by this much, so the agent is stopped first. */
 const KEY_MARGIN_MINUTES = 5;
@@ -73,6 +77,13 @@ export const launchSchema = z.object({
 });
 export type LaunchInput = z.infer<typeof launchSchema>;
 
+/** The execution step of a workflow: which template, accounts and endpoint model run the script. */
+export interface ScriptInput {
+  templateId: string;
+  accountIds: string[];
+  model: string | undefined;
+}
+
 export interface LaunchOptions {
   scheduleId?: string;
   triggerId?: string;
@@ -81,6 +92,9 @@ export interface LaunchOptions {
   memoryIn?: string | null;
   /** The schedule's recorded member key generation: the run fails if it changed. */
   keyGeneration?: number;
+  /** The workflow the run is a step of. */
+  workflowId?: string;
+  workflowStep?: WorkflowStep;
 }
 
 export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
@@ -88,7 +102,7 @@ export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
 /** A validated launch: what the run will use. */
 export interface LaunchPlan {
   prompt: string;
-  harness: Harness;
+  harness: RunHarness;
   model: string | null;
   template: Template;
   accountIds: string[];
@@ -110,7 +124,7 @@ export interface LaunchpadDeps {
 
 /** Which model API a template gives a harness, and the model to use by default. */
 export interface HarnessChoice {
-  harness: Harness;
+  harness: RunHarness;
   provider: LlmProvider;
   /** Exact models in the template's allowlist (empty = any model). */
   models: string[];
@@ -127,7 +141,7 @@ type ChoiceGrant = Pick<ToolGrant, 'tool' | 'permissions' | 'resources'> & {
 };
 
 /** Whether a grant gives a harness this model API: calls allowed, and a chat API it speaks. */
-function grantServes(harness: Harness, provider: LlmProvider, grant: ChoiceGrant): boolean {
+function grantServes(harness: RunHarness, provider: LlmProvider, grant: ChoiceGrant): boolean {
   if (grant.tool !== provider || !grant.permissions.includes('llm:invoke')) return false;
   if (provider !== CUSTOM_PROVIDER) return true;
   return (
@@ -137,7 +151,7 @@ function grantServes(harness: Harness, provider: LlmProvider, grant: ChoiceGrant
 
 /** The model API grant a harness uses among these, in its order of preference. */
 function harnessGrant<G extends ChoiceGrant>(
-  harness: Harness,
+  harness: RunHarness,
   grants: readonly G[],
 ): G | undefined {
   for (const provider of HARNESS_PROVIDERS[harness]) {
@@ -145,6 +159,22 @@ function harnessGrant<G extends ChoiceGrant>(
     if (grant) return grant;
   }
   return undefined;
+}
+
+/** What a template gives a harness: the model API it would use, and its models. */
+function harnessChoice(
+  harness: RunHarness,
+  grants: readonly ChoiceGrant[],
+): HarnessChoice | undefined {
+  const grant = harnessGrant(harness, grants);
+  if (!grant) return undefined;
+  const provider = grant.tool as LlmProvider;
+  return {
+    harness,
+    provider,
+    models: grant.resources.filter((r) => !r.includes('*')),
+    modelRequired: provider === CUSTOM_PROVIDER,
+  };
 }
 
 /**
@@ -179,18 +209,21 @@ export class Launchpad {
   /** Harnesses a template can run, given the model APIs it grants. */
   harnessChoices(template: { grants: readonly ChoiceGrant[] }): HarnessChoice[] {
     return HARNESSES.flatMap((harness) => {
-      const grant = harnessGrant(harness, template.grants);
-      if (!grant) return [];
-      const provider = grant.tool as LlmProvider;
-      return [
-        {
-          harness,
-          provider,
-          models: grant.resources.filter((r) => !r.includes('*')),
-          modelRequired: provider === CUSTOM_PROVIDER,
-        },
-      ];
+      const choice = harnessChoice(harness, template.grants);
+      return choice ? [choice] : [];
     });
+  }
+
+  /**
+   * What a template gives a workflow (plan with a frontier agent, then run its script), or null
+   * when it can't run one: an agent harness to plan, and a custom LLM endpoint for the script.
+   */
+  workflowChoice(template: {
+    grants: readonly ChoiceGrant[];
+  }): { planners: HarnessChoice[]; executor: HarnessChoice } | null {
+    const executor = harnessChoice(SCRIPT_HARNESS, template.grants);
+    const planners = this.harnessChoices(template);
+    return executor && planners.length > 0 ? { planners, executor } : null;
   }
 
   /**
@@ -221,27 +254,43 @@ export class Launchpad {
    * Checks that the member may launch this agent now (launch rights, template, accounts, model
    * access for the harness, a key TTL long enough) and resolves what the run will use.
    */
-  plan(member: Member, input: unknown): LaunchPlan {
+  plan(member: Member, input: unknown, step?: WorkflowStep): LaunchPlan {
     const req = launchSchema.parse(input);
+    return this.resolve(member, req, this.toolScope(req.harness, step ?? null));
+  }
+
+  /**
+   * Checks the execution step of a workflow like a launch: the template must give a custom LLM
+   * endpoint the script can talk to, and a model to use on it.
+   */
+  planScript(member: Member, input: ScriptInput, script: string): LaunchPlan {
+    return this.resolve(
+      member,
+      { ...input, prompt: script, harness: SCRIPT_HARNESS },
+      this.toolScope(SCRIPT_HARNESS, 'execute'),
+    );
+  }
+
+  private resolve(
+    member: Member,
+    req: Omit<LaunchInput, 'harness'> & { harness: RunHarness },
+    scope: RunToolScope,
+  ): LaunchPlan {
     const settings = this.deps.runs.settings();
     if (!this.deps.runs.memberLaunch(member.id).launchEnabled) {
       throw forbidden('Launching agents is disabled for you');
     }
-    const plan = this.deps.gateway.planMemberSession(
-      member,
-      req.templateId,
-      req.accountIds,
-      runToolScope(req.harness),
-    );
-    const needs = HARNESS_PROVIDERS[req.harness].join(' or ');
-    if (!this.harnessChoices(plan.template).some((c) => c.harness === req.harness)) {
-      throw badRequest(
-        `Template "${plan.template.name}" gives no ${needs} access, which ${req.harness} needs`,
-      );
+    const plan = this.deps.gateway.planMemberSession(member, req.templateId, req.accountIds, scope);
+    if (!harnessChoice(req.harness, plan.template.grants)) {
+      const needs =
+        req.harness === SCRIPT_HARNESS
+          ? 'custom LLM endpoint access, which the execution step needs'
+          : `${HARNESS_PROVIDERS[req.harness].join(' or ')} access, which ${req.harness} needs`;
+      throw badRequest(`Template "${plan.template.name}" gives no ${needs}`);
     }
     // The model API the run uses: one the template grants and the member has an account for.
     const covered = plan.template.grants.filter((g) => plan.tools.includes(g.tool));
-    const choice = this.harnessChoices({ grants: covered }).find((c) => c.harness === req.harness);
+    const choice = harnessChoice(req.harness, covered);
     if (!choice) {
       // Custom endpoints need no account: only the official APIs the template grants can be missing.
       const missing = HARNESS_PROVIDERS[req.harness].filter((p) =>
@@ -271,13 +320,19 @@ export class Launchpad {
   }
 
   launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
-    const plan = this.plan(member, input);
+    return this.launchPlan(member, this.plan(member, input, opts.workflowStep), opts);
+  }
+
+  /** Queues a run checked by `plan` or `planScript`. */
+  launchPlan(member: Member, plan: LaunchPlan, opts: LaunchOptions = {}): Run {
     const run = this.deps.runs.insert({
       id: randomId(),
       memberId: member.id,
       memberName: member.name,
       scheduleId: opts.scheduleId ?? null,
       triggerId: opts.triggerId ?? null,
+      workflowId: opts.workflowId ?? null,
+      workflowStep: opts.workflowStep ?? null,
       harness: plan.harness,
       model: plan.model,
       prompt: plan.prompt,
@@ -382,27 +437,13 @@ export class Launchpad {
         tokenBudget: run.tokenBudget ?? undefined,
       },
       run.keyGeneration ?? undefined,
-      runToolScope(run.harness),
+      this.toolScope(run.harness, run.workflowStep),
     );
     this.deps.runs.update(run.id, { sessionId: session.id });
     const deadline = new Date(
       startedAt.getTime() + run.timeoutSeconds * MS_PER_SECOND,
     ).toISOString();
-    const catalog = this.deps.gateway.toolCatalog();
-    const grants: PromptGrant[] = session.grants.flatMap((g) => {
-      const entry = catalog.find((t) => t.id === g.tool);
-      if (!entry || entry.kind === 'llm') return [];
-      return [
-        {
-          tool: g.tool,
-          name: entry.name,
-          permissions: entry.permissions.filter((p) => g.permissions.includes(p.id)),
-          resources: g.resources,
-          resourceHelp: entry.resourceHelp,
-          example: entry.example,
-        },
-      ];
-    });
+    const grants = this.promptGrants(session.grants);
     const llm = harnessGrant(run.harness, session.grants);
     if (!llm) throw new Error(`The session key gives no model access for ${run.harness}`);
     const api = llm.endpoint?.api;
@@ -417,17 +458,90 @@ export class Launchpad {
       gatewayTools: grants.map((g) => gatewayToolName(g.tool)),
       egressDomains: session.egressDomains ?? [],
       prompt: run.prompt,
-      systemPrompt: buildSystemPrompt({
-        harness: run.harness,
-        grants,
-        egressDomains: session.egressDomains ?? [],
-        deadline,
-        hasMemory: run.memoryIn !== null,
-        instructions: run.instructions,
-      }),
+      systemPrompt: this.systemPrompt(run, grants, session.egressDomains ?? [], deadline),
       memory: run.memoryIn,
       deadline,
     };
+  }
+
+  /** What the run's agent is told: the usual agent prompt, or a workflow planner's. */
+  private systemPrompt(
+    run: Run,
+    grants: PromptGrant[],
+    egressDomains: string[],
+    deadline: string,
+  ): string {
+    if (run.harness === SCRIPT_HARNESS) return '';
+    if (run.workflowStep !== 'plan') {
+      return buildSystemPrompt({
+        harness: run.harness,
+        grants,
+        egressDomains,
+        deadline,
+        hasMemory: run.memoryIn !== null,
+        instructions: run.instructions,
+      });
+    }
+    const workflow = this.deps.runs.requireWorkflow(run.workflowId ?? '');
+    const { grants: tools, api } = this.executorView(run.memberId, workflow);
+    return buildPlannerPrompt({
+      grants: tools,
+      llm: { api, model: workflow.executorModel },
+      egressDomains,
+      deadline,
+    });
+  }
+
+  /** What a workflow's script will have (its tools, its endpoint's chat API), for its planner. */
+  private executorView(
+    memberId: string,
+    workflow: Workflow,
+  ): { grants: PromptGrant[]; api: LlmEndpointApi } {
+    const member = this.deps.gateway.activeMember(memberId);
+    if (!member) throw new Error('The member is gone or expired');
+    const plan = this.deps.gateway.planMemberSession(
+      member,
+      workflow.templateId,
+      workflow.accountIds,
+      this.toolScope(SCRIPT_HARNESS, 'execute'),
+    );
+    const covered = plan.template.grants.filter((g) => plan.tools.includes(g.tool));
+    const endpoint = harnessGrant(SCRIPT_HARNESS, covered)?.endpoint;
+    if (!endpoint) throw new Error('The template no longer gives a custom LLM endpoint');
+    return { grants: this.promptGrants(covered), api: endpoint.api };
+  }
+
+  /** Tool grants as the prompts describe them (LLM providers left out). */
+  private promptGrants(grants: readonly Pick<ToolGrant, 'tool' | 'permissions' | 'resources'>[]) {
+    const catalog = this.deps.gateway.toolCatalog();
+    return grants.flatMap((g): PromptGrant[] => {
+      const entry = catalog.find((t) => t.id === g.tool);
+      if (!entry || entry.kind === 'llm') return [];
+      return [
+        {
+          tool: g.tool,
+          name: entry.name,
+          permissions: entry.permissions.filter((p) => g.permissions.includes(p.id)),
+          resources: g.resources,
+          resourceHelp: entry.resourceHelp,
+          example: entry.example,
+        },
+      ];
+    });
+  }
+
+  /**
+   * What a run's key covers. A workflow's planner gets no third-party tool at all: it writes the
+   * script from the tools' description, and never sees the data the script handles.
+   */
+  private toolScope(harness: RunHarness, step: WorkflowStep | null): RunToolScope {
+    const scope = runToolScope(harness);
+    if (step !== 'plan') return scope;
+    const tools = this.deps.gateway
+      .toolCatalog()
+      .filter((t) => t.kind !== 'llm')
+      .map((t) => t.id);
+    return { ...scope, drop: [...scope.drop, ...tools] };
   }
 
   // ---------------------------------------------------------------- runner reports
@@ -625,7 +739,7 @@ export class Launchpad {
  * another chat API included) are left out; when the harness can use several, those without an
  * account are too.
  */
-function runToolScope(harness: Harness): RunToolScope {
+function runToolScope(harness: RunHarness): RunToolScope {
   const providers: readonly string[] = HARNESS_PROVIDERS[harness];
   return {
     drop: LLM_PROVIDERS.filter((p) => !providers.includes(p)),
@@ -637,6 +751,7 @@ function runToolScope(harness: Harness): RunToolScope {
 function launchedBy(member: Member, opts: LaunchOptions): string {
   if (opts.scheduleId) return 'Schedule launched';
   if (opts.triggerId) return 'Webhook trigger launched';
+  if (opts.workflowStep === 'execute') return 'Workflow launched';
   return `Member "${member.name}" launched`;
 }
 

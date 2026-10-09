@@ -177,8 +177,21 @@ function UsageTable({ usage }: { usage: ModelUsage[] }) {
   );
 }
 
-/** The task; for a webhook-triggered run, the trigger's instructions and then the event. */
+/**
+ * The task; for a webhook-triggered run, the trigger's instructions and then the event; for a
+ * workflow's execution step, the script.
+ */
 function RunPrompt({ run }: { run: Run }) {
+  if (run.harness === 'script') {
+    return (
+      <details className="mt-2 text-sm" open>
+        <summary className="cursor-pointer text-slate-500">Script</summary>
+        <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-slate-50 p-3 text-xs ring-1 ring-slate-200">
+          {run.prompt}
+        </pre>
+      </details>
+    );
+  }
   return (
     <>
       <p className="mt-2 text-sm whitespace-pre-wrap text-slate-800">
@@ -208,7 +221,8 @@ export function RunDetail({
   runId: string;
   downloadBase: string;
   showMember: boolean;
-  onBack: () => void;
+  /** Back to the list; none when the run is shown inside a workflow. */
+  onBack?: () => void;
 }) {
   const now = useNow();
   const { loaded, events, error, reload } = useRun(api, runId);
@@ -227,13 +241,15 @@ export function RunDetail({
 
   return (
     <section>
-      <button
-        type="button"
-        onClick={onBack}
-        className="mb-4 text-sm text-indigo-600 hover:underline"
-      >
-        ← All runs
-      </button>
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="mb-4 text-sm text-indigo-600 hover:underline"
+        >
+          ← All runs
+        </button>
+      )}
       <Card className="p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">

@@ -3,7 +3,7 @@ import http from 'node:http';
 import { z } from 'zod';
 import { HTTP } from '../server/httpStatus.js';
 import { BYTES_PER_MIB } from '../server/units.js';
-import { HARNESSES, LLM_PROVIDERS } from '../server/launchpad/protocol.js';
+import { LLM_PROVIDERS, RUN_HARNESSES } from '../server/launchpad/protocol.js';
 import type { VmSpec } from '../server/launchpad/vmDriver.js';
 import { LLM_ENDPOINT_APIS } from '../server/tools/types.js';
 import { VmdError, type VmManager } from './vmManager.js';
@@ -25,7 +25,7 @@ const specSchema = z.object({
     runToken: z.string(),
     gatewayUrl: z.string(),
     sessionKey: z.string(),
-    harness: z.enum(HARNESSES),
+    harness: z.enum(RUN_HARNESSES),
     llm: z.object({
       provider: z.enum(LLM_PROVIDERS),
       model: z.string().nullable(),

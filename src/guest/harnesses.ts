@@ -1,5 +1,11 @@
 import path from 'node:path';
-import type { Harness, RunEvent, RunnerConfig } from '../server/launchpad/protocol.js';
+import {
+  type RunEvent,
+  type RunHarness,
+  type RunnerConfig,
+  RUNNER_LIMITS,
+  SCRIPT_FILE,
+} from '../server/launchpad/protocol.js';
 import type { LlmEndpointApi } from '../server/tools/types.js';
 
 /**
@@ -575,9 +581,41 @@ export const pi: HarnessAdapter = {
   },
 };
 
-export const HARNESS_ADAPTERS: Record<Harness, HarnessAdapter> = {
+// ------------------------------------------------------------------ script (execution container)
+
+/**
+ * No agent: runs the script a workflow's planner wrote (the run's prompt) with Node. It reaches the
+ * custom LLM endpoint and the tools over plain HTTP with the session key. Each line it prints is
+ * a log line, and everything it printed (the end of it, when long) is its final message.
+ */
+export const script: HarnessAdapter = {
+  launch(ctx) {
+    const file = path.join(ctx.home, 'work', SCRIPT_FILE);
+    const { api, model } = ctx.config.llm;
+    return {
+      command: ctx.nodeBin,
+      args: [file],
+      env: {
+        ...baseEnv(ctx),
+        LLM_URL: proxy(ctx, 'custom'),
+        LLM_API: api ?? '',
+        LLM_MODEL: model ?? '',
+      },
+      files: [{ path: file, content: ctx.config.prompt }],
+      dirs: [],
+    };
+  },
+  parse(line, state) {
+    state.pendingText = `${state.pendingText}${line}\n`.slice(-RUNNER_LIMITS.finalMessage);
+    state.finalMessage = state.pendingText.trim() || null;
+    return line.trim() ? [{ type: 'assistant_text', text: line }] : [];
+  },
+};
+
+export const HARNESS_ADAPTERS: Record<RunHarness, HarnessAdapter> = {
   'claude-code': claudeCode,
   codex,
   gemini,
   pi,
+  script,
 };
