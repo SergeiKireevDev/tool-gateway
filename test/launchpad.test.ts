@@ -72,6 +72,10 @@ describe('a run, end to end', () => {
     expect(config.runToken).toMatch(/^gwr_/);
     expect(config.systemPrompt).toContain('gateway_github');
     expect(config.systemPrompt).toContain('`o/r`');
+    // How to call the tools, with an example and a plain HTTP fallback, for weaker models.
+    expect(config.systemPrompt).toContain('Example arguments: `{"method":"GET","path":"/user"}`');
+    expect(config.systemPrompt).toContain('$GATEWAY_URL/proxy/github');
+    expect(config.systemPrompt).toContain('mcp__gateway__gateway_github');
     expect(JSON.stringify(run.body)).not.toContain(config.runToken);
     expect(JSON.stringify(run.body)).not.toContain(config.sessionKey);
 

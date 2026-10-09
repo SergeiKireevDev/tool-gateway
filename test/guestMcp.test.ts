@@ -91,4 +91,29 @@ describe('gateway MCP server', () => {
       error: { code: -32601 },
     });
   });
+
+  it('describes its tools in a resource, for models that look there first', async () => {
+    const mcp = new McpServer({ gatewayUrl: url, sessionKey: key });
+    const call = (id: number, method: string, params?: Record<string, unknown>) =>
+      mcp.handle({ jsonrpc: '2.0', id, method, ...(params && { params }) });
+
+    expect(await call(1, 'resources/list')).toMatchObject({
+      result: { resources: [{ uri: 'gateway://tools' }] },
+    });
+    expect(await call(2, 'resources/templates/list')).toMatchObject({
+      result: { resourceTemplates: [] },
+    });
+    expect(await call(3, 'prompts/list')).toMatchObject({ result: { prompts: [] } });
+
+    const read = (await call(4, 'resources/read', { uri: 'gateway://tools' })) as {
+      result: { contents: { text: string }[] };
+    };
+    const text = read.result.contents[0]?.text ?? '';
+    expect(text).toContain('## gateway_github');
+    expect(text).toContain('o/r');
+    expect(text).toContain('"method": "GET"');
+    expect(await call(5, 'resources/read', { uri: 'gateway://nope' })).toMatchObject({
+      error: { code: -32602 },
+    });
+  });
 });

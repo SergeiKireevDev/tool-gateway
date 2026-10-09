@@ -2,7 +2,7 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates iproute2 tini git ripgrep jq python3 procps less \
+ && apt-get install -y --no-install-recommends ca-certificates curl iproute2 tini git ripgrep jq python3 procps less \
  && rm -rf /var/lib/apt/lists/*
 
 ARG CLAUDE_CODE_VERSION=latest
