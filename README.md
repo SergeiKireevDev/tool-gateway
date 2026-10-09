@@ -233,7 +233,8 @@ access_ and enter its **URL**, the **chat API** it speaks (OpenAI or Anthropic) 
 that API; the gateway applies the same checks (model allowlist, token budget, server-side tools)
 and forwards to `<URL>/v1/…` with `Authorization: Bearer <token>`. The token is never returned by
 the API (leave it blank when editing to keep it), and session keys keep the endpoint they were
-issued with.
+issued with. [Launchpad agents](docs/launchpad.md#custom-llm-endpoints) run on it too: Claude Code
+and pi on Anthropic-style endpoints, Codex and pi on OpenAI-style ones.
 
 - **Token budget.** A session key may carry a `tokenBudget` (`POST /api/sessions` …
   `"tokenBudget": 2000000`). Every metered call counts input + output + cache-read + cache-write

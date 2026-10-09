@@ -187,7 +187,8 @@ GATEWAY_VM_HOST=172.30.0.1 LAUNCHPAD_VM_DRIVER=firecracker npm start
 
 Then, as admin:
 
-1. Connect a model API key under **Accounts** (Anthropic, OpenAI or Gemini).
+1. Connect a model API key under **Accounts** (Anthropic, OpenAI or Gemini), or give the
+   templates a **Custom LLM** endpoint (see [Custom LLM endpoints](#custom-llm-endpoints)).
 2. Grant `llm:invoke` (plus a model allowlist) in the templates meant for agents. Give those
    templates a max TTL above the run time limit, which is 2 h by default.
 3. Set limits under **Launchpad**.
@@ -233,6 +234,24 @@ against a fake host (`test/vmd.test.ts`).
 | Codex       | `model_providers.gateway` → `/proxy/openai/v1` (Responses) | MCP (`-c mcp_servers.gateway…`)   | `codex exec --json --dangerously-bypass-approvals-and-sandbox`                |
 | Gemini CLI  | `GOOGLE_GEMINI_BASE_URL` → `/proxy/gemini`                 | MCP (`~/.gemini/settings.json`)   | `gemini --output-format stream-json --approval-mode yolo`                     |
 | pi          | `models.json` provider `baseUrl` → `/proxy/<provider>`     | pi extension (`pi-extension.mjs`) | `pi --mode json --no-session`                                                 |
+
+### Custom LLM endpoints
+
+A template's **Custom LLM** endpoint (`/proxy/custom`) can run the harnesses that speak its chat
+API:
+
+| Chat API  | Harnesses                                                                          |
+| --------- | ---------------------------------------------------------------------------------- |
+| Anthropic | Claude Code (`ANTHROPIC_BASE_URL`), pi (`api: "anthropic-messages"`)               |
+| OpenAI    | Codex (needs the endpoint to serve the Responses API), pi (`"openai-completions"`) |
+
+The endpoint has no default model, so a launch names one. The default is the first exact model in
+the template's allowlist; when the allowlist names none, the member types the model in. Claude
+Code's model aliases (Haiku/Sonnet/Opus, subagents) all map to that model. pi gets the endpoint as
+its own `custom` provider; its key is read from `GATEWAY_SESSION_KEY` and is not written to disk.
+When the template also grants an official model API the harness speaks, the harness uses that
+API if the member has an account for it. A run's key never covers an endpoint whose chat API the
+harness doesn't speak.
 
 All four were run inside the guest image against the gateway. Each started with these flags and
 sent its model calls through the gateway, which allowed them. Upstream then refused the test keys.
