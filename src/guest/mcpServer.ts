@@ -18,6 +18,24 @@ const ERR_METHOD_NOT_FOUND = -32601;
 const ERR_INVALID_PARAMS = -32602;
 const ERR_INTERNAL = -32603;
 
+const INSTRUCTIONS =
+  'Third-party tools reached through the local gateway. Every call is checked against this run’s permissions and logged. Each gateway_<tool> tool is a generic HTTP client for that service’s API: call it with method, path (relative to the API root, starting with /), and optionally query and body. The gateway://tools resource describes every tool.';
+
+const GUIDE_URI = 'gateway://tools';
+const GUIDE_NAME = 'Gateway tools';
+const MARKDOWN = 'text/markdown';
+
+/** The guide resource: weaker models look for how to use a server in its resources first. */
+function guide(tools: GatewayTool[]): string {
+  const sections = tools.map((t) => `## ${t.name}\n\n${t.description}`);
+  return [
+    `# ${GUIDE_NAME}`,
+    INSTRUCTIONS,
+    'Example call arguments: {"method": "GET", "path": "/user"}',
+    ...(sections.length > 0 ? sections : ['This run has no third-party tool access.']),
+  ].join('\n\n');
+}
+
 interface JsonRpcRequest {
   jsonrpc: '2.0';
   id?: string | number | null;
@@ -65,10 +83,13 @@ export class McpServer {
               typeof params.protocolVersion === 'string'
                 ? params.protocolVersion
                 : PROTOCOL_VERSION,
-            capabilities: { tools: { listChanged: false } },
+            capabilities: {
+              tools: { listChanged: false },
+              resources: { listChanged: false },
+              prompts: { listChanged: false },
+            },
             serverInfo: { name: 'gateway', version: '1.0.0' },
-            instructions:
-              'Third-party tools reached through the local gateway. Every call is checked against this run’s permissions and logged.',
+            instructions: INSTRUCTIONS,
           },
         };
       case 'ping':
@@ -85,6 +106,33 @@ export class McpServer {
           },
         };
       }
+      case 'resources/list':
+        return {
+          result: {
+            resources: [
+              {
+                uri: GUIDE_URI,
+                name: GUIDE_NAME,
+                description: 'How to call the gateway tools, and what each may do',
+                mimeType: MARKDOWN,
+              },
+            ],
+          },
+        };
+      case 'resources/templates/list':
+        return { result: { resourceTemplates: [] } };
+      case 'resources/read':
+        if (params.uri !== GUIDE_URI)
+          return {
+            error: { code: ERR_INVALID_PARAMS, message: `Unknown resource ${String(params.uri)}` },
+          };
+        return {
+          result: {
+            contents: [{ uri: GUIDE_URI, mimeType: MARKDOWN, text: guide(await this.loadTools()) }],
+          },
+        };
+      case 'prompts/list':
+        return { result: { prompts: [] } };
       case 'tools/call': {
         const tools = await this.loadTools();
         const tool = tools.find((t) => t.name === params.name);

@@ -399,6 +399,7 @@ export class Launchpad {
           permissions: entry.permissions.filter((p) => g.permissions.includes(p.id)),
           resources: g.resources,
           resourceHelp: entry.resourceHelp,
+          example: entry.example,
         },
       ];
     });
