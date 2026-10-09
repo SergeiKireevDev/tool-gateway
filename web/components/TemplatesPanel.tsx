@@ -5,7 +5,13 @@ import { formatDuration } from '@/lib/format';
 import { toolName, toolsOfKind } from '@/lib/grants';
 import { parseDomains } from '@/lib/egress';
 import { DEFAULT_MAX_TTL_SECONDS, DEFAULT_TTL_SECONDS } from '@/lib/units';
-import type { TemplateInput, TemplateSummary as Template, Tool } from '@/lib/types';
+import type {
+  LlmEndpointApi,
+  TemplateInput,
+  TemplateSummary as Template,
+  Tool,
+  ToolGrantInput,
+} from '@/lib/types';
 import type { PanelProps } from './AdminApp';
 import { EgressDomainsField } from './EgressDomainsField';
 import { GrantList } from './GrantList';
@@ -20,6 +26,7 @@ import {
   Input,
   Modal,
   SectionHeader,
+  Select,
   Textarea,
 } from './ui';
 
@@ -173,12 +180,7 @@ function TemplateModal({
       egressDomains: parseDomains(domainsText),
       grants: data.tools.flatMap((t) => {
         const d = drafts[t.id];
-        if (!d?.enabled) return [];
-        const resources = d.resourcesText
-          .split(/[\n,]/)
-          .map((r) => r.trim())
-          .filter(Boolean);
-        return [{ tool: t.id, permissions: d.permissions, resources }];
+        return d?.enabled ? [grantInput(t, d)] : [];
       }),
     };
     try {
@@ -297,14 +299,43 @@ const FIELDSET = {
   },
 } as const;
 
+/** Editor state of a custom LLM endpoint; an empty token keeps the saved one (`hasToken`). */
+interface EndpointDraft {
+  url: string;
+  api: LlmEndpointApi;
+  token: string;
+  hasToken: boolean;
+}
+
 /** Editor state of one tool's grant; disabled tools are left out of the template. */
 interface GrantDraft {
   enabled: boolean;
   permissions: string[];
   resourcesText: string;
+  /** Only for tools configured in the template (custom LLM endpoints). */
+  endpoint: EndpointDraft;
 }
 
-const EMPTY_DRAFT: GrantDraft = { enabled: false, permissions: [], resourcesText: '' };
+const EMPTY_ENDPOINT: EndpointDraft = { url: '', api: 'openai', token: '', hasToken: false };
+
+const EMPTY_DRAFT: GrantDraft = {
+  enabled: false,
+  permissions: [],
+  resourcesText: '',
+  endpoint: EMPTY_ENDPOINT,
+};
+
+function grantInput(tool: Tool, d: GrantDraft): ToolGrantInput {
+  const resources = d.resourcesText
+    .split(/[\n,]/)
+    .map((r) => r.trim())
+    .filter(Boolean);
+  const grant: ToolGrantInput = { tool: tool.id, permissions: d.permissions, resources };
+  if (!tool.endpointApis) return grant;
+  const { url, api, token } = d.endpoint;
+  // A blank token keeps the one already saved with the template.
+  return { ...grant, endpoint: { url, api, ...(token.trim() ? { token: token.trim() } : {}) } };
+}
 
 /** One draft per tool, from the template being edited (a new template starts on the first tool). */
 function initialDrafts(tools: Tool[], existing: Template | null): Record<string, GrantDraft> {
@@ -316,6 +347,7 @@ function initialDrafts(tools: Tool[], existing: Template | null): Record<string,
             enabled: true,
             permissions: grant.permissions,
             resourcesText: grant.resources.join('\n'),
+            endpoint: grant.endpoint ? { ...grant.endpoint, token: '' } : EMPTY_ENDPOINT,
           }
         : { ...EMPTY_DRAFT, enabled: !existing && i === 0 };
       return [t.id, draft];
@@ -333,9 +365,10 @@ function grantSummary(tool: Tool, draft: GrantDraft): string {
     .split(/[\n,]/)
     .map((r) => r.trim())
     .filter(Boolean);
-  return `${permissions || 'No permissions selected'} · ${
+  const scope = `${permissions || 'No permissions selected'} · ${
     resources.length ? resources.join(', ') : 'all resources'
   }`;
+  return tool.endpointApis ? `${draft.endpoint.url || 'No URL'} · ${scope}` : scope;
 }
 
 /** One tool of the template: a compact row, expanded to pick permissions and resources. */
@@ -416,6 +449,15 @@ function GrantFields({
 
   return (
     <div className="space-y-3 border-t border-slate-100 px-3 pt-3 pb-3">
+      {tool.endpointApis && (
+        <EndpointFields
+          apis={tool.endpointApis}
+          endpoint={draft.endpoint}
+          onChange={(endpoint) => {
+            onChange({ ...draft, endpoint });
+          }}
+        />
+      )}
       <div className="grid gap-1.5 sm:grid-cols-2">
         {tool.permissions.map((p) => {
           const checked = draft.permissions.includes(p.id);
@@ -446,6 +488,75 @@ function GrantFields({
           value={draft.resourcesText}
           onChange={(e) => {
             onChange({ ...draft, resourcesText: e.target.value });
+          }}
+        />
+      </Field>
+    </div>
+  );
+}
+
+const API_LABELS: Record<LlmEndpointApi, string> = {
+  openai: 'OpenAI (chat completions / responses)',
+  anthropic: 'Anthropic (messages)',
+};
+
+/** Where a custom LLM grant sends requests: URL, chat API dialect and bearer token. */
+function EndpointFields({
+  apis,
+  endpoint,
+  onChange,
+}: {
+  apis: LlmEndpointApi[];
+  endpoint: EndpointDraft;
+  onChange: (endpoint: EndpointDraft) => void;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <div className="sm:col-span-2">
+        <Field
+          label="URL"
+          hint="Base URL of the model server: requests go to <URL>/v1/…, like the official API."
+        >
+          <Input
+            required
+            type="url"
+            value={endpoint.url}
+            placeholder="https://llm.example.com"
+            onChange={(e) => {
+              onChange({ ...endpoint, url: e.target.value });
+            }}
+          />
+        </Field>
+      </div>
+      <Field label="Chat API">
+        <Select
+          value={endpoint.api}
+          onChange={(e) => {
+            onChange({ ...endpoint, api: e.target.value as LlmEndpointApi });
+          }}
+        >
+          {apis.map((api) => (
+            <option key={api} value={api}>
+              {API_LABELS[api]}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field
+        label="Bearer token (optional)"
+        hint={
+          endpoint.hasToken
+            ? 'A token is saved: leave blank to keep it.'
+            : 'Sent upstream as Authorization: Bearer …; never shown again.'
+        }
+      >
+        <Input
+          type="password"
+          autoComplete="off"
+          value={endpoint.token}
+          placeholder={endpoint.hasToken ? '••••••••' : ''}
+          onChange={(e) => {
+            onChange({ ...endpoint, token: e.target.value });
           }}
         />
       </Field>

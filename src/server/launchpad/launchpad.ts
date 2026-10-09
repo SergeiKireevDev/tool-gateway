@@ -3,7 +3,7 @@ import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized } fr
 import type { Gateway, RunToolScope } from '../gateway.js';
 import type { CryptoBox } from '../store/crypto.js';
 import { randomId, randomToken } from '../store/crypto.js';
-import type { Member, SessionIssuer, Template } from '../store/types.js';
+import type { Member, SessionIssuer, Template, ToolGrant } from '../store/types.js';
 import { modelAllowed } from '../tools/llm/common.js';
 import { MS_PER_DAY, MS_PER_SECOND, SECONDS_PER_MINUTE } from '../units.js';
 import {
@@ -132,7 +132,7 @@ export class Launchpad {
   // ---------------------------------------------------------------- launching
 
   /** Harnesses a template can run, given the model APIs it grants. */
-  harnessChoices(template: Pick<Template, 'grants'>): HarnessChoice[] {
+  harnessChoices(template: { grants: readonly Omit<ToolGrant, 'endpoint'>[] }): HarnessChoice[] {
     return HARNESSES.flatMap((harness) => {
       const provider = HARNESS_PROVIDERS[harness].find((p) =>
         template.grants.some((g) => g.tool === p && g.permissions.includes('llm:invoke')),

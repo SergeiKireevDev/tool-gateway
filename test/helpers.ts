@@ -11,6 +11,7 @@ import { EncryptedStore } from '../src/server/store/store.js';
 import { createGitHubProvider } from '../src/server/tools/github.js';
 import { createLinearProvider } from '../src/server/tools/linear.js';
 import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
+import { createCustomLlmProvider } from '../src/server/tools/llm/custom.js';
 import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
@@ -113,6 +114,9 @@ export function fakeSlackFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+/** A custom LLM endpoint: answers like Anthropic on `/v1/messages`, like OpenAI elsewhere. */
+export const CUSTOM_LLM_URL = 'https://llm.example.com/';
+
 /** Usage every fake LLM answer reports: 100 input, 50 output, 10 cache reads, 5 cache writes. */
 export const FAKE_LLM_TOTAL = 165;
 
@@ -202,8 +206,18 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
       string,
       unknown
     >;
-    return Promise.resolve(fakeLlmAnswer(url, body));
+    return Promise.resolve(fakeLlmAnswer(customAsOfficial(url), body));
   };
+}
+
+/** The official API URL a custom endpoint's request mimics. */
+function customAsOfficial(url: string): string {
+  if (!url.startsWith(CUSTOM_LLM_URL)) return url;
+  const path = new URL(url).pathname;
+  const host = path.endsWith('/v1/messages')
+    ? 'https://api.anthropic.com'
+    : 'https://api.openai.com';
+  return `${host}${path.slice(path.indexOf('/v1/'))}`;
 }
 
 /** A ChatGPT access token (unsigned JWT) for account `acct_1`, generation `n`. */
@@ -359,6 +373,7 @@ const LLM_HOSTS = [
   'https://api.anthropic.com/',
   'https://api.openai.com/',
   'https://generativelanguage.googleapis.com/',
+  CUSTOM_LLM_URL,
 ];
 
 const GOOGLE_HOSTS = ['https://gmail.googleapis.com/', 'https://oauth2.googleapis.com/'];
@@ -470,6 +485,7 @@ export async function createHarness(): Promise<Harness> {
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),
+      createCustomLlmProvider(fetch),
     ]),
     new ActivityLog(db),
     new LlmUsageLog(db),
