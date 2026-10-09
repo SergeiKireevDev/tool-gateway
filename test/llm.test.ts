@@ -201,6 +201,15 @@ describe('OpenAI', () => {
       .set('authorization', `Bearer ${key}`)
       .send({ model: 'gpt-5', input: 'hi', tools: [{ type: 'function', name: 'f' }] })
       .expect(200);
+    // Namespaces group tools (Codex's sub-agent tools): checked by what they hold.
+    const namespace = (tools: object[]) =>
+      request(app)
+        .post('/proxy/openai/v1/responses')
+        .set('authorization', `Bearer ${key}`)
+        .send({ model: 'gpt-5', input: 'hi', tools: [{ type: 'namespace', name: 'n', tools }] });
+    await namespace([{ type: 'function', name: 'f' }]).expect(200);
+    const denied = await namespace([{ type: 'web_search' }]).expect(403);
+    expect(denied.body.message).toContain('"web_search"');
   });
 });
 

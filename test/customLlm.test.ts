@@ -151,6 +151,71 @@ describe('custom LLM proxy', () => {
       .expect(403);
   });
 
+  it('serves the Responses API (Codex) on top of Chat Completions', async () => {
+    const created = await adminCall(
+      'post',
+      '/templates',
+      template({ url: `${BASE}/v1/`, api: 'openai', token: TOKEN }, { resources: ['llama-*'] }),
+    ).expect(201);
+    const key = await keyFrom(created.body.id as string, 1000);
+    const responses = (body: object) =>
+      request(app)
+        .post('/proxy/custom/v1/responses')
+        .set('authorization', `Bearer ${key}`)
+        .send({ model: 'llama-4', ...body });
+    const res = await responses({
+      instructions: 'Be brief',
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+      tools: [
+        { type: 'function', name: 'shell', parameters: { type: 'object' } },
+        { type: 'namespace', name: 'agents', tools: [{ type: 'function', name: 'spawn' }] },
+      ],
+      stream: true,
+    }).expect(200);
+    // A URL pasted with its `/v1` still gets one `/v1`.
+    const call = lastCall();
+    expect(call.url).toBe(`${BASE}/v1/chat/completions`);
+    expect(call.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(call.body).toMatchObject({
+      model: 'llama-4',
+      messages: [
+        { role: 'system', content: 'Be brief' },
+        { role: 'user', content: 'Hi' },
+      ],
+      tools: [{ type: 'function', function: { name: 'shell' } }],
+      stream: true,
+      stream_options: { include_usage: true },
+      max_completion_tokens: 1000,
+    });
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    const events = res.text
+      .split('\n')
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => JSON.parse(l.slice('data: '.length)) as { type: string });
+    expect(events.map((e) => e.type)).toEqual([
+      'response.created',
+      'response.in_progress',
+      'response.completed',
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      response: { status: 'completed', usage: { input_tokens: 110, output_tokens: 55 } },
+    });
+    // Metered from the translated answer.
+    const session = await request(app)
+      .get('/api/session')
+      .set('authorization', `Bearer ${key}`)
+      .expect(200);
+    expect(session.body.tokensRemaining).toBe(1000 - FAKE_LLM_TOTAL);
+
+    const plain = await responses({ input: 'Hi' }).expect(200);
+    expect(plain.body).toMatchObject({ object: 'response', status: 'completed', output: [] });
+    expect((await responses({ model: 'gpt-5', input: 'Hi' }).expect(403)).body.message).toContain(
+      'allowlist',
+    );
+    const hosted = await responses({ input: 'Hi', tools: [{ type: 'web_search' }] }).expect(403);
+    expect(hosted.body.message).toContain('Responses API');
+  });
+
   it('forwards Anthropic-style calls, accepting the key as x-api-key', async () => {
     const created = await adminCall(
       'post',

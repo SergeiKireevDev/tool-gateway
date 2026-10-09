@@ -270,6 +270,20 @@ describe('custom LLM endpoints', () => {
       'model_providers.gateway.base_url="http://172.30.0.1:7420/proxy/custom/v1"',
     );
     expect(launch.args).toEqual(expect.arrayContaining(['--model', 'qwen3']));
+    // The endpoint has no hosted web search to offer the model.
+    expect(launch.args).toContain('web_search="disabled"');
+    expect(codex.launch(ctx).args).not.toContain('web_search="disabled"');
+  });
+
+  it('reports Codex’s unknown-model warning as a status, not an error', () => {
+    const state = newState();
+    const warning = 'Model metadata for `qwen3` not found. Defaulting to fallback metadata.';
+    expect(codex.parse(JSON.stringify({ type: 'error', message: warning }), state)).toEqual([
+      { type: 'status', text: warning },
+    ]);
+    expect(codex.parse(JSON.stringify({ type: 'error', message: 'boom' }), state)).toEqual([
+      { type: 'error', text: 'boom' },
+    ]);
   });
 
   it('declares the endpoint to pi as a provider, its key read from the environment', () => {

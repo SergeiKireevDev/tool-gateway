@@ -240,10 +240,19 @@ against a fake host (`test/vmd.test.ts`).
 A template's **Custom LLM** endpoint (`/proxy/custom`) can run the harnesses that speak its chat
 API:
 
-| Chat API  | Harnesses                                                                          |
-| --------- | ---------------------------------------------------------------------------------- |
-| Anthropic | Claude Code (`ANTHROPIC_BASE_URL`), pi (`api: "anthropic-messages"`)               |
-| OpenAI    | Codex (needs the endpoint to serve the Responses API), pi (`"openai-completions"`) |
+| Chat API  | Harnesses                                                            |
+| --------- | -------------------------------------------------------------------- |
+| Anthropic | Claude Code (`ANTHROPIC_BASE_URL`), pi (`api: "anthropic-messages"`) |
+| OpenAI    | Codex (Responses API, bridged), pi (`"openai-completions"`)          |
+
+OpenAI-style endpoints only need Chat Completions, which every OpenAI-compatible server (vLLM,
+Ollama, llama.cpp, LM Studio, LiteLLM…) speaks. Codex only speaks the Responses API, so the gateway
+sends its `POST /v1/responses` calls to the endpoint as `POST /v1/chat/completions` and turns the
+answers (streamed or not) back into Responses ones. Instructions, messages, images, function and
+freeform tools and their calls, tool choice, structured output and usage carry over. Hosted tools
+are refused (Codex runs with `web_search = "disabled"` on custom endpoints), Codex's sub-agent tool
+namespace is left out, and reasoning is not handed back. Codex has no metadata (context window…)
+for custom models: its warning about it shows as a status, not an error.
 
 The endpoint has no default model, so a launch names one. The default is the first exact model in
 the template's allowlist; when the allowlist names none, the member picks one in the launch form.
@@ -256,6 +265,11 @@ its own `custom` provider; its key is read from `GATEWAY_SESSION_KEY` and is not
 When the template also grants an official model API the harness speaks, the harness uses that
 API if the member has an account for it. A run's key never covers an endpoint whose chat API the
 harness doesn't speak.
+
+`test/customLlmHarnesses.test.ts` runs the real pi and Codex CLIs (pinned as devDependencies)
+through the gateway on a fake Chat Completions endpoint: each runs a shell command and finishes
+with the model's answer. Set `CUSTOM_LLM_URL`, `CUSTOM_LLM_TOKEN` and optionally
+`CUSTOM_LLM_MODEL` to also run both against a real endpoint.
 
 All four were run inside the guest image against the gateway. Each started with these flags and
 sent its model calls through the gateway, which allowed them. Upstream then refused the test keys.
