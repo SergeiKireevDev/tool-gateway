@@ -31,9 +31,6 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const LOOPBACK_REDIRECT_URI = 'http://127.0.0.1:8765/';
 /** Read, organize, draft and send; not permanent deletion or settings. */
 const SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
-const ENABLE_GMAIL_API = 'https://console.cloud.google.com/apis/library/gmail.googleapis.com';
-const SCOPE_NOT_GRANTED =
-  'Gmail access was not granted: on Google’s consent screen, tick “Read, compose and send emails from your Gmail account”, then sign in again';
 
 export interface GmailOAuthClient {
   clientId: string;
@@ -279,6 +276,10 @@ function tokensOf(json: unknown, refreshToken?: string): Omit<OAuthTokens, 'iden
     expiresInSeconds: typeof json.expires_in === 'number' ? json.expires_in : 0,
   };
 }
+
+const ENABLE_GMAIL_API = 'https://console.cloud.google.com/apis/library/gmail.googleapis.com';
+const SCOPE_NOT_GRANTED =
+  'Gmail access was not granted: on Google’s consent screen, tick “Read, compose and send emails from your Gmail account”, then sign in again';
 
 /** The reasons (`SERVICE_DISABLED`, `ACCESS_TOKEN_SCOPE_INSUFFICIENT`…) of a Google API error. */
 function errorReasons(error: Record<string, unknown>): string[] {
