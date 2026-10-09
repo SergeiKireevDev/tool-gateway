@@ -254,6 +254,10 @@ are refused (Codex runs with `web_search = "disabled"` on custom endpoints), Cod
 namespace is left out, and reasoning is not handed back. Codex has no metadata (context window…)
 for custom models: its warning about it shows as a status, not an error.
 
+The gateway adds no output-token limit where the harness set none (Codex sets none): self-hosted
+servers refuse limits beyond their context window, such as the run's whole token budget. The
+budget is then checked between calls, and limits the harness did set are still capped to it.
+
 The endpoint has no default model, so a launch names one. The default is the first exact model in
 the template's allowlist; when the allowlist names none, the member picks one in the launch form.
 The form proposes the models the endpoint itself lists: the gateway calls the endpoint's

@@ -27,6 +27,11 @@ export interface ToolRequestContext {
   secret: string;
   /** LLM tokens the session may still use, or null when it has no token budget. */
   tokensRemaining: number | null;
+  /**
+   * Leave output limits the client didn't set unset (the budget is then checked between calls):
+   * self-hosted servers refuse limits beyond their context window, such as a whole token budget.
+   */
+  keepUnsetLimits?: boolean;
 }
 
 /** Tokens one LLM call used, normalized across providers (cached input is not counted twice). */

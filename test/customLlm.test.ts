@@ -135,12 +135,25 @@ describe('custom LLM proxy', () => {
     const call = lastCall();
     expect(call.url).toBe(`${BASE}/v1/chat/completions`);
     expect(call.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
-    expect(call.body.max_completion_tokens).toBe(1000);
+    // No limit is added where the client set none: servers refuse limits beyond their context.
+    expect(call.body).not.toHaveProperty('max_completion_tokens');
     const session = await request(app)
       .get('/api/session')
       .set('authorization', `Bearer ${key}`)
       .expect(200);
     expect(session.body.tokensRemaining).toBe(1000 - FAKE_LLM_TOTAL);
+
+    await request(app)
+      .post('/proxy/custom/v1/chat/completions')
+      .set('authorization', `Bearer ${key}`)
+      .send({ model: 'llama-4', messages: [], max_tokens: 4000 })
+      .expect(200);
+    expect(lastCall().body).toMatchObject({ max_completion_tokens: 1000 - FAKE_LLM_TOTAL });
+
+    // Without a limit to cap, a spent budget stops the next call.
+    const small = await keyFrom(created.body.id as string, 100);
+    await chat(small).expect(200);
+    expect((await chat(small).expect(403)).body.message).toContain('budget');
 
     const denied = await chat(key, 'gpt-5').expect(403);
     expect(denied.body.message).toContain('allowlist');
@@ -185,8 +198,8 @@ describe('custom LLM proxy', () => {
       tools: [{ type: 'function', function: { name: 'shell' } }],
       stream: true,
       stream_options: { include_usage: true },
-      max_completion_tokens: 1000,
     });
+    expect(call.body).not.toHaveProperty('max_completion_tokens');
     expect(res.headers['content-type']).toContain('text/event-stream');
     const events = res.text
       .split('\n')
