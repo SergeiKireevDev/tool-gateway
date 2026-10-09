@@ -6,7 +6,7 @@ import type { Gateway } from '../gateway.js';
 import { randomId } from '../store/crypto.js';
 import type { Member } from '../store/types.js';
 import { type Actor, launchSchema, type Launchpad } from './launchpad.js';
-import { type Harness, RUNNER_LIMITS } from './protocol.js';
+import { type Harness, type LlmProvider, RUNNER_LIMITS } from './protocol.js';
 import {
   isTimeZone,
   nextRun,
@@ -42,6 +42,8 @@ export interface Schedule extends Recurrence {
   name: string;
   prompt: string;
   harness: Harness;
+  /** The model API picked at creation; null: the harness's first one the key covers. */
+  provider: LlmProvider | null;
   model: string | null;
   templateId: string;
   accountIds: string[];
@@ -62,6 +64,7 @@ interface ScheduleRow {
   name: string;
   prompt: string;
   harness: Harness;
+  provider: LlmProvider | null;
   model: string | null;
   template_id: string;
   account_ids: string;
@@ -89,6 +92,7 @@ function toSchedule(r: ScheduleRow): Schedule {
     name: r.name,
     prompt: r.prompt,
     harness: r.harness,
+    provider: r.provider,
     model: r.model,
     templateId: r.template_id,
     accountIds: JSON.parse(r.account_ids) as string[],
@@ -144,9 +148,10 @@ export class Scheduler {
     };
     this.db.sql
       .prepare(
-        `INSERT INTO schedules (id, member_id, member_name, name, prompt, harness, model, template_id, account_ids,
-           preset, minute, hour, weekday, day_of_month, timezone, key_generation, enabled, next_run_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+        `INSERT INTO schedules (id, member_id, member_name, name, prompt, harness, provider, model, template_id,
+           account_ids, preset, minute, hour, weekday, day_of_month, timezone, key_generation, enabled, next_run_at,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
       )
       .run(
         id,
@@ -155,6 +160,7 @@ export class Scheduler {
         req.name ?? clip(plan.prompt.split('\n')[0] ?? 'Scheduled agent', MAX_NAME_LENGTH),
         redact(plan.prompt),
         plan.harness,
+        plan.provider,
         plan.model,
         plan.template.id,
         JSON.stringify(plan.accountIds),
@@ -262,6 +268,7 @@ export class Scheduler {
       templateId: s.templateId,
       accountIds: s.accountIds,
       harness: s.harness,
+      ...(s.provider ? { provider: s.provider } : {}),
       ...(s.model ? { model: s.model } : {}),
     };
   }

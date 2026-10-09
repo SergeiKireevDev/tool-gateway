@@ -387,8 +387,13 @@ describe('launch checks', () => {
       .expect(201);
     const templateId = tpl.body.id as string;
     const alice = await t.member('alice', [templateId]);
-    const tools = async (harness: string, model?: string) => {
-      await launch(alice.cookie, { templateId, harness, ...(model && { model }) });
+    const tools = async (harness: string, model?: string, provider?: string) => {
+      await launch(alice.cookie, {
+        templateId,
+        harness,
+        ...(model && { model }),
+        ...(provider && { provider }),
+      });
       const config = t.driver.lastConfig();
       const session = await request(t.vmApp)
         .get('/api/session')
@@ -401,6 +406,62 @@ describe('launch checks', () => {
     expect(await tools('codex', 'qwen3')).toEqual(['custom', ['custom']]);
     // pi prefers the official API it has an account for; the endpoint stays usable.
     expect(await tools('pi')).toEqual(['anthropic', ['anthropic', 'custom']]);
+  });
+
+  it('lets the member pick a custom LLM endpoint over the official API the harness prefers', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'anthropic + local endpoint',
+        grants: [
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: [] },
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: [],
+            endpoint: { url: 'http://192.168.1.20:1234/v1', api: 'openai' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const templateId = tpl.body.id as string;
+    const alice = await t.member('alice', [templateId]);
+
+    const options = await t.portal(alice.cookie, 'get', '').expect(200);
+    const template = (options.body.templates as { id: string; harnesses: object[] }[]).find(
+      (x) => x.id === templateId,
+    );
+    expect(template?.harnesses).toEqual([
+      { harness: 'claude-code', provider: 'anthropic', models: [], modelRequired: false },
+      { harness: 'codex', provider: 'custom', models: [], modelRequired: true },
+      { harness: 'pi', provider: 'anthropic', models: [], modelRequired: false },
+      { harness: 'pi', provider: 'custom', models: [], modelRequired: true },
+    ]);
+
+    await launch(alice.cookie, { templateId, harness: 'pi', provider: 'custom', model: 'qwen' });
+    const config = t.driver.lastConfig();
+    expect(config.llm).toEqual({ provider: 'custom', model: 'qwen', api: 'openai' });
+    const session = await request(t.vmApp)
+      .get('/api/session')
+      .set('authorization', `Bearer ${config.sessionKey}`)
+      .expect(200);
+    expect((session.body.grants as { tool: string }[]).map((g) => g.tool)).toEqual(['custom']);
+    const run = await t.portal(alice.cookie, 'get', `/runs/${config.runId}`).expect(200);
+    expect(run.body).toMatchObject({ harness: 'pi', provider: 'custom', model: 'qwen' });
+    await finishLast();
+
+    const unnamed = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ templateId, harness: 'pi', provider: 'custom' }))
+      .expect(400);
+    expect(unnamed.body.message).toContain('name the model');
+    const unspoken = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ templateId, provider: 'custom', model: 'qwen' }))
+      .expect(400);
+    expect(unspoken.body.message).toContain('gives no custom access');
   });
 
   it('gives the run its template’s internet access', async () => {

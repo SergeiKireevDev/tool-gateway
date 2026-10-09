@@ -266,8 +266,10 @@ those the template's allowlist covers. If the endpoint can't list them, the memb
 in. Claude
 Code's model aliases (Haiku/Sonnet/Opus, subagents) all map to that model. pi gets the endpoint as
 its own `custom` provider; its key is read from `GATEWAY_SESSION_KEY` and is not written to disk.
-When the template also grants an official model API the harness speaks, the harness uses that
-API if the member has an account for it. A run's key never covers an endpoint whose chat API the
+When the template also grants an official model API the harness speaks, the launch form offers
+the harness once per API (e.g. "pi (anthropic)" and "pi (custom)") and the launch names the one
+picked (`provider`); schedules and triggers keep it for their runs. A launch that names none uses
+the official API if the member has an account for it. A run's key never covers an endpoint whose chat API the
 harness doesn't speak.
 
 `test/customLlmHarnesses.test.ts` runs the real pi and Codex CLIs (pinned as devDependencies)

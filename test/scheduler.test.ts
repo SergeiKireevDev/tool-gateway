@@ -117,6 +117,41 @@ describe('schedules', () => {
     expect(runs.body).toHaveLength(2);
   });
 
+  it('runs on the model API picked when the schedule was created', async () => {
+    const tpl = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'anthropic + local endpoint',
+        grants: [
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: [] },
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: [],
+            endpoint: { url: 'http://192.168.1.20:1234', api: 'anthropic' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const templateId = tpl.body.id as string;
+    const alice = await t.member('alice', [templateId]);
+    const created = await t
+      .portal(alice.cookie, 'post', '/schedules')
+      .send(scheduleBody({ templateId, provider: 'custom', model: 'qwen' }))
+      .expect(201);
+    expect(created.body).toMatchObject({ provider: 'custom', model: 'qwen' });
+    t.clock.now = new Date('2026-03-11T09:00:10Z');
+    await t.scheduler.tick();
+    await settle(t.launchpad);
+    expect(t.driver.lastConfig().llm).toEqual({
+      provider: 'custom',
+      model: 'qwen',
+      api: 'anthropic',
+    });
+  });
+
   it('skips a run while the previous one is still going', async () => {
     const alice = await t.member('alice');
     await t

@@ -163,4 +163,9 @@ export const MIGRATIONS: readonly string[] = [
 
   // 7: deterministic trigger filters (contains / status changed to / assigned to)
   `ALTER TABLE triggers ADD COLUMN filters TEXT NOT NULL DEFAULT '{}';`,
+
+  // 8: the model API a launch picked (null: the harness's first one the template grants)
+  `ALTER TABLE runs ADD COLUMN provider TEXT;
+   ALTER TABLE schedules ADD COLUMN provider TEXT;
+   ALTER TABLE triggers ADD COLUMN provider TEXT;`,
 ];

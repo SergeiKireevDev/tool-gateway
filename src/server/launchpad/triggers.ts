@@ -7,7 +7,7 @@ import { randomId } from '../store/crypto.js';
 import type { Member } from '../store/types.js';
 import type { AcceptedDelivery, Webhooks } from '../webhooks.js';
 import { type Actor, launchSchema, type Launchpad, MAX_PROMPT_LENGTH } from './launchpad.js';
-import type { Harness } from './protocol.js';
+import type { Harness, LlmProvider } from './protocol.js';
 import { clip } from './runStore.js';
 import {
   matchesFilters,
@@ -55,6 +55,8 @@ export interface Trigger {
   filters: TriggerFilters;
   instructions: string;
   harness: Harness;
+  /** The model API picked at creation; null: the harness's first one the key covers. */
+  provider: LlmProvider | null;
   model: string | null;
   templateId: string;
   accountIds: string[];
@@ -80,6 +82,7 @@ interface TriggerRow {
   filters: string;
   instructions: string;
   harness: Harness;
+  provider: LlmProvider | null;
   model: string | null;
   template_id: string;
   account_ids: string;
@@ -103,6 +106,7 @@ function toTrigger(r: TriggerRow): Trigger {
     filters: parseFilters(r.filters),
     instructions: r.instructions,
     harness: r.harness,
+    provider: r.provider,
     model: r.model,
     templateId: r.template_id,
     accountIds: JSON.parse(r.account_ids) as string[],
@@ -167,8 +171,8 @@ export class Triggers {
     this.db.sql
       .prepare(
         `INSERT INTO triggers (id, member_id, member_name, name, webhook_id, event_types, filters, instructions,
-           harness, model, template_id, account_ids, key_generation, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           harness, provider, model, template_id, account_ids, key_generation, enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
       .run(
         id,
@@ -180,6 +184,7 @@ export class Triggers {
         JSON.stringify(req.filters),
         redact(req.instructions),
         plan.harness,
+        plan.provider,
         plan.model,
         plan.template.id,
         JSON.stringify(plan.accountIds),
@@ -278,6 +283,7 @@ export class Triggers {
       templateId: t.templateId,
       accountIds: t.accountIds,
       harness: t.harness,
+      ...(t.provider ? { provider: t.provider } : {}),
       ...(t.model ? { model: t.model } : {}),
     };
   }

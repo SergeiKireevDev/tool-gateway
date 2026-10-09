@@ -140,6 +140,10 @@ function RecurrenceFields({
 
 const firstId = (items: { id: string }[]): string => items[0]?.id ?? '';
 
+/** A harness on one of the model APIs the template gives it: `codex:custom`. */
+const agentKey = (choice: HarnessChoice | undefined): string =>
+  choice ? `${choice.harness}:${choice.provider}` : '';
+
 /** Whether the member must type the model: the API has no default and the template names none. */
 const typesModel = (choice: HarnessChoice | undefined): boolean =>
   choice !== undefined && choice.modelRequired && choice.models.length === 0;
@@ -448,6 +452,7 @@ interface Draft {
   prompt: string;
   templateId: string;
   harness: string;
+  provider: string | undefined;
   accountIds: string[];
   model: string;
   time: string;
@@ -471,6 +476,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   const launch = {
     templateId: d.templateId,
     harness: d.harness,
+    ...(d.provider ? { provider: d.provider } : {}),
     accountIds: d.accountIds,
     ...(d.model ? { model: d.model } : {}),
   };
@@ -526,8 +532,8 @@ export function LaunchForm({
   const [prompt, setPrompt] = useState('');
   const [templateId, setTemplateId] = useState(usable[0]?.id ?? '');
   const template = usable.find((t) => t.id === templateId);
-  const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
-  const choice = template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0];
+  const [agent, setAgent] = useState(agentKey(template?.harnesses[0]));
+  const choice = template?.harnesses.find((h) => agentKey(h) === agent) ?? template?.harnesses[0];
   const [model, setModel] = useState('');
   const endpoint = useEndpointModels(api, templateId, choice?.provider === 'custom');
   const [picked, setPicked] = useState<Record<string, string>>({});
@@ -563,7 +569,8 @@ export function LaunchForm({
       when,
       prompt,
       templateId,
-      harness: choice?.harness ?? harness,
+      harness: choice?.harness ?? 'claude-code',
+      provider: choice?.provider,
       accountIds: ambiguous.map((x) => picked[x.tool] ?? x.options[0]?.id ?? '').filter(Boolean),
       model: model.trim(),
       time,
@@ -620,14 +627,14 @@ export function LaunchForm({
         </Field>
         <Field label="Agent">
           <Select
-            value={choice?.harness ?? harness}
+            value={agentKey(choice)}
             onChange={(e) => {
-              setHarness(e.target.value as typeof harness);
+              setAgent(e.target.value);
               setModel('');
             }}
           >
             {template?.harnesses.map((h) => (
-              <option key={h.harness} value={h.harness}>
+              <option key={agentKey(h)} value={agentKey(h)}>
                 {HARNESS_LABELS[h.harness]} ({h.provider})
               </option>
             ))}

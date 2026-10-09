@@ -69,6 +69,8 @@ export const launchSchema = z.object({
   /** One account per tool of the template when the member has several; else picked for them. */
   accountIds: z.array(z.string().min(1)).max(MAX_ACCOUNTS).default([]),
   harness: z.enum(HARNESSES),
+  /** The model API to run on, among those the template gives the harness; default: its first. */
+  provider: z.enum(LLM_PROVIDERS).optional(),
   model: z.string().trim().min(1).max(MAX_MODEL_LENGTH).optional(),
 });
 export type LaunchInput = z.infer<typeof launchSchema>;
@@ -89,6 +91,8 @@ export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
 export interface LaunchPlan {
   prompt: string;
   harness: Harness;
+  /** The model API the launch picked; null: the harness's first one the key covers. */
+  provider: LlmProvider | null;
   model: string | null;
   template: Template;
   accountIds: string[];
@@ -135,12 +139,17 @@ function grantServes(harness: Harness, provider: LlmProvider, grant: ChoiceGrant
   );
 }
 
-/** The model API grant a harness uses among these, in its order of preference. */
+/** The model APIs a launch may use: the one it picked, or all the harness speaks. */
+const providersOf = (harness: Harness, picked?: LlmProvider | null): readonly LlmProvider[] =>
+  picked ? HARNESS_PROVIDERS[harness].filter((p) => p === picked) : HARNESS_PROVIDERS[harness];
+
+/** The model API grant a harness uses among these: the picked API's, or its preferred one. */
 function harnessGrant<G extends ChoiceGrant>(
   harness: Harness,
   grants: readonly G[],
+  picked?: LlmProvider | null,
 ): G | undefined {
-  for (const provider of HARNESS_PROVIDERS[harness]) {
+  for (const provider of providersOf(harness, picked)) {
     const grant = grants.find((g) => grantServes(harness, provider, g));
     if (grant) return grant;
   }
@@ -176,21 +185,25 @@ export class Launchpad {
 
   // ---------------------------------------------------------------- launching
 
-  /** Harnesses a template can run, given the model APIs it grants. */
+  /**
+   * Harnesses a template can run, once per model API it grants them (a custom endpoint as well as
+   * an official API, say), each harness's preferred API first.
+   */
   harnessChoices(template: { grants: readonly ChoiceGrant[] }): HarnessChoice[] {
-    return HARNESSES.flatMap((harness) => {
-      const grant = harnessGrant(harness, template.grants);
-      if (!grant) return [];
-      const provider = grant.tool as LlmProvider;
-      return [
-        {
-          harness,
-          provider,
-          models: grant.resources.filter((r) => !r.includes('*')),
-          modelRequired: provider === CUSTOM_PROVIDER,
-        },
-      ];
-    });
+    return HARNESSES.flatMap((harness) =>
+      HARNESS_PROVIDERS[harness].flatMap((provider) => {
+        const grant = template.grants.find((g) => grantServes(harness, provider, g));
+        if (!grant) return [];
+        return [
+          {
+            harness,
+            provider,
+            models: grant.resources.filter((r) => !r.includes('*')),
+            modelRequired: provider === CUSTOM_PROVIDER,
+          },
+        ];
+      }),
+    );
   }
 
   /**
@@ -231,20 +244,23 @@ export class Launchpad {
       member,
       req.templateId,
       req.accountIds,
-      runToolScope(req.harness),
+      runToolScope(req.harness, req.provider),
     );
-    const needs = HARNESS_PROVIDERS[req.harness].join(' or ');
-    if (!this.harnessChoices(plan.template).some((c) => c.harness === req.harness)) {
+    const providers = providersOf(req.harness, req.provider);
+    const fits = (c: HarnessChoice): boolean =>
+      c.harness === req.harness && providers.includes(c.provider);
+    if (!this.harnessChoices(plan.template).some(fits)) {
+      const needs = (req.provider ? [req.provider] : HARNESS_PROVIDERS[req.harness]).join(' or ');
       throw badRequest(
         `Template "${plan.template.name}" gives no ${needs} access, which ${req.harness} needs`,
       );
     }
     // The model API the run uses: one the template grants and the member has an account for.
     const covered = plan.template.grants.filter((g) => plan.tools.includes(g.tool));
-    const choice = this.harnessChoices({ grants: covered }).find((c) => c.harness === req.harness);
+    const choice = this.harnessChoices({ grants: covered }).find(fits);
     if (!choice) {
       // Custom endpoints need no account: only the official APIs the template grants can be missing.
-      const missing = HARNESS_PROVIDERS[req.harness].filter((p) =>
+      const missing = providers.filter((p) =>
         plan.template.grants.some((g) => grantServes(req.harness, p, g)),
       );
       throw badRequest(`No ${missing.join(' or ')} account available`);
@@ -262,6 +278,7 @@ export class Launchpad {
     return {
       prompt: req.prompt,
       harness: req.harness,
+      provider: req.provider ?? null,
       model: this.pickModel(plan.template, choice, req.model),
       template: plan.template,
       accountIds: plan.accountIds,
@@ -279,6 +296,7 @@ export class Launchpad {
       scheduleId: opts.scheduleId ?? null,
       triggerId: opts.triggerId ?? null,
       harness: plan.harness,
+      provider: plan.provider,
       model: plan.model,
       prompt: plan.prompt,
       instructions: opts.instructions ?? null,
@@ -382,7 +400,7 @@ export class Launchpad {
         tokenBudget: run.tokenBudget ?? undefined,
       },
       run.keyGeneration ?? undefined,
-      runToolScope(run.harness),
+      runToolScope(run.harness, run.provider),
     );
     this.deps.runs.update(run.id, { sessionId: session.id });
     const deadline = new Date(
@@ -403,7 +421,7 @@ export class Launchpad {
         },
       ];
     });
-    const llm = harnessGrant(run.harness, session.grants);
+    const llm = harnessGrant(run.harness, session.grants, run.provider);
     if (!llm) throw new Error(`The session key gives no model access for ${run.harness}`);
     const api = llm.endpoint?.api;
     if (api && run.model === null) throw new Error('No model set for the custom LLM endpoint');
@@ -621,12 +639,12 @@ export class Launchpad {
 }
 
 /**
- * What a run's key covers: the model APIs the harness can't use (custom endpoints speaking
- * another chat API included) are left out; when the harness can use several, those without an
- * account are too.
+ * What a run's key covers: the model APIs the harness can't use or the launch didn't pick (custom
+ * endpoints speaking another chat API included) are left out; when the harness can use several,
+ * those without an account are too.
  */
-function runToolScope(harness: Harness): RunToolScope {
-  const providers: readonly string[] = HARNESS_PROVIDERS[harness];
+function runToolScope(harness: Harness, picked?: LlmProvider | null): RunToolScope {
+  const providers: readonly string[] = providersOf(harness, picked);
   return {
     drop: LLM_PROVIDERS.filter((p) => !providers.includes(p)),
     optional: providers.length > 1 ? providers : [],
