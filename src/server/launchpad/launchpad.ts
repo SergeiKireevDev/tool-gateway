@@ -215,15 +215,13 @@ export class Launchpad {
   }
 
   /**
-   * What a template gives a workflow (plan with a frontier agent, then run its script), or null
-   * when it can't run one: an agent harness to plan, and a custom LLM endpoint for the script.
+   * What a template gives a workflow's script, or null when it can't run one: a custom LLM
+   * endpoint. The planning agent is any harness of any of the member's templates: it gets no tool,
+   * so the workflow's template need not give it a model API.
    */
-  workflowChoice(template: {
-    grants: readonly ChoiceGrant[];
-  }): { planners: HarnessChoice[]; executor: HarnessChoice } | null {
+  workflowChoice(template: { grants: readonly ChoiceGrant[] }): { executor: HarnessChoice } | null {
     const executor = harnessChoice(SCRIPT_HARNESS, template.grants);
-    const planners = this.harnessChoices(template);
-    return executor && planners.length > 0 ? { planners, executor } : null;
+    return executor ? { executor } : null;
   }
 
   /**

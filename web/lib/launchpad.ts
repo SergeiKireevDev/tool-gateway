@@ -107,9 +107,11 @@ export interface LaunchTemplate {
   workflow: WorkflowChoice | null;
 }
 
-/** A workflow's planning agents, and the custom LLM endpoint its script runs on. */
+/**
+ * The custom LLM endpoint a workflow's script runs on. Its planning agent is any agent of any
+ * template: it gets no tool.
+ */
 export interface WorkflowChoice {
-  planners: HarnessChoice[];
   executor: HarnessChoice;
 }
 
@@ -128,13 +130,22 @@ export interface Workflow {
   prompt: string;
   templateId: string;
   templateName: string;
+  /** The template whose model API the planning agent uses. */
+  plannerTemplateId: string;
+  plannerTemplateName: string;
   plannerHarness: Harness;
   plannerModel: string | null;
   executorModel: string;
   status: RunStatus;
   statusReason: string | null;
   createdAt: string;
-  steps: { step: WorkflowStep; harness: RunHarness; model: string | null; run: Run | null }[];
+  steps: {
+    step: WorkflowStep;
+    templateName: string;
+    harness: RunHarness;
+    model: string | null;
+    run: Run | null;
+  }[];
 }
 
 export interface LaunchOptions {

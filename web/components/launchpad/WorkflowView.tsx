@@ -106,6 +106,7 @@ function StepNode({
         {HARNESS_LABELS[step.harness]}
         {step.model && ` · ${step.model}`}
       </div>
+      <div className="truncate text-xs text-slate-500">{step.templateName}</div>
       <div className="mt-1 text-xs text-slate-500">
         {run ? `${runDuration(run, now)} · ${formatTokens(run.tokensUsed)} tokens` : 'Not started'}
       </div>

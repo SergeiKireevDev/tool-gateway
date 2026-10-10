@@ -271,7 +271,8 @@ See [Internet access](docs/launchpad.md#internet-access).
 
 Templates that grant a custom LLM endpoint can also run a **workflow**: a frontier agent, with no
 tool access, writes a script for the task, then an execution container runs that script with the
-template's tools and the custom endpoint only. Its page shows the steps as a graph. See
+template's tools and the custom endpoint only. The planner can be any agent of any of the member's
+templates. Its page shows the steps as a graph. See
 [Workflows](docs/launchpad.md#workflows-plan-then-execute).
 
 ## Webhooks
