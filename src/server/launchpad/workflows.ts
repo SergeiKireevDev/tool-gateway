@@ -14,14 +14,24 @@ import {
 } from './runStore.js';
 import { OUT_DIR } from './systemPrompt.js';
 
-/** A workflow launch: the task, the template, the planning agent and the script's model. */
+/**
+ * A workflow launch: the task, the template the script runs with, the script's model and the
+ * planning agent. The planner may run on any template the member has (by default the workflow's):
+ * it gets none of that template's tools, so only its model API matters.
+ */
 export const workflowSchema = launchSchema.extend({
   /** The model of the template's custom LLM endpoint the script uses. */
   executorModel: launchSchema.shape.model,
+  /** The template whose model API the planning agent uses; the workflow's template if unset. */
+  plannerTemplateId: launchSchema.shape.templateId.optional(),
+  /** The planner's model provider account, when the member has several. */
+  plannerAccountIds: launchSchema.shape.accountIds,
 });
 
 export interface WorkflowStepView {
   step: WorkflowStep;
+  /** The template the step's run uses. */
+  templateName: string;
   harness: RunHarness;
   model: string | null;
   /** The step's run, once launched. */
@@ -40,7 +50,8 @@ const WORKFLOW_NOT_FOUND = 'Workflow not found';
 /**
  * Two-step workflows: a frontier agent with no tool access writes a script for the task, then the
  * execution container runs that script on the template's custom LLM endpoint and tools. The
- * second step is launched when the first one succeeds.
+ * second step is launched when the first one succeeds. The planner can be any agent the member
+ * may launch, from any of their templates: its key covers that template's model API only.
  */
 export class Workflows {
   constructor(
@@ -56,8 +67,8 @@ export class Workflows {
       member,
       {
         prompt: req.prompt,
-        templateId: req.templateId,
-        accountIds: req.accountIds,
+        templateId: req.plannerTemplateId ?? req.templateId,
+        accountIds: req.plannerTemplateId ? req.plannerAccountIds : req.accountIds,
         harness: req.harness,
         model: req.model,
       },
@@ -74,9 +85,11 @@ export class Workflows {
       memberId: member.id,
       memberName: member.name,
       prompt: planner.prompt,
-      templateId: planner.template.id,
-      templateName: planner.template.name,
-      accountIds: [...new Set([...planner.accountIds, ...executor.accountIds])],
+      templateId: executor.template.id,
+      templateName: executor.template.name,
+      accountIds: executor.accountIds,
+      plannerTemplateId: planner.template.id,
+      plannerTemplateName: planner.template.name,
       plannerHarness: req.harness,
       plannerModel: planner.model,
       executorModel: executor.model,
@@ -155,6 +168,7 @@ export class Workflows {
     const runs = this.launchpad.runs.workflowRuns(workflow.id);
     const steps = WORKFLOW_STEPS.map((step): WorkflowStepView => ({
       step,
+      templateName: step === 'plan' ? workflow.plannerTemplateName : workflow.templateName,
       harness: step === 'plan' ? workflow.plannerHarness : SCRIPT_HARNESS,
       model: step === 'plan' ? workflow.plannerModel : workflow.executorModel,
       run: runs.find((r) => r.workflowStep === step) ?? null,

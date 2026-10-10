@@ -68,23 +68,13 @@ const sessionTools = async (key: string): Promise<string[]> => {
 };
 
 describe('workflow launch options', () => {
-  it('offers a workflow for templates with an agent harness and a custom LLM endpoint', async () => {
+  it('offers a workflow for templates with a custom LLM endpoint', async () => {
     const alice = await t.member('alice', [template, t.ids.template]);
     const res = await t.portal(alice.cookie, 'get', '').expect(200);
     const byId = Object.fromEntries(
       (res.body.templates as { id: string; workflow: unknown }[]).map((x) => [x.id, x.workflow]),
     );
     expect(byId[template]).toEqual({
-      planners: [
-        {
-          harness: 'claude-code',
-          provider: 'anthropic',
-          models: ['claude-opus-5'],
-          modelRequired: false,
-        },
-        { harness: 'codex', provider: 'custom', models: ['qwen3'], modelRequired: true },
-        { harness: 'pi', provider: 'anthropic', models: ['claude-opus-5'], modelRequired: false },
-      ],
       executor: { harness: 'script', provider: 'custom', models: ['qwen3'], modelRequired: true },
     });
     // No custom endpoint: no workflow.
@@ -157,6 +147,80 @@ describe('a workflow, end to end', () => {
     expect((list.body as { id: string }[]).map((w) => w.id)).toEqual([id]);
     const runs = await t.portal(alice.cookie, 'get', `/runs?harness=script`).expect(200);
     expect(runs.body).toHaveLength(1);
+  });
+
+  it('plans with an agent of another template: the workflow template needs no model API', async () => {
+    const res = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'mail only',
+        grants: [
+          { tool: 'github', permissions: ['issues:read'], resources: ['o/r'] },
+          {
+            tool: 'custom',
+            permissions: ['llm:invoke'],
+            resources: ['qwen3'],
+            endpoint: { url: 'https://llm.example.com', api: 'openai', token: 'endpoint-token' },
+          },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 4 * 3600,
+      })
+      .expect(201);
+    const mailOnly = res.body.id as string;
+    const alice = await t.member('alice', [mailOnly, t.ids.template]);
+    const options = await t.portal(alice.cookie, 'get', '').expect(200);
+    const offered = (options.body.templates as { id: string; workflow: unknown }[]).find(
+      (x) => x.id === mailOnly,
+    );
+    expect(offered?.workflow).toMatchObject({ executor: { harness: 'script' } });
+
+    const id = await start(alice.cookie, {
+      templateId: mailOnly,
+      plannerTemplateId: t.ids.template,
+    });
+    const plan = t.driver.lastConfig();
+    expect(plan).toMatchObject({
+      harness: 'claude-code',
+      llm: { provider: 'anthropic', model: 'claude-sonnet-5' },
+      gatewayTools: [],
+    });
+    expect(await sessionTools(plan.sessionKey)).toEqual(['anthropic']);
+    expect(plan.systemPrompt).toContain('`$GATEWAY_URL/proxy/github`');
+    expect(plan.systemPrompt).toContain('`qwen3`');
+
+    let wf = await t.portal(alice.cookie, 'get', `/workflows/${id}`).expect(200);
+    expect(wf.body).toMatchObject({
+      templateId: mailOnly,
+      templateName: 'mail only',
+      plannerTemplateId: t.ids.template,
+      plannerTemplateName: 'triage agents',
+      steps: [
+        { step: 'plan', templateName: 'triage agents', run: { templateId: t.ids.template } },
+        { step: 'execute', templateName: 'mail only', run: null },
+      ],
+    });
+
+    await finishLast('succeeded', { 'script.mjs': SCRIPT });
+    const exec = t.driver.lastConfig();
+    expect(exec).toMatchObject({ harness: 'script', llm: { provider: 'custom', model: 'qwen3' } });
+    expect(await sessionTools(exec.sessionKey)).toEqual(['github', 'custom']);
+    wf = await t.portal(alice.cookie, 'get', `/workflows/${id}`).expect(200);
+    expect(wf.body.steps[1].run).toMatchObject({ templateId: mailOnly, harness: 'script' });
+  });
+
+  it("refuses a planner on a template the member doesn't have, or that runs no agent", async () => {
+    const alice = await t.member('alice', [template, t.ids.noLlmTemplate]);
+    await t
+      .portal(alice.cookie, 'post', '/workflows')
+      .send(workflowBody({ plannerTemplateId: t.ids.template }))
+      .expect(403);
+    const noModel = await t
+      .portal(alice.cookie, 'post', '/workflows')
+      .send(workflowBody({ plannerTemplateId: t.ids.noLlmTemplate }))
+      .expect(400);
+    expect(noModel.body.message).toContain('anthropic');
+    expect(t.driver.specs).toHaveLength(0);
   });
 
   it('fails when the planner wrote no script, and stops after a failed plan', async () => {

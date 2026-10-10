@@ -107,15 +107,18 @@ agent writes a script, and the script does the work on a local model. Mail, issu
 third-party data then only ever reach the template's custom LLM endpoint, and what the script may
 do with the model's answers is fixed in code before it reads any of them.
 
-In the launch form, a template that grants an agent's model API **and** a custom LLM endpoint
-shows up a second time, under **Workflows: plan, then execute** (or
-`POST /api/me/launchpad/workflows` with the launch fields plus `executorModel`, the endpoint's
-model). Both steps are checked like launches when the workflow is created.
+In the launch form, a template that grants a custom LLM endpoint shows up a second time, under
+**Workflows: plan, then execute** (or `POST /api/me/launchpad/workflows` with the launch fields
+plus `executorModel`, the endpoint's model). Both steps are checked like launches when the workflow
+is created.
 
-1. **Plan.** The planning agent (Claude Code, Codex… as picked) runs with the template's model
-   API only: its key covers **none** of the template's tools. Its system prompt describes the
-   execution container (the tools' permissions and scopes, the endpoint's chat API and model, how
-   to call them) and asks for `/home/agent/out/script.mjs`.
+1. **Plan.** The planning agent can be **any** agent the member can launch, from any of their
+   templates (`plannerTemplateId`, default the workflow's own template, with `harness`, `model`
+   and, if the member has several model provider accounts, `plannerAccountIds`). The workflow's
+   template needs no frontier model API. No tool permission is involved at this level: the
+   planner's key covers that template's model API only, **none** of its tools. Its system prompt
+   describes the execution container (the workflow template's tools, permissions and scopes, the
+   endpoint's chat API and model, how to call them) and asks for `/home/agent/out/script.mjs`.
 2. **Execute.** When the plan succeeds, the gateway launches the script (at most 50,000
    characters) in a fresh VM with the `script` harness: no agent CLI, the runner runs
    `node script.mjs` as `agent`. Its key covers the template's tools and its custom LLM endpoint,

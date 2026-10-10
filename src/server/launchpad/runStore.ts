@@ -88,7 +88,8 @@ export type NewRun = Pick<
 /**
  * A multi-step workflow: a frontier agent (`plannerHarness`) writes a script for the task, then the
  * execution container runs it on the template's custom LLM endpoint (`executorModel`) and tools.
- * Its status comes from its step runs.
+ * The planner may be any agent the member can launch: it runs on `plannerTemplateId`, with no
+ * tools. Its status comes from its step runs.
  */
 export interface Workflow {
   id: string;
@@ -97,7 +98,11 @@ export interface Workflow {
   prompt: string;
   templateId: string;
   templateName: string;
+  /** The accounts the script uses. */
   accountIds: string[];
+  /** The template whose model API the planner uses. */
+  plannerTemplateId: string;
+  plannerTemplateName: string;
   plannerHarness: Harness;
   plannerModel: string | null;
   executorModel: string;
@@ -116,6 +121,8 @@ interface WorkflowRow {
   template_id: string;
   template_name: string;
   account_ids: string;
+  planner_template_id: string | null;
+  planner_template_name: string | null;
   planner_harness: Harness;
   planner_model: string | null;
   executor_model: string;
@@ -132,6 +139,8 @@ function toWorkflow(r: WorkflowRow): Workflow {
     templateId: r.template_id,
     templateName: r.template_name,
     accountIds: JSON.parse(r.account_ids) as string[],
+    plannerTemplateId: r.planner_template_id ?? r.template_id,
+    plannerTemplateName: r.planner_template_name ?? r.template_name,
     plannerHarness: r.planner_harness,
     plannerModel: r.planner_model,
     executorModel: r.executor_model,
@@ -450,8 +459,9 @@ export class RunStore {
     this.db.sql
       .prepare(
         `INSERT INTO workflows (id, member_id, member_name, prompt, template_id, template_name,
-           account_ids, planner_harness, planner_model, executor_model, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           account_ids, planner_template_id, planner_template_name, planner_harness, planner_model,
+           executor_model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         wf.id,
@@ -461,6 +471,8 @@ export class RunStore {
         wf.templateId,
         wf.templateName,
         JSON.stringify(wf.accountIds),
+        wf.plannerTemplateId,
+        wf.plannerTemplateName,
         wf.plannerHarness,
         wf.plannerModel,
         wf.executorModel,

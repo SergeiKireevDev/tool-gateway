@@ -183,4 +183,8 @@ export const MIGRATIONS: readonly string[] = [
    ALTER TABLE runs ADD COLUMN workflow_id TEXT;
    ALTER TABLE runs ADD COLUMN workflow_step TEXT;
    CREATE INDEX runs_workflow ON runs (workflow_id);`,
+
+  // 9: a workflow's planner may run on another template than its script (null = the same)
+  `ALTER TABLE workflows ADD COLUMN planner_template_id TEXT;
+   ALTER TABLE workflows ADD COLUMN planner_template_name TEXT;`,
 ];
