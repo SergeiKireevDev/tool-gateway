@@ -4,6 +4,7 @@ export const HTTP = {
   CREATED: 201,
   ACCEPTED: 202,
   NO_CONTENT: 204,
+  MULTIPLE_CHOICES: 300,
   FOUND: 302,
   SEE_OTHER: 303,
   BAD_REQUEST: 400,
@@ -22,3 +23,6 @@ export const HTTP = {
 
 export const isClientError = (status: number): boolean =>
   status >= HTTP.BAD_REQUEST && status < HTTP.INTERNAL_SERVER_ERROR;
+
+export const isRedirect = (status: number): boolean =>
+  status >= HTTP.MULTIPLE_CHOICES && status < HTTP.BAD_REQUEST;

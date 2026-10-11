@@ -5,7 +5,7 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API) and **Gmail** (REST API). Each tool is a provider
+Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API) and **Gemini image & video generation** (Gemini API). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
 members and the proxy work identically for all of them.
 
@@ -253,6 +253,27 @@ and pi on Anthropic-style endpoints, Codex and pi on OpenAI-style ones.
   the provider and reach the internet from there. They need the extra `llm:server-tools`
   permission, so an agent can't use them to get around its network lockdown.
 - Request bodies are parsed and re-serialized, so the provider reads exactly what was checked.
+
+## Gemini image & video generation
+
+Agents can generate images and videos with a Gemini API key, as a tool (`gemini-media`) separate
+from the Gemini model they may run on. Connect the key under **Accounts → Connect account → Gemini
+image & video generation** (aistudio.google.com → API keys). Clients use
+`/proxy/gemini-media/v1beta/` as the Gemini API base URL and send their session key in
+`x-goog-api-key` (never `?key=`). The resource allowlist is a list of model patterns
+(`imagen-4.0-*`, `veo-3.*`; empty = any image or video model).
+
+| Permission        | Endpoints                                                                                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `images:generate` | `POST /v1beta/models/<model>:generateContent` (models named `*image*`), `POST /v1beta/models/imagen-…:predict`                            |
+| `videos:generate` | `POST /v1beta/models/veo-…:predictLongRunning`, `GET /v1beta/models/<model>/operations/<id>`, `GET /v1beta/files/<id>:download?alt=media` |
+| `models:read`     | `GET /v1beta/models`, `GET /v1beta/models/<model>`                                                                                        |
+
+Each generation method only serves its own model family, so the key can't be used as an
+unmetered text model, and server-side tools (`tools`, e.g. Google Search) are refused. To download
+a generated video, replace `https://generativelanguage.googleapis.com` in the returned URI with
+the gateway URL: the gateway follows the download's redirects to Google's storage (and nowhere
+else) itself, since agents can't reach it.
 
 ## Agent launchpad
 
