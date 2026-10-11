@@ -1,5 +1,6 @@
 import { isIPv4 } from 'node:net';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface VmdConfig {
   /** Unix socket the gateway talks to. */
@@ -23,6 +24,12 @@ export interface VmdConfig {
   maxVms: number;
   /** Where Firecracker's console output is kept, per VM. */
   logDir: string;
+  /** Guest environments' root filesystems (`<id>.ext4`), Dockerfiles and build logs. */
+  imagesDir: string;
+  /** Builds a guest environment's rootfs: `<script> <Dockerfile> <output> <size>`. */
+  imageBuildScript: string;
+  /** Size of a guest environment's rootfs (as `mkfs.ext4` takes it, e.g. `6G`). */
+  imageSize: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -31,6 +38,9 @@ const DEFAULT_MAX_VMS = 32;
 const DEFAULT_JAIL_ID = 900;
 /** Guest addresses are bridge + 1 .. bridge + maxVms within a /24. */
 const MAX_VMS_PER_SUBNET = 250;
+
+/** The repository vmd runs from (`src/vmd` or `dist/vmd` are two levels below it). */
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 const read = (env: Env, key: string): string | undefined => {
   const v = env[key]?.trim();
@@ -43,6 +53,22 @@ const int = (env: Env, key: string, fallback: number): number => {
   if (!Number.isInteger(n) || n < 0) throw new Error(`Invalid ${key}: ${v ?? ''}`);
   return n;
 };
+
+/** Where guest environments are built, and how. */
+function imageConfig(
+  env: Env,
+  stateDir: string,
+): Pick<VmdConfig, 'imagesDir' | 'imageBuildScript' | 'imageSize'> {
+  const imageSize = read(env, 'VMD_IMAGE_SIZE') ?? '6G';
+  if (!/^\d+[KMGT]?$/.test(imageSize)) throw new Error(`Invalid VMD_IMAGE_SIZE: ${imageSize}`);
+  return {
+    imagesDir: path.join(stateDir, 'images'),
+    imageBuildScript:
+      read(env, 'VMD_IMAGE_BUILD_SCRIPT') ??
+      path.join(REPO_ROOT, 'deploy', 'build-custom-image.sh'),
+    imageSize,
+  };
+}
 
 export function loadVmdConfig(env: Env = process.env): VmdConfig {
   const stateDir = path.resolve(read(env, 'VMD_STATE_DIR') ?? '/var/lib/launchpad');
@@ -66,5 +92,6 @@ export function loadVmdConfig(env: Env = process.env): VmdConfig {
     prefixLength: int(env, 'VMD_PREFIX_LENGTH', DEFAULT_PREFIX),
     maxVms,
     logDir: path.join(stateDir, 'logs'),
+    ...imageConfig(env, stateDir),
   };
 }

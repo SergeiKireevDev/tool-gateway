@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
+  type EnvironmentChoice,
   HARNESS_LABELS,
   type HarnessChoice,
   type LaunchOptions,
@@ -487,6 +488,8 @@ interface Draft {
   harness: string;
   accountIds: string[];
   model: string;
+  /** The guest environment the agent runs in ('' = the default one). */
+  environmentId: string;
   time: string;
   weekday: number;
   day: number;
@@ -524,12 +527,14 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
       },
     };
   }
-  if (d.when === 'now') return { path: '/launchpad/runs', body: { ...launch, prompt: d.prompt } };
+  // Workflows boot the default environment.
+  const agent = { ...launch, ...(d.environmentId ? { environmentId: d.environmentId } : {}) };
+  if (d.when === 'now') return { path: '/launchpad/runs', body: { ...agent, prompt: d.prompt } };
   if (d.when === 'webhook') {
     return {
       path: '/launchpad/triggers',
       body: {
-        ...launch,
+        ...agent,
         instructions: d.prompt,
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
@@ -541,7 +546,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   return {
     path: '/launchpad/schedules',
     body: {
-      ...launch,
+      ...agent,
       prompt: d.prompt,
       preset: d.when,
       hour,
@@ -840,6 +845,39 @@ function AgentFields({ agent, templates }: { agent: AgentChoice; templates: Laun
   );
 }
 
+const DEFAULT_ENVIRONMENT_HINT = 'The standard agent VM: Node 22, git, Python and the agent CLIs.';
+
+/** The guest environment the agent's VM boots: the default one, or one the admin added. */
+function EnvironmentField({
+  environments,
+  value,
+  onChange,
+}: {
+  environments: EnvironmentChoice[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (environments.length === 0) return null;
+  const picked = environments.find((e) => e.id === value);
+  return (
+    <Field label="Environment" hint={picked ? picked.description : DEFAULT_ENVIRONMENT_HINT}>
+      <Select
+        value={picked ? value : ''}
+        onChange={(e) => {
+          onChange(e.target.value);
+        }}
+      >
+        <option value="">Default</option>
+        {environments.map((e) => (
+          <option key={e.id} value={e.id}>
+            {e.name}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
 function SubmitRow({
   timeoutSeconds,
   label,
@@ -898,6 +936,7 @@ export function LaunchForm({
   const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
   const [eventTypes, setEventTypes] = useState('');
   const [filters, setFilters] = useState(NO_FILTERS);
+  const [environmentId, setEnvironmentId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -938,6 +977,7 @@ export function LaunchForm({
       harness: choice?.harness ?? harness,
       accountIds: pickedFor(template?.tools ?? []),
       model: model.trim(),
+      environmentId: workflow ? '' : environmentId,
       time,
       weekday,
       day,
@@ -973,6 +1013,13 @@ export function LaunchForm({
     >
       <TaskField trigger={!workflow && when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
       <AgentFields agent={agent} templates={templates} />
+      {!workflow && (
+        <EnvironmentField
+          environments={options.environments}
+          value={environmentId}
+          onChange={setEnvironmentId}
+        />
+      )}
       {ambiguous.map((x) => (
         <Field
           key={x.tool}

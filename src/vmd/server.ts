@@ -6,6 +6,7 @@ import { BYTES_PER_MIB } from '../server/units.js';
 import { LLM_PROVIDERS, RUN_HARNESSES } from '../server/launchpad/protocol.js';
 import type { VmSpec } from '../server/launchpad/vmDriver.js';
 import { LLM_ENDPOINT_APIS } from '../server/tools/types.js';
+import { IMAGE_ID_RE } from './images.js';
 import { VmdError, type VmManager } from './vmManager.js';
 
 const SOCKET_MODE = 0o660;
@@ -15,11 +16,15 @@ const MAX_ID_LENGTH = 100;
 const MAX_VCPUS = 16;
 const MIN_MEM_MIB = 256;
 const MAX_MEM_MIB = 65_536;
+const NOT_FOUND_BODY = { error: 'Not found' };
+const MAX_DOCKERFILE_CHARS = 100_000;
+const imageBuildSchema = z.object({ dockerfile: z.string().min(1).max(MAX_DOCKERFILE_CHARS) });
 const specSchema = z.object({
   runId: z.string().min(1).max(MAX_ID_LENGTH),
   vcpus: z.number().int().min(1).max(MAX_VCPUS),
   memMib: z.number().int().min(MIN_MEM_MIB).max(MAX_MEM_MIB),
   killAt: z.iso.datetime({ offset: true }),
+  imageId: z.string().regex(IMAGE_ID_RE).optional(),
   config: z.looseObject({
     runId: z.string(),
     runToken: z.string(),
@@ -87,7 +92,37 @@ async function route(
     send(res, (await vms.destroy(match[1])) ? HTTP.NO_CONTENT : HTTP.NOT_FOUND);
     return;
   }
-  send(res, HTTP.NOT_FOUND, { error: 'Not found' });
+  const image = /^\/images\/([A-Za-z0-9_-]+)$/.exec(url)?.[1];
+  if (image) {
+    await imageRoute(vms, image, req, res);
+    return;
+  }
+  send(res, HTTP.NOT_FOUND, NOT_FOUND_BODY);
+}
+
+/** Guest environment images: build (PUT), status (GET), delete (DELETE). */
+async function imageRoute(
+  vms: VmManager,
+  imageId: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  if (req.method === 'PUT') {
+    const { dockerfile } = imageBuildSchema.parse(JSON.parse(await readBody(req)));
+    send(res, HTTP.ACCEPTED, await vms.images.build(imageId, dockerfile));
+    return;
+  }
+  if (req.method === 'GET') {
+    const info = await vms.images.info(imageId);
+    send(res, info ? HTTP.OK : HTTP.NOT_FOUND, info ?? NOT_FOUND_BODY);
+    return;
+  }
+  if (req.method === 'DELETE') {
+    await vms.images.delete(imageId);
+    send(res, HTTP.NO_CONTENT);
+    return;
+  }
+  send(res, HTTP.NOT_FOUND, NOT_FOUND_BODY);
 }
 
 /** The vmd API over a unix socket only reachable by root and the gateway's group. */

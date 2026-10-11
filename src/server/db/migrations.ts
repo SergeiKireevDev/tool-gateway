@@ -190,4 +190,21 @@ export const MIGRATIONS: readonly string[] = [
   // 10: a workflow's planner is picked by model API, not template; its script may have no LLM
   // (executor_model '')
   `ALTER TABLE workflows ADD COLUMN planner_provider TEXT;`,
+  // 11: guest environments the admin adds (built from a Dockerfile), picked when launching agents
+  `CREATE TABLE guest_environments (
+     id TEXT PRIMARY KEY,
+     name TEXT NOT NULL,
+     description TEXT NOT NULL,
+     dockerfile TEXT NOT NULL,
+     enabled INTEGER NOT NULL,
+     status TEXT NOT NULL,
+     build_log TEXT NOT NULL,
+     built_at TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   ALTER TABLE runs ADD COLUMN environment_id TEXT;
+   ALTER TABLE runs ADD COLUMN environment_name TEXT;
+   ALTER TABLE schedules ADD COLUMN environment_id TEXT;
+   ALTER TABLE triggers ADD COLUMN environment_id TEXT;`,
 ];

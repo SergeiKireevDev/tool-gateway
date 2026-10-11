@@ -5,7 +5,7 @@ import type { RunnerConfig } from '../src/server/launchpad/protocol.js';
 import { RunStore } from '../src/server/launchpad/runStore.js';
 import { Scheduler } from '../src/server/launchpad/scheduler.js';
 import { Triggers } from '../src/server/launchpad/triggers.js';
-import type { VmDriver, VmInfo, VmSpec } from '../src/server/launchpad/vmDriver.js';
+import type { ImageInfo, VmDriver, VmInfo, VmSpec } from '../src/server/launchpad/vmDriver.js';
 import { Workflows } from '../src/server/launchpad/workflows.js';
 import { Webhooks } from '../src/server/webhooks.js';
 import { createHarness, type Harness } from './helpers.js';
@@ -16,6 +16,8 @@ export class FakeVmDriver implements VmDriver {
   readonly specs: VmSpec[] = [];
   readonly vms = new Map<string, VmInfo>();
   readonly destroyed: string[] = [];
+  /** Guest environment images, by id; builds stay `building` until a test finishes them. */
+  readonly images = new Map<string, ImageInfo & { dockerfile: string }>();
   failNext: string | null = null;
   private n = 0;
 
@@ -40,6 +42,29 @@ export class FakeVmDriver implements VmDriver {
 
   list(): Promise<VmInfo[]> {
     return Promise.resolve([...this.vms.values()]);
+  }
+
+  buildImage(imageId: string, dockerfile: string): Promise<void> {
+    this.images.set(imageId, { imageId, status: 'building', log: 'Step 1/2', dockerfile });
+    return Promise.resolve();
+  }
+
+  image(imageId: string): Promise<ImageInfo | null> {
+    const image = this.images.get(imageId);
+    return Promise.resolve(image ? { imageId, status: image.status, log: image.log } : null);
+  }
+
+  deleteImage(imageId: string): Promise<void> {
+    this.images.delete(imageId);
+    return Promise.resolve();
+  }
+
+  /** Ends an image's build. */
+  finishBuild(imageId: string, ok = true): void {
+    const image = this.images.get(imageId);
+    if (!image) throw new Error(`No image ${imageId}`);
+    image.status = ok ? 'ready' : 'failed';
+    image.log = ok ? 'Done' : 'RUN apt-get install nope: exit code 100';
   }
 
   /** The runner config the latest VM was booted with. */
@@ -68,7 +93,7 @@ export interface LaunchHarness extends Harness {
   portal(cookie: string, method: 'get' | 'post' | 'patch' | 'delete', path: string): request.Test;
   /** The member portal's webhook routes (`/api/me/webhooks`). */
   hooks(cookie: string, method: 'get' | 'post', path: string): request.Test;
-  admin(method: 'get' | 'post' | 'put' | 'patch', path: string): request.Test;
+  admin(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string): request.Test;
   runner(token: string, method: 'post' | 'put', path: string): request.Test;
 }
 
@@ -114,7 +139,7 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
   });
   const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
   const adminToken = await h.gateway.rotateAdminToken();
-  const admin = (method: 'get' | 'post' | 'put' | 'patch', path: string) =>
+  const admin = (method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string) =>
     request(app)[method](`/api/admin${path}`).set('authorization', `Bearer ${adminToken}`);
 
   const github = await admin('post', '/accounts')

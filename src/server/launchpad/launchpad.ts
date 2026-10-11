@@ -43,6 +43,7 @@ import {
   type Workflow,
   type WorkflowStep,
 } from './runStore.js';
+import { Environments } from './environments.js';
 import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
 import { buildPlannerPrompt } from './workflowPrompt.js';
@@ -63,6 +64,7 @@ const EXIT_REPORT_GRACE_SECONDS = 30;
 const EXIT_REPORT_GRACE_MS = EXIT_REPORT_GRACE_SECONDS * MS_PER_SECOND;
 export const MAX_PROMPT_LENGTH = 50_000;
 const MAX_MODEL_LENGTH = 100;
+const MAX_ID_LENGTH = 100;
 const MAX_ACCOUNTS = 20;
 const MAX_OUTPUT_PATH = 200;
 const OUTPUT_PATH_RE = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
@@ -75,6 +77,8 @@ export const launchSchema = z.object({
   accountIds: z.array(z.string().min(1)).max(MAX_ACCOUNTS).default([]),
   harness: z.enum(HARNESSES),
   model: z.string().trim().min(1).max(MAX_MODEL_LENGTH).optional(),
+  /** A guest environment the admin added; the default guest image if unset. */
+  environmentId: z.string().min(1).max(MAX_ID_LENGTH).optional(),
 });
 export type LaunchInput = z.infer<typeof launchSchema>;
 
@@ -120,6 +124,8 @@ export interface LaunchPlan {
   model: string | null;
   template: Template;
   accountIds: string[];
+  /** The guest environment the VM boots, or null for the default guest image. */
+  environment: { id: string; name: string } | null;
   timeoutSeconds: number;
   tokenBudget: number;
 }
@@ -200,9 +206,12 @@ export class Launchpad {
   private pumping: Promise<void> = Promise.resolve();
   private timer: NodeJS.Timeout | null = null;
   private readonly finishedListeners: ((run: Run) => void)[] = [];
+  /** The guest environments the admin added, which runs can boot. */
+  readonly environments: Environments;
 
   constructor(private readonly deps: LaunchpadDeps) {
     this.now = deps.now ?? (() => new Date());
+    this.environments = new Environments(deps.runs.db, deps.driver, this.now);
   }
 
   /** Called after a run reached a final state (the scheduler keeps memory from it). */
@@ -383,9 +392,17 @@ export class Launchpad {
       model: choice ? this.pickModel(plan.template, choice, req.model) : null,
       template: plan.template,
       accountIds: plan.accountIds,
+      environment: this.environment(req.environmentId),
       timeoutSeconds,
       tokenBudget: settings.tokenBudgetPerRun,
     };
+  }
+
+  /** The guest environment a launch asks for, if any: one the admin enabled, and built. */
+  private environment(id: string | undefined): LaunchPlan['environment'] {
+    if (id === undefined) return null;
+    const { name } = this.environments.launchable(id);
+    return { id, name };
   }
 
   launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
@@ -409,6 +426,8 @@ export class Launchpad {
       templateId: plan.template.id,
       templateName: plan.template.name,
       accountIds: plan.accountIds,
+      environmentId: plan.environment?.id ?? null,
+      environmentName: plan.environment?.name ?? null,
       timeoutSeconds: plan.timeoutSeconds,
       tokenBudget: plan.tokenBudget,
       keyGeneration: opts.keyGeneration ?? null,
@@ -468,6 +487,8 @@ export class Launchpad {
     });
     if (!moved) return;
     try {
+      // The environment may have been disabled, deleted or rebuilt since the launch.
+      if (queued.environmentId !== null) this.environments.launchable(queued.environmentId);
       const config = await this.prepare(queued, runToken, startedAt);
       const settings = this.deps.runs.settings();
       const killAt = new Date(Date.parse(config.deadline) + KILL_GRACE_SECONDS * MS_PER_SECOND);
@@ -477,6 +498,7 @@ export class Launchpad {
         vcpus: settings.vcpus,
         memMib: settings.memMib,
         killAt: killAt.toISOString(),
+        ...(queued.environmentId === null ? {} : { imageId: queued.environmentId }),
       });
       const running = this.deps.runs.transition(queued.id, ['provisioning'], 'running', {
         vmId,
@@ -749,6 +771,9 @@ export class Launchpad {
       }
     }
     this.deps.runs.purgeExpiredOutputs(new Date(now).toISOString());
+    await this.environments.refresh().catch((err: unknown) => {
+      console.error('Launchpad: could not check guest environment builds', err);
+    });
     void this.pump();
   }
 

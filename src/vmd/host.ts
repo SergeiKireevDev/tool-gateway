@@ -1,6 +1,6 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { constants, createWriteStream } from 'node:fs';
-import { access, chown, copyFile, mkdir, open, rm } from 'node:fs/promises';
+import { access, chown, copyFile, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { promisify } from 'node:util';
 import { PRIVATE_FILE_MODE } from '../server/units.js';
@@ -30,6 +30,10 @@ export interface HostOps {
   /** Writes `content` at the start of a file of exactly `size` bytes (NUL-padded). */
   writePadded(file: string, content: Buffer, size: number): Promise<void>;
   chown(file: string, uid: number, gid: number): Promise<void>;
+  /** Writes a root-only file. */
+  writeFile(file: string, content: string): Promise<void>;
+  /** The last `maxBytes` of a text file, or '' when it doesn't exist. */
+  readTail(file: string, maxBytes: number): Promise<string>;
   /** One call to a Firecracker API socket. */
   firecracker(socket: string, method: string, path: string, body: unknown): Promise<void>;
 }
@@ -89,6 +93,26 @@ export const realHost: HostOps = {
   },
   async chown(file, uid, gid) {
     await chown(file, uid, gid);
+  },
+  async writeFile(file, content) {
+    await writeFile(file, content, { mode: PRIVATE_FILE_MODE });
+  },
+  async readTail(file, maxBytes) {
+    let handle;
+    try {
+      handle = await open(file, 'r');
+    } catch {
+      return '';
+    }
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, maxBytes);
+      const buf = Buffer.alloc(length);
+      await handle.read(buf, 0, length, size - length);
+      return buf.toString('utf8');
+    } finally {
+      await handle.close();
+    }
   },
   firecracker(socket, method, path, body) {
     const payload = JSON.stringify(body);

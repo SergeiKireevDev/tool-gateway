@@ -34,6 +34,9 @@ export interface Run {
   instructions: string | null;
   templateId: string;
   templateName: string;
+  /** The guest environment the run's VM booted (null: the default one). */
+  environmentId: string | null;
+  environmentName: string | null;
   status: RunStatus;
   statusReason: string | null;
   timeoutSeconds: number;
@@ -157,7 +160,28 @@ export interface LaunchOptions {
   enabled: boolean;
   driver: string;
   defaultTimeoutSeconds: number;
+  /** Guest environments the admin added that agents can run in (besides the default one). */
+  environments: EnvironmentChoice[];
   templates: LaunchTemplate[];
+}
+
+export interface EnvironmentChoice {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export type EnvironmentStatus = 'building' | 'ready' | 'failed';
+
+/** A guest environment as the admin manages it: built from a Dockerfile. */
+export interface GuestEnvironment extends EnvironmentChoice {
+  dockerfile: string;
+  enabled: boolean;
+  status: EnvironmentStatus;
+  buildLog: string;
+  builtAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type Preset = 'hourly' | 'daily' | 'weekly' | 'monthly';
@@ -171,6 +195,7 @@ export interface Schedule {
   harness: Harness;
   model: string | null;
   templateId: string;
+  environmentId: string | null;
   preset: Preset;
   minute: number;
   hour: number;
@@ -217,6 +242,7 @@ export interface Trigger {
   harness: Harness;
   model: string | null;
   templateId: string;
+  environmentId: string | null;
   enabled: boolean;
   stoppedReason: string | null;
   lastRunId: string | null;

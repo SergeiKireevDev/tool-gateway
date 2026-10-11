@@ -1,11 +1,13 @@
 import { request } from 'node:http';
-import type { VmDriver, VmInfo, VmSpec } from './vmDriver.js';
+import type { ImageInfo, VmDriver, VmInfo, VmSpec } from './vmDriver.js';
 
 const HTTP_OK_MIN = 200;
 const HTTP_OK_MAX = 299;
 const NOT_FOUND = 404;
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_ERROR_CHARS = 500;
+
+const imagePath = (imageId: string): string => `/images/${encodeURIComponent(imageId)}`;
 
 /** Talks to `vmd` (the root Firecracker daemon) over its unix socket. */
 export class VmdDriver implements VmDriver {
@@ -23,6 +25,18 @@ export class VmdDriver implements VmDriver {
 
   async list(): Promise<VmInfo[]> {
     return (await this.call('GET', '/vms')) as VmInfo[];
+  }
+
+  async buildImage(imageId: string, dockerfile: string): Promise<void> {
+    await this.call('PUT', imagePath(imageId), { dockerfile });
+  }
+
+  async image(imageId: string): Promise<ImageInfo | null> {
+    return (await this.call('GET', imagePath(imageId), undefined, true)) as ImageInfo | null;
+  }
+
+  async deleteImage(imageId: string): Promise<void> {
+    await this.call('DELETE', imagePath(imageId), undefined, true);
   }
 
   private call(

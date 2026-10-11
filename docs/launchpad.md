@@ -22,7 +22,8 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
 ## What a run is
 
 1. **Launch.** A member picks a task (prompt), a template, a harness (Claude Code, Codex, Gemini
-   CLI or pi), and "now", a schedule or a webhook trigger. The launchpad checks the following, then queues the run:
+   CLI or pi), optionally a [guest environment](#guest-environments), and "now", a schedule or a
+   webhook trigger. The launchpad checks the following, then queues the run:
    - the member may launch;
    - the template is theirs;
    - one account per tool is available;
@@ -53,6 +54,34 @@ Scheduled agents use Hourly, Daily, Weekly or Monthly presets in the member's ti
 - Each successful run's `MEMORY.md` is given to the next run.
 - A schedule **stops** when its member's key is rotated or revoked, or when the member is deleted
   or expired. The member can resume it; the admin can pause it.
+
+## Guest environments
+
+By default, agent VMs boot the guest image built from `deploy/guest-image/Dockerfile` (Node 22,
+git, Python, the agent CLIs). The admin can add other environments under **Launchpad → Guest
+environments**, by pasting or uploading a Dockerfile (or `POST /api/admin/launchpad/environments`
+with `name`, `description` and `dockerfile`). Members then pick one in the launch form's
+**Environment** field (`environmentId` on runs, schedules and triggers).
+
+- **Building.** The gateway hands the Dockerfile to vmd, which runs
+  `deploy/build-custom-image.sh` in the background: `docker build`, with the launchpad's own
+  layers added on top of the last stage (the runner bundle, `/sbin/launchpad-init` and the
+  `agent` user), then the image is exported to `/var/lib/launchpad/images/<id>.ext4`. The
+  environment is `building` until then, and `ready` or `failed` after, with the end of the build
+  log in the admin UI. Rebuild it to pick up a newer base image; a changed Dockerfile is rebuilt.
+- **What the Dockerfile needs.** The runner needs Node 22, `tini` and `iproute2`, and the agent
+  its CLI: start it `FROM launchpad-guest:latest` (tagged by `deploy/build-guest-image.sh`) and
+  add what the agents need. The VM's network lockdown doesn't depend on the image: whatever it
+  holds, it can only reach the gateway.
+- **Allowlist.** Members only see environments that are built and that the admin left enabled
+  (**Members can pick it**). A launch, schedule or trigger naming another one is refused, and a
+  queued run whose environment was disabled, deleted or is being rebuilt fails when it would
+  start, like schedules and triggers then stop.
+- **Trust.** `docker build` runs on the VM host with vmd's privileges: only the admin adds
+  Dockerfiles. Workflows boot the default image.
+
+The `local-unsafe` driver builds nothing: environments are marked ready at once, and its runs use
+the gateway host whatever the environment.
 
 ## Webhook triggers
 
@@ -233,18 +262,20 @@ Then, as admin:
 
 ### Configuration
 
-| Variable                                                  | Default                       |                                                                    |
-| --------------------------------------------------------- | ----------------------------- | ------------------------------------------------------------------ |
-| `LAUNCHPAD_VM_DRIVER`                                     | unset (launchpad off)         | `firecracker`, or `local-unsafe` for development                   |
-| `GATEWAY_VM_HOST`                                         | unset                         | VM bridge IP the gateway also listens on (needed by `firecracker`) |
-| `LAUNCHPAD_VMD_SOCKET`                                    | `/run/launchpad/vmd.sock`     |                                                                    |
-| `LAUNCHPAD_RUNNER_SCRIPT`                                 | `guest/dist/runner.js`        | runner bundle used by `local-unsafe`                               |
-| `VMD_SOCKET_GID`                                          | unset (root only)             | group allowed to use vmd's socket                                  |
-| `VMD_STATE_DIR`                                           | `/var/lib/launchpad`          | `rootfs.ext4`, `vmlinux`, `logs/`                                  |
-| `VMD_BRIDGE` / `VMD_BRIDGE_ADDRESS` / `VMD_PREFIX_LENGTH` | `lpbr0` / `172.30.0.1` / `24` |                                                                    |
-| `VMD_MAX_VMS`                                             | `32`                          | hard cap on VMs (the launchpad's own limits apply first)           |
-| `VMD_JAIL_UID` / `VMD_JAIL_GID`                           | `900`                         | unprivileged user Firecracker runs as                              |
-| `FIRECRACKER_BIN` / `JAILER_BIN`                          | `/usr/local/bin/…`            |                                                                    |
+| Variable                                                  | Default                        |                                                                    |
+| --------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------ |
+| `LAUNCHPAD_VM_DRIVER`                                     | unset (launchpad off)          | `firecracker`, or `local-unsafe` for development                   |
+| `GATEWAY_VM_HOST`                                         | unset                          | VM bridge IP the gateway also listens on (needed by `firecracker`) |
+| `LAUNCHPAD_VMD_SOCKET`                                    | `/run/launchpad/vmd.sock`      |                                                                    |
+| `LAUNCHPAD_RUNNER_SCRIPT`                                 | `guest/dist/runner.js`         | runner bundle used by `local-unsafe`                               |
+| `VMD_SOCKET_GID`                                          | unset (root only)              | group allowed to use vmd's socket                                  |
+| `VMD_STATE_DIR`                                           | `/var/lib/launchpad`           | `rootfs.ext4`, `vmlinux`, `logs/`, `images/`                       |
+| `VMD_BRIDGE` / `VMD_BRIDGE_ADDRESS` / `VMD_PREFIX_LENGTH` | `lpbr0` / `172.30.0.1` / `24`  |                                                                    |
+| `VMD_MAX_VMS`                                             | `32`                           | hard cap on VMs (the launchpad's own limits apply first)           |
+| `VMD_JAIL_UID` / `VMD_JAIL_GID`                           | `900`                          | unprivileged user Firecracker runs as                              |
+| `FIRECRACKER_BIN` / `JAILER_BIN`                          | `/usr/local/bin/…`             |                                                                    |
+| `VMD_IMAGE_BUILD_SCRIPT`                                  | `deploy/build-custom-image.sh` | builds guest environments (`<Dockerfile> <output> <size>`)         |
+| `VMD_IMAGE_SIZE`                                          | `6G`                           | size of a guest environment's rootfs                               |
 
 Run limits are set in the UI (**Launchpad**):
 

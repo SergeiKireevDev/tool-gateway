@@ -58,6 +58,8 @@ export interface Trigger {
   model: string | null;
   templateId: string;
   accountIds: string[];
+  /** The guest environment its runs boot (null: the default guest image). */
+  environmentId: string | null;
   keyGeneration: number;
   enabled: boolean;
   stoppedReason: string | null;
@@ -83,6 +85,7 @@ interface TriggerRow {
   model: string | null;
   template_id: string;
   account_ids: string;
+  environment_id: string | null;
   key_generation: number;
   enabled: number;
   stopped_reason: string | null;
@@ -106,6 +109,7 @@ function toTrigger(r: TriggerRow): Trigger {
     model: r.model,
     templateId: r.template_id,
     accountIds: JSON.parse(r.account_ids) as string[],
+    environmentId: r.environment_id,
     keyGeneration: r.key_generation,
     enabled: r.enabled === 1,
     stoppedReason: r.stopped_reason,
@@ -167,8 +171,9 @@ export class Triggers {
     this.db.sql
       .prepare(
         `INSERT INTO triggers (id, member_id, member_name, name, webhook_id, event_types, filters, instructions,
-           harness, model, template_id, account_ids, key_generation, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           harness, model, template_id, account_ids, environment_id, key_generation, enabled, created_at,
+           updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
       .run(
         id,
@@ -183,6 +188,7 @@ export class Triggers {
         plan.model,
         plan.template.id,
         JSON.stringify(plan.accountIds),
+        plan.environment?.id ?? null,
         keyGeneration,
         ts,
         ts,
@@ -279,6 +285,7 @@ export class Triggers {
       accountIds: t.accountIds,
       harness: t.harness,
       ...(t.model ? { model: t.model } : {}),
+      ...(t.environmentId ? { environmentId: t.environmentId } : {}),
     };
   }
 
