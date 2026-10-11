@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
@@ -38,8 +38,8 @@ const SUBMIT_LABELS: Record<When, string> = {
   monthly: CREATE_SCHEDULE,
   webhook: 'Create trigger',
 };
-/** Workflows are picked among the templates: their select value is the template's, prefixed. */
-const WORKFLOW_PREFIX = 'workflow:';
+/** The workflow is picked among the templates, with this select value. */
+const WORKFLOW = 'workflow';
 const LAST_DAY = 28;
 const DAYS = Array.from({ length: LAST_DAY }, (_, i) => i + 1);
 const MINUTES_PER_HOUR = 60;
@@ -479,8 +479,8 @@ interface Draft {
   /** A workflow: plan with the agent, then run its script on `executorModel`. */
   workflow: boolean;
   executorModel: string;
-  /** The template whose model API a workflow's planning agent uses. */
-  plannerTemplateId: string;
+  /** The model API a workflow's planning agent uses. */
+  plannerProvider: string;
   plannerAccountIds: string[];
   prompt: string;
   templateId: string;
@@ -518,7 +518,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
       body: {
         ...launch,
         ...executor,
-        plannerTemplateId: d.plannerTemplateId,
+        plannerProvider: d.plannerProvider,
         plannerAccountIds: d.plannerAccountIds,
         prompt: d.prompt,
       },
@@ -553,7 +553,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   };
 }
 
-/** The templates, then the workflows of those that can run one: picked like any template. */
+/** The templates that run an agent, then the workflow: picked like any template. */
 function TemplateSelect({
   templates,
   value,
@@ -563,7 +563,6 @@ function TemplateSelect({
   value: string;
   onChange: (value: string) => void;
 }) {
-  const workflows = templates.filter((t) => t.workflow);
   return (
     <Select
       value={value}
@@ -578,111 +577,76 @@ function TemplateSelect({
             {t.name}
           </option>
         ))}
-      {workflows.length > 0 && (
-        <optgroup label="Workflows: plan, then execute">
-          {workflows.map((t) => (
-            <option key={t.id} value={`${WORKFLOW_PREFIX}${t.id}`}>
-              {t.name} · plan, then execute
-            </option>
-          ))}
-        </optgroup>
-      )}
+      <optgroup label="Workflows">
+        <option value={WORKFLOW}>Plan, then execute</option>
+      </optgroup>
     </Select>
   );
 }
 
-/** What a workflow does, and the model its script runs on. */
-function WorkflowFields({
-  choice,
-  endpoint,
-  model,
-  setModel,
-}: {
-  choice: HarnessChoice;
-  endpoint: EndpointModels | null;
-  model: string;
-  setModel: (model: string) => void;
-}) {
-  return (
-    <>
-      <p className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-900">
-        Two steps. <strong>Plan</strong>: the planning agent writes a script for the task, without
-        access to the template’s tools. <strong>Execute</strong>: the script runs on its own, with
-        the template’s tools and its custom LLM endpoint only.
-      </p>
-      <ModelField
-        label="Script model (custom LLM endpoint)"
-        choice={choice}
-        endpoint={endpoint}
-        model={model}
-        setModel={setModel}
-      />
-    </>
-  );
+/** The agents and model APIs a workflow's planning step can use, asked once it is picked. */
+function usePlanners(api: Api, wanted: boolean) {
+  const [planners, setPlanners] = useState<HarnessChoice[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const asked = wanted || planners !== null;
+  useEffect(() => {
+    if (!asked) return;
+    let current = true;
+    api<{ planners: HarnessChoice[] }>('GET', '/launchpad/planners').then(
+      (res) => {
+        if (current) setPlanners(res.planners);
+      },
+      (err: unknown) => {
+        if (current) setError((err as Error).message);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, asked]);
+  return { planners, error };
 }
 
-/** The first template that runs an agent, else the first workflow. */
-function firstSelection(templates: LaunchTemplate[]): string {
-  const agent = templates.find((t) => t.harnesses.length > 0);
-  if (agent) return agent.id;
-  const workflow = templates.find((t) => t.workflow);
-  return workflow ? `${WORKFLOW_PREFIX}${workflow.id}` : '';
-}
-
-/** A planning agent: a harness of one of the member's templates. */
-interface Planner {
-  key: string;
-  template: LaunchTemplate;
-  choice: HarnessChoice;
-}
-
-/** Every agent the member can launch, from any template: a workflow's planner gets no tool. */
-const plannersOf = (templates: LaunchTemplate[]): Planner[] =>
-  templates.flatMap((template) =>
-    template.harnesses.map((choice) => ({
-      key: `${template.id}:${choice.harness}`,
-      template,
-      choice,
-    })),
-  );
+const plannerKey = (p: HarnessChoice): string => `${p.harness}:${p.provider}`;
 
 /**
- * What runs: a template (or a workflow, picked like one), its agent and their models. A workflow's
- * planning agent is picked among all the templates' agents. A custom LLM endpoint is asked for
- * its models when the agent or the workflow's script uses it.
+ * What runs: a template's agent and its model, or the workflow: a planning agent on any model
+ * API (no template: it gets no tool), and any template for its script. A custom LLM endpoint is
+ * asked for its models when the agent or the workflow's script uses it.
  */
-function useAgentChoice(api: Api, usable: LaunchTemplate[]) {
-  const [selection, setSelection] = useState(() => firstSelection(usable));
-  const workflow = selection.startsWith(WORKFLOW_PREFIX);
-  const templateId = workflow ? selection.slice(WORKFLOW_PREFIX.length) : selection;
-  const template = usable.find((t) => t.id === templateId);
+function useAgentChoice(api: Api, templates: LaunchTemplate[]) {
+  const [selection, setSelection] = useState(
+    () => templates.find((t) => t.harnesses.length > 0)?.id ?? WORKFLOW,
+  );
+  const workflow = selection === WORKFLOW;
+  const [executorTemplateId, setExecutorTemplateId] = useState(() => firstId(templates));
+  const templateId = workflow ? executorTemplateId : selection;
+  const template = templates.find((t) => t.id === templateId);
   const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
-  const planners = plannersOf(usable);
-  const [plannerKey, setPlannerKey] = useState('');
+  const planners = usePlanners(api, workflow);
+  const [plannerChoice, setPlannerKey] = useState('');
   const planner = workflow
-    ? (planners.find((p) => p.key === plannerKey) ??
-      planners.find((p) => p.template.id === templateId) ??
-      planners[0])
+    ? (planners.planners?.find((p) => plannerKey(p) === plannerChoice) ?? planners.planners?.[0])
     : undefined;
   const choice = workflow
-    ? planner?.choice
+    ? planner
     : (template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0]);
-  const agentTemplateId = planner?.template.id ?? templateId;
   const [model, setModel] = useState('');
-  const executor = workflow ? template?.workflow?.executor : undefined;
+  const executor = workflow ? (template?.workflow.executor ?? undefined) : undefined;
   const [executorModel, setExecutorModel] = useState('');
-  const endpoint = useEndpointModels(api, agentTemplateId, choice?.provider === 'custom');
+  // A planner's choice already holds the models its endpoints list.
+  const endpoint = useEndpointModels(api, templateId, !workflow && choice?.provider === 'custom');
   const executorEndpoint = useEndpointModels(api, templateId, executor !== undefined);
   return {
     selection,
     setSelection,
     workflow,
     templateId,
+    setExecutorTemplateId,
     template,
     harness,
     setHarness,
     planners,
-    planner,
     setPlannerKey,
     choice,
     model,
@@ -695,33 +659,10 @@ function useAgentChoice(api: Api, usable: LaunchTemplate[]) {
   };
 }
 
-/** The agent of the template, or a workflow's planning agent among all the templates' agents. */
-function AgentSelect({
-  agent,
-  onPicked,
-}: {
-  agent: ReturnType<typeof useAgentChoice>;
-  onPicked: () => void;
-}) {
-  if (agent.workflow) {
-    return (
-      <Field label="Planning agent" hint="Any of your agents: it gets none of the tools">
-        <Select
-          value={agent.planner?.key ?? ''}
-          onChange={(e) => {
-            agent.setPlannerKey(e.target.value);
-            onPicked();
-          }}
-        >
-          {agent.planners.map((p) => (
-            <option key={p.key} value={p.key}>
-              {HARNESS_LABELS[p.choice.harness]} ({p.choice.provider}) · {p.template.name}
-            </option>
-          ))}
-        </Select>
-      </Field>
-    );
-  }
+type AgentChoice = ReturnType<typeof useAgentChoice>;
+
+/** The agent of the template. */
+function AgentSelect({ agent, onPicked }: { agent: AgentChoice; onPicked: () => void }) {
   return (
     <Field label="Agent">
       <Select
@@ -738,6 +679,164 @@ function AgentSelect({
         ))}
       </Select>
     </Field>
+  );
+}
+
+/** A numbered step of the workflow, framed. */
+function StepFrame({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: string;
+  children: ReactNode;
+}) {
+  return (
+    <fieldset className="space-y-3 rounded-lg border border-slate-200 p-3">
+      <legend className="px-1 text-sm font-semibold text-slate-800">{title}</legend>
+      <p className="text-xs text-slate-500">{hint}</p>
+      {children}
+    </fieldset>
+  );
+}
+
+/** Step 1: the planning agent and its model, from any model API (no permission template). */
+function PlanStep({ agent }: { agent: AgentChoice }) {
+  const { planners } = agent.planners;
+  let picker: ReactNode;
+  if (agent.planners.error) {
+    picker = <ErrorBanner message={agent.planners.error} />;
+  } else if (!planners) {
+    picker = <p className="text-sm text-slate-500">Loading the planning agents…</p>;
+  } else {
+    picker = (
+      <Field label="Planning agent">
+        <Select
+          value={agent.choice ? plannerKey(agent.choice) : ''}
+          onChange={(e) => {
+            agent.setPlannerKey(e.target.value);
+            agent.setModel('');
+          }}
+        >
+          {planners.map((p) => (
+            <option key={plannerKey(p)} value={plannerKey(p)}>
+              {HARNESS_LABELS[p.harness]} · {p.provider}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    );
+  }
+  return (
+    <StepFrame
+      title="1 · Plan"
+      hint="A frontier model writes a script for the task. It gets no tool, so no permissions are involved: pick any agent and model you have access to."
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        {picker}
+        <ModelField
+          label="Planning model"
+          choice={agent.choice}
+          endpoint={null}
+          model={agent.model}
+          setModel={agent.setModel}
+        />
+      </div>
+    </StepFrame>
+  );
+}
+
+/** Step 2: the permissions the script runs with, and its custom LLM endpoint's model if any. */
+function ExecuteStep({ agent, templates }: { agent: AgentChoice; templates: LaunchTemplate[] }) {
+  const { template, executor } = agent;
+  return (
+    <StepFrame
+      title="2 · Execute"
+      hint="The script runs on its own, with the tools of the permissions you pick and, if they give one, their custom LLM endpoint. No frontier model API."
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Permissions" hint={templateHint(template)}>
+          <Select
+            value={agent.templateId}
+            onChange={(e) => {
+              agent.setExecutorTemplateId(e.target.value);
+              agent.setExecutorModel('');
+            }}
+          >
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {executor ? (
+          <ModelField
+            label="Script model (custom LLM endpoint)"
+            choice={executor}
+            endpoint={agent.executorEndpoint}
+            model={agent.executorModel}
+            setModel={agent.setExecutorModel}
+          />
+        ) : (
+          <p className="self-end text-xs text-slate-500">
+            No custom LLM endpoint: the script has the tools only.
+          </p>
+        )}
+      </div>
+    </StepFrame>
+  );
+}
+
+/** The template's tools and key lifetime, under its select. */
+const templateHint = (template: LaunchTemplate | undefined): string | undefined =>
+  template &&
+  `${template.tools.join(', ')} · keys last up to ${formatDuration(template.maxTtlSeconds)}`;
+
+/** What runs: a template's agent and model, or the workflow's two steps. */
+function AgentFields({ agent, templates }: { agent: AgentChoice; templates: LaunchTemplate[] }) {
+  const { workflow, setModel } = agent;
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field
+          label={workflow ? 'Run' : 'Permissions'}
+          hint={workflow ? undefined : templateHint(agent.template)}
+        >
+          <TemplateSelect
+            templates={templates}
+            value={agent.selection}
+            onChange={(value) => {
+              agent.setSelection(value);
+              setModel('');
+              agent.setExecutorModel('');
+            }}
+          />
+        </Field>
+        {!workflow && (
+          <AgentSelect
+            agent={agent}
+            onPicked={() => {
+              setModel('');
+            }}
+          />
+        )}
+      </div>
+      {workflow ? (
+        <>
+          <PlanStep agent={agent} />
+          <ExecuteStep agent={agent} templates={templates} />
+        </>
+      ) : (
+        <ModelField
+          choice={agent.choice}
+          endpoint={agent.endpoint}
+          model={agent.model}
+          setModel={setModel}
+        />
+      )}
+    </>
   );
 }
 
@@ -784,26 +883,10 @@ export function LaunchForm({
   onTriggered: (trigger: Trigger) => void;
   onWorkflow: (workflow: Workflow) => void;
 }) {
-  const usable = options.templates.filter((t) => t.harnesses.length > 0 || t.workflow);
+  const { templates } = options;
   const [prompt, setPrompt] = useState('');
-  const agent = useAgentChoice(api, usable);
-  const {
-    selection,
-    setSelection,
-    workflow,
-    templateId,
-    template,
-    harness,
-    planner,
-    choice,
-    model,
-    setModel,
-    executor,
-    executorModel,
-    setExecutorModel,
-    endpoint,
-    executorEndpoint,
-  } = agent;
+  const agent = useAgentChoice(api, templates);
+  const { workflow, templateId, template, harness, choice, model, executor, executorModel } = agent;
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [chosenWhen, setWhen] = useState<When>('now');
   // Workflows run once, now.
@@ -820,7 +903,7 @@ export function LaunchForm({
 
   // Tools of the template (and a workflow planner's model API) for which the member has several
   // accounts: they pick one.
-  const plannerTool = planner?.choice.provider;
+  const plannerTool = workflow ? choice?.provider : undefined;
   const ambiguous = [
     ...new Set([...(template?.tools ?? []), ...(plannerTool ? [plannerTool] : [])]),
   ]
@@ -832,7 +915,7 @@ export function LaunchForm({
       .map((x) => picked[x.tool] ?? x.options[0]?.id ?? '')
       .filter(Boolean);
 
-  if (!usable.some((t) => t.harnesses.length > 0)) {
+  if (!templates.some((t) => t.harnesses.length > 0)) {
     return (
       <p className="text-sm text-slate-600">
         None of your templates gives access to a model API (Anthropic, OpenAI, Gemini or a custom
@@ -848,7 +931,7 @@ export function LaunchForm({
       when,
       workflow,
       executorModel: executorModel.trim(),
-      plannerTemplateId: planner?.template.id ?? '',
+      plannerProvider: plannerTool ?? '',
       plannerAccountIds: plannerTool ? pickedFor([plannerTool]) : [],
       prompt,
       templateId,
@@ -889,47 +972,7 @@ export function LaunchForm({
       }}
     >
       <TaskField trigger={!workflow && when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field
-          label="Permissions"
-          hint={
-            template
-              ? `${template.tools.join(', ')} · keys last up to ${formatDuration(template.maxTtlSeconds)}`
-              : undefined
-          }
-        >
-          <TemplateSelect
-            templates={usable}
-            value={selection}
-            onChange={(value) => {
-              setSelection(value);
-              setModel('');
-              setExecutorModel('');
-            }}
-          />
-        </Field>
-        <AgentSelect
-          agent={agent}
-          onPicked={() => {
-            setModel('');
-          }}
-        />
-      </div>
-      <ModelField
-        label={workflow ? 'Planning model' : 'Model'}
-        choice={choice}
-        endpoint={endpoint}
-        model={model}
-        setModel={setModel}
-      />
-      {executor && (
-        <WorkflowFields
-          choice={executor}
-          endpoint={executorEndpoint}
-          model={executorModel}
-          setModel={setExecutorModel}
-        />
-      )}
+      <AgentFields agent={agent} templates={templates} />
       {ambiguous.map((x) => (
         <Field
           key={x.tool}
@@ -998,7 +1041,10 @@ export function LaunchForm({
         timeoutSeconds={options.defaultTimeoutSeconds}
         label={workflow ? 'Launch workflow' : SUBMIT_LABELS[when]}
         disabled={
-          busy || !complete({ when, prompt, webhookId, choice, model, executor, executorModel })
+          busy ||
+          // A workflow waits for its planning agents.
+          (workflow && !choice) ||
+          !complete({ when, prompt, webhookId, choice, model, executor, executorModel })
         }
       />
     </form>

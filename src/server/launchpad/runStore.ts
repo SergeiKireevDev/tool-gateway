@@ -3,6 +3,7 @@ import { SECONDS_PER_HOUR } from '../units.js';
 import { redact, redactDeep } from '../db/redact.js';
 import {
   type Harness,
+  type LlmProvider,
   type RunEvent,
   type RunEventType,
   type RunHarness,
@@ -87,9 +88,10 @@ export type NewRun = Pick<
 
 /**
  * A multi-step workflow: a frontier agent (`plannerHarness`) writes a script for the task, then the
- * execution container runs it on the template's custom LLM endpoint (`executorModel`) and tools.
- * The planner may be any agent the member can launch: it runs on `plannerTemplateId`, with no
- * tools. Its status comes from its step runs.
+ * execution container runs it with the template's tools and, if it gives one, its custom LLM
+ * endpoint (`executorModel`). The planner may be any agent and model API the member can launch:
+ * it runs on `plannerTemplateId`, the template that gives that API, with no tools. Its status
+ * comes from its step runs.
  */
 export interface Workflow {
   id: string;
@@ -104,8 +106,11 @@ export interface Workflow {
   plannerTemplateId: string;
   plannerTemplateName: string;
   plannerHarness: Harness;
+  /** The model API the planner uses (null for workflows created before it was recorded). */
+  plannerProvider: LlmProvider | null;
   plannerModel: string | null;
-  executorModel: string;
+  /** Null: the template gives no custom LLM endpoint, and the script has no LLM. */
+  executorModel: string | null;
   /** Why the workflow stopped between steps (e.g. the planner wrote no script), or null. */
   failure: string | null;
   createdAt: string;
@@ -124,7 +129,9 @@ interface WorkflowRow {
   planner_template_id: string | null;
   planner_template_name: string | null;
   planner_harness: Harness;
+  planner_provider: LlmProvider | null;
   planner_model: string | null;
+  /** '' when the script has no LLM. */
   executor_model: string;
   failure: string | null;
   created_at: string;
@@ -142,8 +149,9 @@ function toWorkflow(r: WorkflowRow): Workflow {
     plannerTemplateId: r.planner_template_id ?? r.template_id,
     plannerTemplateName: r.planner_template_name ?? r.template_name,
     plannerHarness: r.planner_harness,
+    plannerProvider: r.planner_provider,
     plannerModel: r.planner_model,
-    executorModel: r.executor_model,
+    executorModel: r.executor_model || null,
     failure: r.failure,
     createdAt: r.created_at,
   };
@@ -459,9 +467,9 @@ export class RunStore {
     this.db.sql
       .prepare(
         `INSERT INTO workflows (id, member_id, member_name, prompt, template_id, template_name,
-           account_ids, planner_template_id, planner_template_name, planner_harness, planner_model,
-           executor_model, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           account_ids, planner_template_id, planner_template_name, planner_harness,
+           planner_provider, planner_model, executor_model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         wf.id,
@@ -474,8 +482,9 @@ export class RunStore {
         wf.plannerTemplateId,
         wf.plannerTemplateName,
         wf.plannerHarness,
+        wf.plannerProvider,
         wf.plannerModel,
-        wf.executorModel,
+        wf.executorModel ?? '',
         wf.createdAt,
       );
     return this.requireWorkflow(wf.id);

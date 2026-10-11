@@ -187,4 +187,7 @@ export const MIGRATIONS: readonly string[] = [
   // 9: a workflow's planner may run on another template than its script (null = the same)
   `ALTER TABLE workflows ADD COLUMN planner_template_id TEXT;
    ALTER TABLE workflows ADD COLUMN planner_template_name TEXT;`,
+  // 10: a workflow's planner is picked by model API, not template; its script may have no LLM
+  // (executor_model '')
+  `ALTER TABLE workflows ADD COLUMN planner_provider TEXT;`,
 ];

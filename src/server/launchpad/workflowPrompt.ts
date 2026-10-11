@@ -5,8 +5,8 @@ import { OUT_DIR, type PromptGrant } from './systemPrompt.js';
 export interface PlannerContext {
   /** Tool grants the script's key will have (LLM providers excluded). */
   grants: PromptGrant[];
-  /** The chat API and model of the custom LLM endpoint the script uses. */
-  llm: { api: LlmEndpointApi; model: string };
+  /** The chat API and model of the custom LLM endpoint the script uses, if it has one. */
+  llm: { api: LlmEndpointApi; model: string } | null;
   /** HTTPS domains the script can reach through the egress proxy. */
   egressDomains: readonly string[];
   deadline: string;
@@ -46,6 +46,20 @@ function describeTool(g: PromptGrant): string {
   ].join('\n');
 }
 
+/** The environment and LLM the script has: the custom LLM endpoint, when its template gives one. */
+function llmLines(llm: PlannerContext['llm']): string {
+  if (!llm) {
+    return `- Environment: \`GATEWAY_URL\` and \`GATEWAY_SESSION_KEY\` (send it as \`Authorization: Bearer …\` on every gateway call).
+- No LLM: everything the script decides is decided in code. If the task needs judgment the code can't provide, make the script explain why and exit with an error.`;
+  }
+  const api = llm.api === 'openai' ? 'OpenAI Chat Completions' : 'Anthropic Messages';
+  return `- Environment: \`GATEWAY_URL\`, \`GATEWAY_SESSION_KEY\` (send it as \`Authorization: Bearer …\` on every gateway call), \`LLM_URL\`, \`LLM_API\` (\`${llm.api}\`) and \`LLM_MODEL\` (\`${llm.model}\`).
+- A local LLM (\`${llm.model}\`, ${api} API) for whatever needs judgment: reading, classifying, summarizing, drafting. It is smaller than you: give it short, precise prompts with the data to work on, and ask for structured answers you can parse (and check). Call it like this:
+\`\`\`js
+${LLM_CALLS[llm.api]}
+\`\`\``;
+}
+
 function networkLine(domains: readonly string[]): string {
   if (domains.length === 0)
     return 'It has no internet access: no npm packages, only Node built-ins.';
@@ -56,13 +70,13 @@ function networkLine(domains: readonly string[]): string {
 /**
  * The system prompt of a workflow's planning step: the frontier agent doesn't do the task, it
  * writes the script the execution container runs. It never gets the tools itself, so the data
- * the script handles (mail, issues…) only ever reaches the custom LLM endpoint.
+ * the script handles (mail, issues…) only ever reaches the custom LLM endpoint, if any.
  */
 export function buildPlannerPrompt(ctx: PlannerContext): string {
   const tools =
     ctx.grants.length > 0
       ? ctx.grants.map(describeTool).join('\n')
-      : '- None: the script only has the LLM endpoint.';
+      : `- None: the script only has ${ctx.llm ? 'the LLM endpoint' : 'Node'}.`;
   return `You are the planning step of a workflow launched by the agent launchpad. You don't do the task yourself, and you can't call the third-party tools: you write a script that does the task. Nobody watches you work and nobody will answer questions: decide, act, and finish on your own.
 
 ## How the workflow runs
@@ -71,11 +85,7 @@ export function buildPlannerPrompt(ctx: PlannerContext): string {
 
 ## The execution container
 - Node 22, ES module (\`.mjs\`), with the built-in \`fetch\`. ${networkLine(ctx.egressDomains)}
-- Environment: \`GATEWAY_URL\`, \`GATEWAY_SESSION_KEY\` (send it as \`Authorization: Bearer …\` on every gateway call), \`LLM_URL\`, \`LLM_API\` (\`${ctx.llm.api}\`) and \`LLM_MODEL\` (\`${ctx.llm.model}\`).
-- A local LLM (\`${ctx.llm.model}\`, ${ctx.llm.api === 'openai' ? 'OpenAI Chat Completions' : 'Anthropic Messages'} API) for whatever needs judgment: reading, classifying, summarizing, drafting. It is smaller than you: give it short, precise prompts with the data to work on, and ask for structured answers you can parse (and check). Call it like this:
-\`\`\`js
-${LLM_CALLS[ctx.llm.api]}
-\`\`\`
+${llmLines(ctx.llm)}
 - These third-party APIs, through the gateway. Each call is checked against these permissions; a refused call answers HTTP 403 with an \`x-gateway-denied\` header:
 ${tools}
 

@@ -341,6 +341,18 @@ describe('script (execution container)', () => {
     });
   });
 
+  it('runs without LLM variables when the template gives no custom endpoint', () => {
+    const launch = script.launch({ ...scriptCtx, config: { ...scriptCtx.config, llm: null } });
+    expect(launch.env).toMatchObject({ GATEWAY_SESSION_KEY: 'gws_key' });
+    expect(Object.keys(launch.env).filter((k) => k.startsWith('LLM_'))).toEqual([]);
+  });
+
+  it('refuses to start an agent without a model API', () => {
+    expect(() => claudeCode.launch({ ...ctx, config: { ...config, llm: null } })).toThrow(
+      'claude-code needs a model API',
+    );
+  });
+
   it('logs each printed line and keeps all of them as the final message', () => {
     const state = newState();
     const events = ['Read 3 mails', '', 'Drafted 1 reply'].flatMap((l) => script.parse(l, state));

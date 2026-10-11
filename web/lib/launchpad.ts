@@ -103,16 +103,16 @@ export interface LaunchTemplate {
   tools: string[];
   maxTtlSeconds: number;
   harnesses: HarnessChoice[];
-  /** The workflow the template can run (plan, then execute), or null. */
-  workflow: WorkflowChoice | null;
+  /** What a workflow's script gets with this template (any template runs one). */
+  workflow: WorkflowChoice;
 }
 
 /**
- * The custom LLM endpoint a workflow's script runs on. Its planning agent is any agent of any
- * template: it gets no tool.
+ * The custom LLM endpoint a workflow's script runs on, or null: the script then has the
+ * template's tools only. Its planning agent doesn't depend on the template: it gets no tool.
  */
 export interface WorkflowChoice {
-  executor: HarnessChoice;
+  executor: HarnessChoice | null;
 }
 
 export type WorkflowStep = 'plan' | 'execute';
@@ -130,18 +130,23 @@ export interface Workflow {
   prompt: string;
   templateId: string;
   templateName: string;
-  /** The template whose model API the planning agent uses. */
+  /** The template that gives the planning agent its model API (none of its tools). */
   plannerTemplateId: string;
   plannerTemplateName: string;
   plannerHarness: Harness;
+  plannerProvider: string | null;
   plannerModel: string | null;
-  executorModel: string;
+  /** Null: the script's template gives no custom LLM endpoint, the script has no LLM. */
+  executorModel: string | null;
   status: RunStatus;
   statusReason: string | null;
   createdAt: string;
   steps: {
     step: WorkflowStep;
-    templateName: string;
+    /** The template whose tools the step has: none for the planner. */
+    templateName: string | null;
+    /** The model API the step uses (null: unknown, or a script without LLM). */
+    provider: string | null;
     harness: RunHarness;
     model: string | null;
     run: Run | null;
