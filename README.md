@@ -5,7 +5,7 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API) and **Gemini image & video generation** (Gemini API). Each tool is a provider
+Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API), **Gemini image & video generation** (Gemini API) and **Seedance video generation** (BytePlus ModelArk API). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
 members and the proxy work identically for all of them.
 
@@ -274,6 +274,27 @@ unmetered text model, and server-side tools (`tools`, e.g. Google Search) are re
 a generated video, replace `https://generativelanguage.googleapis.com` in the returned URI with
 the gateway URL: the gateway follows the download's redirects to Google's storage (and nowhere
 else) itself, since agents can't reach it.
+
+## Seedance video generation
+
+Agents can generate videos with ByteDance Seedance (e.g. Seedance 2.5) on BytePlus ModelArk, as a
+tool (`seedance`). Connect a ModelArk API key under **Accounts → Connect account → Seedance video
+generation** (console.byteplus.com → ModelArk → API keys, with the Seedance models activated).
+Clients use `/proxy/seedance/api/v3` as the ModelArk base URL and send their session key as the
+bearer API key. The resource allowlist is a list of model patterns (`seedance-2-5-*`; empty = any
+Seedance model). Only model names containing `seedance` are served (not endpoint IDs `ep-…`).
+
+| Permission          | Endpoints                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `videos:generate`   | `POST /api/v3/contents/generations/tasks`                                                                                         |
+| `videos:read`       | `GET /api/v3/contents/generations/tasks[/<id>]`, `GET /api/v3/contents/generations/tasks/<id>/video` (and `/last-frame`, gateway) |
+| `videos:cancel`     | `DELETE /api/v3/contents/generations/tasks/<id>`                                                                                  |
+| `media:remote-urls` | Lets tasks reference images, videos or audio by http(s) URL (otherwise only `data:` and `asset://`)                               |
+
+`callback_url` is always refused (poll the task instead), and media URLs need `media:remote-urls`,
+since BytePlus would fetch them from the internet on the agent's behalf. The finished video is on
+BytePlus storage agents can't reach: `GET …/tasks/<id>/video` makes the gateway read the task and
+download its `video_url` (only from BytePlus hosts) for them.
 
 ## Agent launchpad
 
