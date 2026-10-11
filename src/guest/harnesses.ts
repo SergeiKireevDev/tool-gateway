@@ -86,6 +86,12 @@ function baseEnv(ctx: LaunchContext): Record<string, string> {
   };
 }
 
+/** The model API of an agent: only a script may run without one. */
+function agentLlm(config: RunnerConfig): NonNullable<RunnerConfig['llm']> {
+  if (!config.llm) throw new Error(`${config.harness} needs a model API`);
+  return config.llm;
+}
+
 const mcpScript = (ctx: LaunchContext): string => path.join(ctx.guestDir, 'mcp.js');
 const proxy = (ctx: LaunchContext, provider: string): string =>
   `${ctx.config.gatewayUrl}/proxy/${provider}`;
@@ -104,7 +110,7 @@ const CLAUDE_MODEL_ENVS = [
  * with its own model choices (titles, subagents…) use the run's model too.
  */
 function claudeModelEnv(config: RunnerConfig): Record<string, string> {
-  const { provider, model } = config.llm;
+  const { provider, model } = agentLlm(config);
   if (provider !== 'custom' || !model) return {};
   return Object.fromEntries(CLAUDE_MODEL_ENVS.map((name) => [name, model]));
 }
@@ -173,6 +179,7 @@ function claudeToolResults(message: Json): EventDraft[] {
 export const claudeCode: HarnessAdapter = {
   launch(ctx) {
     const { config } = ctx;
+    const llm = agentLlm(config);
     const mcpConfig = {
       mcpServers: {
         [MCP_SERVER]: {
@@ -198,11 +205,11 @@ export const claudeCode: HarnessAdapter = {
         '--mcp-config',
         JSON.stringify(mcpConfig),
         '--strict-mcp-config',
-        ...(config.llm.model ? ['--model', config.llm.model] : []),
+        ...(llm.model ? ['--model', llm.model] : []),
       ],
       env: {
         ...baseEnv(ctx),
-        ANTHROPIC_BASE_URL: proxy(ctx, config.llm.provider),
+        ANTHROPIC_BASE_URL: proxy(ctx, llm.provider),
         ANTHROPIC_AUTH_TOKEN: config.sessionKey,
         ...claudeModelEnv(config),
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -292,6 +299,7 @@ function codexItem(item: Json, completed: boolean, state: HarnessState): EventDr
 export const codex: HarnessAdapter = {
   launch(ctx) {
     const { config } = ctx;
+    const llm = agentLlm(config);
     const override = (key: string, value: string): string[] => ['-c', `${key}=${value}`];
     return {
       command: 'codex',
@@ -302,10 +310,7 @@ export const codex: HarnessAdapter = {
         '--dangerously-bypass-approvals-and-sandbox',
         ...override('model_provider', toml('gateway')),
         ...override('model_providers.gateway.name', toml('gateway')),
-        ...override(
-          'model_providers.gateway.base_url',
-          toml(`${proxy(ctx, config.llm.provider)}/v1`),
-        ),
+        ...override('model_providers.gateway.base_url', toml(`${proxy(ctx, llm.provider)}/v1`)),
         ...override('model_providers.gateway.env_key', toml('GATEWAY_SESSION_KEY')),
         ...override('model_providers.gateway.wire_api', toml('responses')),
         ...override(`mcp_servers.${MCP_SERVER}.command`, toml(ctx.nodeBin)),
@@ -316,8 +321,8 @@ export const codex: HarnessAdapter = {
         ),
         ...override('developer_instructions', toml(config.systemPrompt)),
         // A custom endpoint has no hosted web search: Codex would offer the model a tool it lacks.
-        ...(config.llm.provider === 'custom' ? override('web_search', toml('disabled')) : []),
-        ...(config.llm.model ? ['--model', config.llm.model] : []),
+        ...(llm.provider === 'custom' ? override('web_search', toml('disabled')) : []),
+        ...(llm.model ? ['--model', llm.model] : []),
         config.prompt,
       ],
       env: { ...baseEnv(ctx), CODEX_HOME: path.join(ctx.home, '.codex') },
@@ -360,6 +365,7 @@ export const codex: HarnessAdapter = {
 export const gemini: HarnessAdapter = {
   launch(ctx) {
     const { config } = ctx;
+    const llm = agentLlm(config);
     // User settings: Gemini CLI ignores system settings in directories not owned by root.
     const settingsPath = path.join(ctx.home, '.gemini', 'settings.json');
     const settings = {
@@ -383,7 +389,7 @@ export const gemini: HarnessAdapter = {
         '--skip-trust',
         '--allowed-mcp-server-names',
         MCP_SERVER,
-        ...(config.llm.model ? ['--model', config.llm.model] : []),
+        ...(llm.model ? ['--model', llm.model] : []),
         // Gemini CLI has no system prompt flag: the instructions lead the prompt.
         '--prompt',
         `${config.systemPrompt}\n\n# Task\n\n${config.prompt}`,
@@ -481,7 +487,7 @@ interface PiSetup {
 
 /** A custom endpoint, declared to pi as its own provider with the run's model. */
 function piCustom(ctx: LaunchContext): PiSetup {
-  const { provider, model, api } = ctx.config.llm;
+  const { provider, model, api } = agentLlm(ctx.config);
   if (!api || !model) throw new Error('pi needs the chat API and model of a custom endpoint');
   const endpoint = PI_ENDPOINT_API[api];
   const custom = {
@@ -495,7 +501,7 @@ function piCustom(ctx: LaunchContext): PiSetup {
 }
 
 function piSetup(ctx: LaunchContext): PiSetup {
-  const { provider, model } = ctx.config.llm;
+  const { provider, model } = agentLlm(ctx.config);
   if (provider === 'custom') return piCustom(ctx);
   const official = PI_PROVIDER[provider];
   if (!official) throw new Error(`pi can't use ${provider}`);
@@ -585,21 +591,24 @@ export const pi: HarnessAdapter = {
 
 /**
  * No agent: runs the script a workflow's planner wrote (the run's prompt) with Node. It reaches the
- * custom LLM endpoint and the tools over plain HTTP with the session key. Each line it prints is
+ * tools (and the custom LLM endpoint, if any) over plain HTTP with the session key. Each line it prints is
  * a log line, and everything it printed (the end of it, when long) is its final message.
  */
 export const script: HarnessAdapter = {
   launch(ctx) {
     const file = path.join(ctx.home, 'work', SCRIPT_FILE);
-    const { api, model } = ctx.config.llm;
+    const { llm } = ctx.config;
     return {
       command: ctx.nodeBin,
       args: [file],
       env: {
         ...baseEnv(ctx),
-        LLM_URL: proxy(ctx, 'custom'),
-        LLM_API: api ?? '',
-        LLM_MODEL: model ?? '',
+        // No custom LLM endpoint: the script only has the tools.
+        ...(llm && {
+          LLM_URL: proxy(ctx, llm.provider),
+          LLM_API: llm.api ?? '',
+          LLM_MODEL: llm.model ?? '',
+        }),
       },
       files: [{ path: file, content: ctx.config.prompt }],
       dirs: [],

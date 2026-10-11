@@ -395,7 +395,7 @@ describe('launch checks', () => {
         .set('authorization', `Bearer ${config.sessionKey}`)
         .expect(200);
       await finishLast();
-      return [config.llm.provider, (session.body.grants as { tool: string }[]).map((g) => g.tool)];
+      return [config.llm?.provider, (session.body.grants as { tool: string }[]).map((g) => g.tool)];
     };
     expect(await tools('claude-code')).toEqual(['anthropic', ['anthropic']]);
     expect(await tools('codex', 'qwen3')).toEqual(['custom', ['custom']]);

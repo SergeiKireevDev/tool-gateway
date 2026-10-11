@@ -1,9 +1,17 @@
-import { badRequest, conflict, notFound } from '../errors.js';
+import { z } from 'zod';
+import { conflict, notFound } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { randomId } from '../store/crypto.js';
 import type { Member } from '../store/types.js';
 import { type Actor, type Launchpad, launchSchema, MAX_PROMPT_LENGTH } from './launchpad.js';
-import { type RunHarness, SCRIPT_FILE, SCRIPT_HARNESS } from './protocol.js';
+import {
+  CUSTOM_PROVIDER,
+  LLM_PROVIDERS,
+  type LlmProvider,
+  type RunHarness,
+  SCRIPT_FILE,
+  SCRIPT_HARNESS,
+} from './protocol.js';
 import {
   isActive,
   type Run,
@@ -15,23 +23,26 @@ import {
 import { OUT_DIR } from './systemPrompt.js';
 
 /**
- * A workflow launch: the task, the template the script runs with, the script's model and the
- * planning agent. The planner may run on any template the member has (by default the workflow's):
- * it gets none of that template's tools, so only its model API matters.
+ * A workflow launch: the task, the planning agent (`harness`, `plannerProvider`, `model`) and
+ * the template the script runs with (`templateId`, `accountIds`, `executorModel`). The planner
+ * gets no tool, so no permission template is picked for it: any model API the member's templates
+ * give the agent will do. The script's template can be any template.
  */
 export const workflowSchema = launchSchema.extend({
-  /** The model of the template's custom LLM endpoint the script uses. */
+  /** The model of the template's custom LLM endpoint the script uses, if it gives one. */
   executorModel: launchSchema.shape.model,
-  /** The template whose model API the planning agent uses; the workflow's template if unset. */
-  plannerTemplateId: launchSchema.shape.templateId.optional(),
+  /** The model API the planning agent uses; any its agent can use if unset. */
+  plannerProvider: z.enum(LLM_PROVIDERS).optional(),
   /** The planner's model provider account, when the member has several. */
   plannerAccountIds: launchSchema.shape.accountIds,
 });
 
 export interface WorkflowStepView {
   step: WorkflowStep;
-  /** The template the step's run uses. */
-  templateName: string;
+  /** The template whose tools the step has: none for the planner. */
+  templateName: string | null;
+  /** The model API the step uses, if known (none for a script without a custom endpoint). */
+  provider: LlmProvider | null;
   harness: RunHarness;
   model: string | null;
   /** The step's run, once launched. */
@@ -49,9 +60,9 @@ const WORKFLOW_NOT_FOUND = 'Workflow not found';
 
 /**
  * Two-step workflows: a frontier agent with no tool access writes a script for the task, then the
- * execution container runs that script on the template's custom LLM endpoint and tools. The
- * second step is launched when the first one succeeds. The planner can be any agent the member
- * may launch, from any of their templates: its key covers that template's model API only.
+ * execution container runs that script with the template's tools (and its custom LLM endpoint, if
+ * any). The second step is launched when the first one succeeds. The planner can be any agent and
+ * model API the member may launch: its key covers that model API only.
  */
 export class Workflows {
   constructor(
@@ -63,23 +74,18 @@ export class Workflows {
   /** Checks both steps like launches (so none fails later for a reason known now), then plans. */
   create(member: Member, input: unknown): WorkflowView {
     const req = workflowSchema.parse(input);
-    const planner = this.launchpad.plan(
-      member,
-      {
-        prompt: req.prompt,
-        templateId: req.plannerTemplateId ?? req.templateId,
-        accountIds: req.plannerTemplateId ? req.plannerAccountIds : req.accountIds,
-        harness: req.harness,
-        model: req.model,
-      },
-      'plan',
-    );
+    const planner = this.launchpad.planPlanner(member, {
+      prompt: req.prompt,
+      harness: req.harness,
+      provider: req.plannerProvider,
+      model: req.model,
+      accountIds: req.plannerAccountIds,
+    });
     const executor = this.launchpad.planScript(
       member,
       { templateId: req.templateId, accountIds: req.accountIds, model: req.executorModel },
       req.prompt,
     );
-    if (executor.model === null) throw badRequest('Name the model the script uses');
     const workflow = this.launchpad.runs.insertWorkflow({
       id: randomId(),
       memberId: member.id,
@@ -91,6 +97,7 @@ export class Workflows {
       plannerTemplateId: planner.template.id,
       plannerTemplateName: planner.template.name,
       plannerHarness: req.harness,
+      plannerProvider: planner.provider,
       plannerModel: planner.model,
       executorModel: executor.model,
       createdAt: this.now().toISOString(),
@@ -132,7 +139,7 @@ export class Workflows {
       {
         templateId: workflow.templateId,
         accountIds: workflow.accountIds,
-        model: workflow.executorModel,
+        model: workflow.executorModel ?? undefined,
       },
       script,
     );
@@ -166,13 +173,27 @@ export class Workflows {
 
   view(workflow: Workflow): WorkflowView {
     const runs = this.launchpad.runs.workflowRuns(workflow.id);
-    const steps = WORKFLOW_STEPS.map((step): WorkflowStepView => ({
-      step,
-      templateName: step === 'plan' ? workflow.plannerTemplateName : workflow.templateName,
-      harness: step === 'plan' ? workflow.plannerHarness : SCRIPT_HARNESS,
-      model: step === 'plan' ? workflow.plannerModel : workflow.executorModel,
-      run: runs.find((r) => r.workflowStep === step) ?? null,
-    }));
+    const steps = WORKFLOW_STEPS.map((step): WorkflowStepView => {
+      const run = runs.find((r) => r.workflowStep === step) ?? null;
+      if (step === 'plan') {
+        return {
+          step,
+          templateName: null,
+          provider: workflow.plannerProvider,
+          harness: workflow.plannerHarness,
+          model: workflow.plannerModel,
+          run,
+        };
+      }
+      return {
+        step,
+        templateName: workflow.templateName,
+        provider: workflow.executorModel === null ? null : CUSTOM_PROVIDER,
+        harness: SCRIPT_HARNESS,
+        model: workflow.executorModel,
+        run,
+      };
+    });
     return { ...workflow, ...workflowStatus(workflow, steps), steps };
   }
 }

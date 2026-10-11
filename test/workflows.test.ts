@@ -68,7 +68,7 @@ const sessionTools = async (key: string): Promise<string[]> => {
 };
 
 describe('workflow launch options', () => {
-  it('offers a workflow for templates with a custom LLM endpoint', async () => {
+  it('runs a script with any template: its custom LLM endpoint, if any', async () => {
     const alice = await t.member('alice', [template, t.ids.template]);
     const res = await t.portal(alice.cookie, 'get', '').expect(200);
     const byId = Object.fromEntries(
@@ -77,8 +77,32 @@ describe('workflow launch options', () => {
     expect(byId[template]).toEqual({
       executor: { harness: 'script', provider: 'custom', models: ['qwen3'], modelRequired: true },
     });
-    // No custom endpoint: no workflow.
-    expect(byId[t.ids.template]).toBeNull();
+    // No custom endpoint: the script has the tools only.
+    expect(byId[t.ids.template]).toEqual({ executor: null });
+  });
+
+  it('offers every agent and model API of all the templates as planners', async () => {
+    const alice = await t.member('alice', [template, t.ids.template, t.ids.noLlmTemplate]);
+    const res = await t.portal(alice.cookie, 'get', '/planners').expect(200);
+    const planners = res.body.planners as { harness: string; provider: string }[];
+    expect(planners).toContainEqual({
+      harness: 'claude-code',
+      provider: 'anthropic',
+      models: ['claude-sonnet-5', 'claude-opus-5'],
+      modelRequired: false,
+    });
+    expect(planners).toContainEqual({
+      harness: 'codex',
+      provider: 'custom',
+      // The allowlist's exact models, then those the endpoint lists.
+      models: ['qwen3', 'llama-4'],
+      modelRequired: true,
+    });
+    expect(planners.map((p) => `${p.harness}:${p.provider}`)).toEqual([
+      'claude-code:anthropic',
+      'pi:anthropic',
+      'codex:custom',
+    ]);
   });
 });
 
@@ -112,10 +136,24 @@ describe('a workflow, end to end', () => {
     expect(wf.body).toMatchObject({
       status: 'running',
       plannerHarness: 'claude-code',
+      plannerProvider: 'anthropic',
       executorModel: 'qwen3',
       steps: [
-        { step: 'plan', harness: 'claude-code', run: { status: 'running', workflowId: id } },
-        { step: 'execute', harness: 'script', model: 'qwen3', run: null },
+        {
+          step: 'plan',
+          templateName: null,
+          provider: 'anthropic',
+          harness: 'claude-code',
+          run: { status: 'running', workflowId: id },
+        },
+        {
+          step: 'execute',
+          templateName: 'mail workflow',
+          provider: 'custom',
+          harness: 'script',
+          model: 'qwen3',
+          run: null,
+        },
       ],
     });
 
@@ -149,7 +187,7 @@ describe('a workflow, end to end', () => {
     expect(runs.body).toHaveLength(1);
   });
 
-  it('plans with an agent of another template: the workflow template needs no model API', async () => {
+  it('plans on whichever template gives the model API: the script template needs none', async () => {
     const res = await t
       .admin('post', '/templates')
       .send({
@@ -175,10 +213,7 @@ describe('a workflow, end to end', () => {
     );
     expect(offered?.workflow).toMatchObject({ executor: { harness: 'script' } });
 
-    const id = await start(alice.cookie, {
-      templateId: mailOnly,
-      plannerTemplateId: t.ids.template,
-    });
+    const id = await start(alice.cookie, { templateId: mailOnly, plannerProvider: 'anthropic' });
     const plan = t.driver.lastConfig();
     expect(plan).toMatchObject({
       harness: 'claude-code',
@@ -195,8 +230,9 @@ describe('a workflow, end to end', () => {
       templateName: 'mail only',
       plannerTemplateId: t.ids.template,
       plannerTemplateName: 'triage agents',
+      plannerProvider: 'anthropic',
       steps: [
-        { step: 'plan', templateName: 'triage agents', run: { templateId: t.ids.template } },
+        { step: 'plan', templateName: null, run: { templateId: t.ids.template } },
         { step: 'execute', templateName: 'mail only', run: null },
       ],
     });
@@ -207,19 +243,63 @@ describe('a workflow, end to end', () => {
     expect(await sessionTools(exec.sessionKey)).toEqual(['github', 'custom']);
     wf = await t.portal(alice.cookie, 'get', `/workflows/${id}`).expect(200);
     expect(wf.body.steps[1].run).toMatchObject({ templateId: mailOnly, harness: 'script' });
+
+    // A planner on the custom endpoint: the template that gives it with that model.
+    await start(alice.cookie, {
+      templateId: t.ids.template,
+      harness: 'pi',
+      plannerProvider: 'custom',
+      model: 'qwen3',
+    });
+    expect(t.driver.lastConfig()).toMatchObject({
+      harness: 'pi',
+      llm: { provider: 'custom', model: 'qwen3', api: 'openai' },
+      gatewayTools: [],
+    });
+    expect(await sessionTools(t.driver.lastConfig().sessionKey)).toEqual(['custom']);
   });
 
-  it("refuses a planner on a template the member doesn't have, or that runs no agent", async () => {
+  it('runs a script with no LLM when its template gives no custom endpoint', async () => {
+    const alice = await t.member('alice', [template, t.ids.template]);
+    const id = await start(alice.cookie, { templateId: t.ids.template });
+    const plan = t.driver.lastConfig();
+    expect(plan.systemPrompt).toContain('No LLM');
+    expect(plan.systemPrompt).not.toContain('LLM_URL');
+    expect(plan.systemPrompt).toContain('`$GATEWAY_URL/proxy/github`');
+
+    await finishLast('succeeded', { 'script.mjs': SCRIPT });
+    const exec = t.driver.lastConfig();
+    expect(exec).toMatchObject({ harness: 'script', llm: null, gatewayTools: ['gateway_github'] });
+    expect(await sessionTools(exec.sessionKey)).toEqual(['github']);
+    const wf = await t.portal(alice.cookie, 'get', `/workflows/${id}`).expect(200);
+    expect(wf.body).toMatchObject({
+      executorModel: null,
+      steps: [{}, { templateName: 'triage agents', provider: null, model: null }],
+    });
+  });
+
+  it("refuses a planner none of the member's templates gives, and a template they don't have", async () => {
     const alice = await t.member('alice', [template, t.ids.noLlmTemplate]);
-    await t
+    const noGemini = await t
       .portal(alice.cookie, 'post', '/workflows')
-      .send(workflowBody({ plannerTemplateId: t.ids.template }))
-      .expect(403);
+      .send(workflowBody({ plannerProvider: 'gemini' }))
+      .expect(400);
+    expect(noGemini.body.message).toContain('gemini');
     const noModel = await t
       .portal(alice.cookie, 'post', '/workflows')
-      .send(workflowBody({ plannerTemplateId: t.ids.noLlmTemplate }))
+      .send(workflowBody({ model: 'claude-sonnet-5' }))
       .expect(400);
-    expect(noModel.body.message).toContain('anthropic');
+    expect(noModel.body.message).toContain('claude-sonnet-5');
+    await t
+      .portal(alice.cookie, 'post', '/workflows')
+      .send(workflowBody({ templateId: t.ids.template }))
+      .expect(403);
+    const bob = await t.member('bob', [t.ids.noLlmTemplate]);
+    const noPlanner = await t
+      .portal(bob.cookie, 'post', '/workflows')
+      .send(workflowBody({ templateId: t.ids.noLlmTemplate }))
+      .expect(400);
+    expect(noPlanner.body.message).toContain('None of your templates');
     expect(t.driver.specs).toHaveLength(0);
   });
 
@@ -243,7 +323,7 @@ describe('a workflow, end to end', () => {
     const alice = await t.member('alice', [template, t.ids.template]);
     const noEndpoint = await t
       .portal(alice.cookie, 'post', '/workflows')
-      .send(workflowBody({ templateId: t.ids.template }))
+      .send(workflowBody({ templateId: t.ids.template, executorModel: 'qwen3' }))
       .expect(400);
     expect(noEndpoint.body.message).toContain('custom LLM endpoint');
     await t
@@ -256,7 +336,7 @@ describe('a workflow, end to end', () => {
       .expect(400);
     const id = await start(alice.cookie, { executorModel: 'llama-4' });
     await finishLast('succeeded', { 'script.mjs': SCRIPT });
-    expect(t.driver.lastConfig().llm.model).toBe('llama-4');
+    expect(t.driver.lastConfig().llm?.model).toBe('llama-4');
     expect(id).toBeTruthy();
   });
 

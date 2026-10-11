@@ -21,7 +21,8 @@ export const HARNESSES = ['claude-code', 'codex', 'gemini', 'pi'] as const;
 export type Harness = (typeof HARNESSES)[number];
 /**
  * The execution container: no agent CLI, the runner runs a script written beforehand (by a
- * workflow's planning step). The script reaches a custom LLM endpoint and the template's tools.
+ * workflow's planning step). The script reaches the template's tools and, when the template gives
+ * one, its custom LLM endpoint.
  */
 export const SCRIPT_HARNESS = 'script';
 /** Everything a run can start: the agent CLIs and the execution container. */
@@ -66,8 +67,9 @@ export interface RunnerConfig {
   /**
    * Model API (through the gateway) and model the harness uses; null model = its default.
    * `api`: the chat API of a custom endpoint (always set, with a model, for `custom`).
+   * Null for a script whose template gives no custom LLM endpoint: agents always have one.
    */
-  llm: { provider: LlmProvider; model: string | null; api?: LlmEndpointApi };
+  llm: { provider: LlmProvider; model: string | null; api?: LlmEndpointApi } | null;
   /** MCP tool names of the gateway tools, for harnesses that allowlist tools. */
   gatewayTools: string[];
   /**

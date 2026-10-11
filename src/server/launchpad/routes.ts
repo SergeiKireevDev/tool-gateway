@@ -309,6 +309,10 @@ export function memberLaunchRoutes(
     }),
   );
   router.get(
+    '/planners',
+    h(async (_req, res) => ({ planners: await launchpad.plannerChoices(memberOf(res)) })),
+  );
+  router.get(
     '/templates/:templateId/models',
     h(async (req, res) => ({
       models: await launchpad.endpointModels(memberOf(res), param(req, 'templateId')),

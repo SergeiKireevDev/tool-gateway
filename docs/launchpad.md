@@ -107,24 +107,29 @@ agent writes a script, and the script does the work on a local model. Mail, issu
 third-party data then only ever reach the template's custom LLM endpoint, and what the script may
 do with the model's answers is fixed in code before it reads any of them.
 
-In the launch form, a template that grants a custom LLM endpoint shows up a second time, under
-**Workflows: plan, then execute** (or `POST /api/me/launchpad/workflows` with the launch fields
-plus `executorModel`, the endpoint's model). Both steps are checked like launches when the workflow
-is created.
+In the launch form, the workflow is listed once with the templates, under **Workflows: Plan, then
+execute** (or `POST /api/me/launchpad/workflows`). The member then picks each step. Both steps are
+checked like launches when the workflow is created.
 
-1. **Plan.** The planning agent can be **any** agent the member can launch, from any of their
-   templates (`plannerTemplateId`, default the workflow's own template, with `harness`, `model`
-   and, if the member has several model provider accounts, `plannerAccountIds`). The workflow's
-   template needs no frontier model API. No tool permission is involved at this level: the
-   planner's key covers that template's model API only, **none** of its tools. Its system prompt
-   describes the execution container (the workflow template's tools, permissions and scopes, the
-   endpoint's chat API and model, how to call them) and asks for `/home/agent/out/script.mjs`.
-2. **Execute.** When the plan succeeds, the gateway launches the script (at most 50,000
-   characters) in a fresh VM with the `script` harness: no agent CLI, the runner runs
-   `node script.mjs` as `agent`. Its key covers the template's tools and its custom LLM endpoint,
-   but not the official model APIs. It gets `GATEWAY_URL`, `GATEWAY_SESSION_KEY`, `LLM_URL`
-   (`/proxy/custom`), `LLM_API` and `LLM_MODEL`. Each line it prints is logged, and everything it
-   printed is its final message.
+1. **Plan.** The planning agent and its model, from **any** model provider the member can use
+   (`harness`, `plannerProvider`, `model` and, if the member has several accounts for that
+   provider, `plannerAccountIds`). No permission template is picked: the planner gets no tool.
+   The form lists every agent and model API the member's templates give
+   (`GET /api/me/launchpad/planners`, with the models custom endpoints list), and the gateway
+   issues the planner's key on the first of their templates that gives that model API and model
+   (recorded as `plannerTemplateId`). That key covers the model API only, **none** of the
+   template's tools. The planner's system prompt describes the execution container (the
+   script template's tools, permissions and scopes, and its LLM endpoint if any) and asks for
+   `/home/agent/out/script.mjs`.
+2. **Execute.** The member picks **any** template for the script (`templateId`, `accountIds`).
+   When the plan succeeds, the gateway launches the script (at most 50,000 characters) in a fresh
+   VM with the `script` harness: no agent CLI, the runner runs `node script.mjs` as `agent`. Its
+   key covers the template's tools and its custom LLM endpoint, but not the official model APIs.
+   It gets `GATEWAY_URL` and `GATEWAY_SESSION_KEY`, and when the template grants a custom LLM
+   endpoint, `LLM_URL` (`/proxy/custom`), `LLM_API` and `LLM_MODEL` (`executorModel`, the
+   endpoint's model). Without one, the script has no LLM (`executorModel` is null): the planner is
+   told to decide everything in code. Each line it prints is logged, and everything it printed is
+   its final message.
 
 A workflow's status follows its steps: it fails when the plan fails or writes no script, and
 succeeds when the script exits with code 0. Stopping a workflow
@@ -267,7 +272,7 @@ against a fake host (`test/vmd.test.ts`).
 | Codex       | `model_providers.gateway` → `/proxy/openai/v1` (Responses) | MCP (`-c mcp_servers.gateway…`)   | `codex exec --json --dangerously-bypass-approvals-and-sandbox`                |
 | Gemini CLI  | `GOOGLE_GEMINI_BASE_URL` → `/proxy/gemini`                 | MCP (`~/.gemini/settings.json`)   | `gemini --output-format stream-json --approval-mode yolo`                     |
 | pi          | `models.json` provider `baseUrl` → `/proxy/<provider>`     | pi extension (`pi-extension.mjs`) | `pi --mode json --no-session`                                                 |
-| Script      | `LLM_URL` → `/proxy/custom` (workflows' execution step)    | HTTP: `$GATEWAY_URL/proxy/<tool>` | `node script.mjs`                                                             |
+| Script      | `LLM_URL` → `/proxy/custom`, if the template grants it     | HTTP: `$GATEWAY_URL/proxy/<tool>` | `node script.mjs`                                                             |
 
 ### Custom LLM endpoints
 
