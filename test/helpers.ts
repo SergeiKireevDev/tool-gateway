@@ -13,6 +13,7 @@ import { createLinearProvider } from '../src/server/tools/linear.js';
 import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
 import { createCustomLlmProvider } from '../src/server/tools/llm/custom.js';
 import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
+import { createGeminiMediaProvider } from '../src/server/tools/geminiMedia.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
@@ -174,6 +175,18 @@ function fakeLlmAnswer(url: string, body: Record<string, unknown>): Response {
 }
 
 /** Fake Anthropic / OpenAI / Gemini: rejects key `bad-key`, answers with fixed token usage. */
+const GEMINI_FILES = 'https://generativelanguage.googleapis.com/v1beta/files/';
+export const GEMINI_VIDEO_BYTES = 'fake-mp4-bytes';
+
+/** Gemini file downloads redirect to storage; `elsewhere` redirects off Google's hosts. */
+function fakeGeminiDownload(url: string): Response {
+  if (url.startsWith(`${GEMINI_FILES}stored`)) return new Response(GEMINI_VIDEO_BYTES);
+  const location = url.includes('elsewhere')
+    ? 'https://attacker.example/steal'
+    : `${GEMINI_FILES}stored?alt=media`;
+  return new Response(null, { status: 302, headers: { location } });
+}
+
 export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
   const openAiAuth = { polls: 0 };
   return (input, init = {}) => {
@@ -202,6 +215,7 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
     if (url.startsWith(`${CUSTOM_LLM_URL}v1/models`)) {
       return Promise.resolve(Response.json({ data: CUSTOM_LLM_MODELS.map((id) => ({ id })) }));
     }
+    if (url.startsWith(GEMINI_FILES)) return Promise.resolve(fakeGeminiDownload(url));
     if ((init.method ?? 'GET') === 'GET') return Promise.resolve(Response.json({ data: [] }));
     // A key revoked after it was connected: providers echo part of it in their error.
     if (key?.endsWith('revoked-key')) {
@@ -487,6 +501,7 @@ export async function createHarness(): Promise<Harness> {
       createSlackProvider(fetch),
       createLinearProvider(fetch),
       createGmailProvider(fetch, GMAIL_CLIENT),
+      createGeminiMediaProvider(fetch),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),

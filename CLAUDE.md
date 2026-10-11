@@ -22,6 +22,7 @@
   object fields an entry in `TRAVERSALS`, each with a test in `test/monday.test.ts`. Slack Web API
   methods need a rule (permission + channel scope) in `src/server/tools/slack.ts` and a test in
   `test/slack.test.ts`. Gmail endpoints need a rule in `src/server/tools/gmail.ts` (anything that
-  sends mail must check its recipients) and a test in `test/gmail.test.ts`.
+  sends mail must check its recipients) and a test in `test/gmail.test.ts`. Gemini image/video
+  endpoints need a rule in `src/server/tools/geminiMedia.ts` and a test in `test/geminiMedia.test.ts`.
 - Tools are interchangeable providers (`src/server/tools/types.ts`); keep tool specifics out of the
   gateway, proxy and UI (the UI reads names, hints and examples from `/api/admin/tools`).
