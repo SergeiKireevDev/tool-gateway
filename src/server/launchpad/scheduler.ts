@@ -45,6 +45,8 @@ export interface Schedule extends Recurrence {
   model: string | null;
   templateId: string;
   accountIds: string[];
+  /** The guest environment its runs boot (null: the default guest image). */
+  environmentId: string | null;
   keyGeneration: number;
   enabled: boolean;
   stoppedReason: string | null;
@@ -65,6 +67,7 @@ interface ScheduleRow {
   model: string | null;
   template_id: string;
   account_ids: string;
+  environment_id: string | null;
   preset: Preset;
   minute: number;
   hour: number;
@@ -92,6 +95,7 @@ function toSchedule(r: ScheduleRow): Schedule {
     model: r.model,
     templateId: r.template_id,
     accountIds: JSON.parse(r.account_ids) as string[],
+    environmentId: r.environment_id,
     preset: r.preset,
     minute: r.minute,
     hour: r.hour,
@@ -145,8 +149,9 @@ export class Scheduler {
     this.db.sql
       .prepare(
         `INSERT INTO schedules (id, member_id, member_name, name, prompt, harness, model, template_id, account_ids,
-           preset, minute, hour, weekday, day_of_month, timezone, key_generation, enabled, next_run_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           environment_id, preset, minute, hour, weekday, day_of_month, timezone, key_generation, enabled,
+           next_run_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
       )
       .run(
         id,
@@ -158,6 +163,7 @@ export class Scheduler {
         plan.model,
         plan.template.id,
         JSON.stringify(plan.accountIds),
+        plan.environment?.id ?? null,
         recurrence.preset,
         recurrence.minute,
         recurrence.hour,
@@ -263,6 +269,7 @@ export class Scheduler {
       accountIds: s.accountIds,
       harness: s.harness,
       ...(s.model ? { model: s.model } : {}),
+      ...(s.environmentId ? { environmentId: s.environmentId } : {}),
     };
   }
 

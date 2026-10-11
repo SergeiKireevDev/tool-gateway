@@ -45,6 +45,9 @@ export interface Run {
   templateId: string;
   templateName: string;
   accountIds: string[];
+  /** The guest environment the VM boots (null: the default guest image). */
+  environmentId: string | null;
+  environmentName: string | null;
   sessionId: string | null;
   vmId: string | null;
   status: RunStatus;
@@ -79,6 +82,8 @@ export type NewRun = Pick<
   | 'templateId'
   | 'templateName'
   | 'accountIds'
+  | 'environmentId'
+  | 'environmentName'
   | 'timeoutSeconds'
   | 'tokenBudget'
   | 'keyGeneration'
@@ -229,6 +234,8 @@ interface RunRow {
   template_id: string;
   template_name: string;
   account_ids: string;
+  environment_id: string | null;
+  environment_name: string | null;
   session_id: string | null;
   vm_id: string | null;
   status: RunStatus;
@@ -277,6 +284,8 @@ function toRun(r: RunRow): Run {
     templateId: r.template_id,
     templateName: r.template_name,
     accountIds: JSON.parse(r.account_ids) as string[],
+    environmentId: r.environment_id,
+    environmentName: r.environment_name,
     sessionId: r.session_id,
     vmId: r.vm_id,
     status: r.status,
@@ -328,15 +337,16 @@ export function clip(text: string, max: number): string {
 
 /** Runs, transcripts, output files and launch settings, in the gateway database. */
 export class RunStore {
-  constructor(private readonly db: Database) {}
+  constructor(readonly db: Database) {}
 
   insert(run: NewRun): Run {
     this.db.sql
       .prepare(
         `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, workflow_id,
            workflow_step, harness, model, prompt, instructions, template_id, template_name, account_ids,
-           run_token_hash, status, timeout_seconds, token_budget, key_generation, memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+           environment_id, environment_name, run_token_hash, status, timeout_seconds, token_budget,
+           key_generation, memory_in, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -353,6 +363,8 @@ export class RunStore {
         run.templateId,
         run.templateName,
         JSON.stringify(run.accountIds),
+        run.environmentId,
+        run.environmentName,
         run.timeoutSeconds,
         run.tokenBudget,
         run.keyGeneration,

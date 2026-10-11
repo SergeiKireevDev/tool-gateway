@@ -5,6 +5,7 @@ import { CONFIG_DRIVE_BYTES } from '../server/launchpad/protocol.js';
 import type { VmInfo, VmSpec } from '../server/launchpad/vmDriver.js';
 import type { VmdConfig } from './config.js';
 import type { HostOps, HostProcess } from './host.js';
+import { ImageBuilder } from './images.js';
 
 const API_SOCKET = 'api.sock';
 const SOCKET_WAIT_MS = 5000;
@@ -57,12 +58,16 @@ function netmask(prefix: number): string {
  */
 export class VmManager {
   private readonly vms = new Map<string, ManagedVm>();
+  /** Guest environments VMs can boot instead of the default rootfs. */
+  readonly images: ImageBuilder;
 
   constructor(
     private readonly config: VmdConfig,
     private readonly host: HostOps,
     private readonly now: () => number = () => Date.now(),
-  ) {}
+  ) {
+    this.images = new ImageBuilder(config, host);
+  }
 
   /** Checks the host setup and removes what a previous vmd left behind. */
   async init(): Promise<void> {
@@ -86,6 +91,7 @@ export class VmManager {
     await this.host.remove(path.join(this.config.jailBase, 'firecracker'));
     await this.host.mkdir(this.config.jailBase);
     await this.host.mkdir(this.config.logDir);
+    await this.host.mkdir(this.config.imagesDir);
   }
 
   list(): VmInfo[] {
@@ -151,6 +157,7 @@ export class VmManager {
 
   private async boot(vm: ManagedVm, spec: VmSpec): Promise<void> {
     const { config, host } = this;
+    const rootfs = spec.imageId ? await this.images.readyRootfs(spec.imageId) : config.rootfs;
     const address = this.guestAddress(vm.index);
     await host.run('ip', [
       'tuntap',
@@ -210,7 +217,7 @@ export class VmManager {
       configDrive: path.join(jailRoot, 'config.img'),
     };
     await host.copySparse(config.kernel, files.kernel);
-    await host.copySparse(config.rootfs, files.rootfs);
+    await host.copySparse(rootfs, files.rootfs);
     await host.writePadded(files.configDrive, json, CONFIG_DRIVE_BYTES);
     for (const file of Object.values(files)) await host.chown(file, config.jailUid, config.jailGid);
 

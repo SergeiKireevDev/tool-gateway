@@ -6,6 +6,7 @@ import { bearerToken } from '../http/auth.js';
 import { created, h, param } from '../http/handlers.js';
 import type { Member } from '../store/types.js';
 import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
+import type { GuestEnvironment } from './environments.js';
 import type { Actor, Launchpad } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
 import type { Triggers } from './triggers.js';
@@ -30,6 +31,8 @@ const TRIGGERS_PATH = '/triggers';
 const TRIGGER_PATH = '/triggers/:tid';
 const WORKFLOWS_PATH = '/workflows';
 const WORKFLOW_PATH = '/workflows/:wid';
+const ENVIRONMENTS_PATH = '/environments';
+const ENVIRONMENT_PATH = '/environments/:eid';
 
 const timeoutSeconds = z
   .number()
@@ -296,6 +299,7 @@ export function memberLaunchRoutes(
         enabled: launchpad.runs.memberLaunch(member.id).launchEnabled,
         driver: launchpad.driverName,
         defaultTimeoutSeconds: settings.defaultTimeoutSeconds,
+        environments: launchpad.environments.choices(),
         templates: view.templates.map((t) => ({
           id: t.id,
           name: t.name,
@@ -457,7 +461,50 @@ export function adminLaunchRoutes(
     '/usage',
     h(() => gateway.llmUsage.byModel(null)),
   );
+  environmentRoutes(router, launchpad, gateway);
   return router;
+}
+
+/** Admin: the guest environments members can launch agents in (built from Dockerfiles). */
+function environmentRoutes(router: Router, launchpad: Launchpad, gateway: Gateway): void {
+  const { environments } = launchpad;
+  const logged = (env: GuestEnvironment, what: string): GuestEnvironment => {
+    gateway.activity.add({ kind: 'admin', detail: `${what} guest environment "${env.name}"` });
+    return env;
+  };
+  router.get(
+    ENVIRONMENTS_PATH,
+    h(async () => {
+      await environments.refresh();
+      return environments.list();
+    }),
+  );
+  router.post(
+    ENVIRONMENTS_PATH,
+    created(async (req) => logged(await environments.create(req.body), 'Added')),
+  );
+  router.put(
+    ENVIRONMENT_PATH,
+    h(async (req) => logged(await environments.update(param(req, 'eid'), req.body), 'Updated')),
+  );
+  router.patch(
+    ENVIRONMENT_PATH,
+    h((req) => {
+      const { enabled } = enabledSchema.parse(req.body);
+      const env = environments.setEnabled(param(req, 'eid'), enabled);
+      return logged(env, enabled ? 'Enabled' : 'Disabled');
+    }),
+  );
+  router.post(
+    `${ENVIRONMENT_PATH}/rebuild`,
+    h(async (req) => logged(await environments.rebuild(param(req, 'eid')), 'Rebuilt')),
+  );
+  router.delete(
+    ENVIRONMENT_PATH,
+    h(async (req) => {
+      logged(await environments.delete(param(req, 'eid')), 'Deleted');
+    }),
+  );
 }
 
 const OUTPUT_BODY_LIMIT = RUNNER_LIMITS.outputFileBytes;

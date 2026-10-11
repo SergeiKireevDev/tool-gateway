@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomId } from '../store/crypto.js';
 import { PRIVATE_FILE_MODE } from '../units.js';
-import type { VmDriver, VmInfo, VmSpec } from './vmDriver.js';
+import type { ImageInfo, VmDriver, VmInfo, VmSpec } from './vmDriver.js';
+
+const NO_IMAGE_BUILT =
+  'The local-unsafe driver builds no image: its runs use the gateway host, whatever the environment.';
 
 interface LocalVm {
   runId: string;
@@ -78,5 +81,18 @@ export class LocalProcessDriver implements VmDriver {
     return Promise.resolve(
       [...this.vms.entries()].map(([vmId, vm]) => ({ vmId, runId: vm.runId, running: vm.running })),
     );
+  }
+
+  /** Guest environments are accepted as is, so their admin UI can be developed. */
+  buildImage(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  image(imageId: string): Promise<ImageInfo | null> {
+    return Promise.resolve({ imageId, status: 'ready', log: NO_IMAGE_BUILT });
+  }
+
+  deleteImage(): Promise<void> {
+    return Promise.resolve();
   }
 }

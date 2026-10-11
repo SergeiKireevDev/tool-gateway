@@ -258,6 +258,7 @@ export function RunDetail({
               <span className="text-sm text-slate-500">
                 {HARNESS_LABELS[run.harness]}
                 {run.model && ` · ${run.model}`} · {run.templateName}
+                {run.environmentName && ` · in ${run.environmentName}`}
                 {showMember && ` · ${run.memberName}`}
                 {runOrigin(run)}
               </span>

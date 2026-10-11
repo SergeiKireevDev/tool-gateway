@@ -9,6 +9,19 @@ export interface VmSpec {
   memMib: number;
   /** The driver kills the VM at this time whatever the guest does (ISO). */
   killAt: string;
+  /** The guest environment to boot (a built image); the default guest image if absent. */
+  imageId?: string;
+}
+
+export const IMAGE_STATUSES = ['building', 'ready', 'failed'] as const;
+export type ImageStatus = (typeof IMAGE_STATUSES)[number];
+
+/** A guest environment's image, as the VM layer builds it from the admin's Dockerfile. */
+export interface ImageInfo {
+  imageId: string;
+  status: ImageStatus;
+  /** The end of the build's output. */
+  log: string;
 }
 
 export interface VmInfo {
@@ -28,4 +41,10 @@ export interface VmDriver {
   /** Idempotent: destroying an unknown or already gone VM succeeds. */
   destroy(vmId: string): Promise<void>;
   list(): Promise<VmInfo[]>;
+  /** Starts building (or rebuilding) a guest environment's image from a Dockerfile. */
+  buildImage(imageId: string, dockerfile: string): Promise<void>;
+  /** An image's build status, or null when the driver has no such image. */
+  image(imageId: string): Promise<ImageInfo | null>;
+  /** Idempotent: stops its build and deletes the image. */
+  deleteImage(imageId: string): Promise<void>;
 }

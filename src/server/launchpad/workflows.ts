@@ -26,9 +26,10 @@ import { OUT_DIR } from './systemPrompt.js';
  * A workflow launch: the task, the planning agent (`harness`, `plannerProvider`, `model`) and
  * the template the script runs with (`templateId`, `accountIds`, `executorModel`). The planner
  * gets no tool, so no permission template is picked for it: any model API the member's templates
- * give the agent will do. The script's template can be any template.
+ * give the agent will do. The script's template can be any template. Both steps boot the default
+ * guest image.
  */
-export const workflowSchema = launchSchema.extend({
+export const workflowSchema = launchSchema.omit({ environmentId: true }).extend({
   /** The model of the template's custom LLM endpoint the script uses, if it gives one. */
   executorModel: launchSchema.shape.model,
   /** The model API the planning agent uses; any its agent can use if unset. */

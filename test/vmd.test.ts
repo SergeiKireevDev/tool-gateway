@@ -40,13 +40,16 @@ class FakeHost implements HostOps {
     return proc;
   }
   exists(file: string): Promise<boolean> {
-    return Promise.resolve(this.files.has(file) || !file.endsWith('api.sock'));
+    // Host files exist (rootfs, kernel…), those vmd creates once written.
+    const created = file.endsWith('api.sock') || file.includes('/images/');
+    return Promise.resolve(this.files.has(file) || !created);
   }
   mkdir(): Promise<void> {
     return Promise.resolve();
   }
   remove(target: string): Promise<void> {
     this.commands.push(`rm ${target}`);
+    this.files.delete(target);
     return Promise.resolve();
   }
   copySparse(from: string, to: string): Promise<void> {
@@ -61,6 +64,13 @@ class FakeHost implements HostOps {
   }
   chown(): Promise<void> {
     return Promise.resolve();
+  }
+  writeFile(file: string, content: string): Promise<void> {
+    this.files.set(file, content);
+    return Promise.resolve();
+  }
+  readTail(file: string, maxBytes: number): Promise<string> {
+    return Promise.resolve(String(this.files.get(file) ?? '').slice(-maxBytes));
   }
   firecracker(_socket: string, _method: string, apiPath: string, body: unknown): Promise<void> {
     this.api.push({ path: apiPath, body });
@@ -79,8 +89,8 @@ class FakeProc implements HostProcess {
     this.killed.push(signal);
     this.exit();
   }
-  exit(): void {
-    for (const l of this.listeners) l(0);
+  exit(code = 0): void {
+    for (const l of this.listeners) l(code);
     this.listeners = [];
   }
 }
@@ -183,6 +193,59 @@ describe('vmd VM manager', () => {
   });
 });
 
+describe('vmd guest environment images', () => {
+  it('builds an image from a Dockerfile with the build script, then boots VMs from it', async () => {
+    const info = await vms.images.build('env-1', 'FROM launchpad-guest:latest\n');
+    expect(info).toEqual({ imageId: 'env-1', status: 'building', log: '' });
+    const dockerfile = path.join(config.imagesDir, 'env-1.Dockerfile');
+    const rootfs = path.join(config.imagesDir, 'env-1.ext4');
+    expect(host.files.get(dockerfile)).toBe('FROM launchpad-guest:latest\n');
+    expect(host.commands).toContain(
+      `start ${config.imageBuildScript} ${dockerfile} ${rootfs} ${config.imageSize}`,
+    );
+    // Not bootable while it builds, nor rebuildable.
+    await expect(vms.create({ ...spec(), imageId: 'env-1' })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(vms.images.build('env-1', 'FROM x')).rejects.toMatchObject({ status: 409 });
+
+    host.files.set(path.join(config.imagesDir, 'env-1.log'), 'Step 1/3\nDone');
+    host.procs.at(-1)?.exit(0);
+    expect(await vms.images.info('env-1')).toEqual({
+      imageId: 'env-1',
+      status: 'ready',
+      log: 'Step 1/3\nDone',
+    });
+    const { vmId } = await vms.create({ ...spec(), imageId: 'env-1' });
+    const root = path.join(config.jailBase, 'firecracker', vmId, 'root');
+    expect(host.files.get(path.join(root, 'rootfs.ext4'))).toBe(`copy of ${rootfs}`);
+  });
+
+  it('reports failed builds, deletes images and refuses odd ids', async () => {
+    await vms.images.build('env-2', 'FROM x');
+    host.procs.at(-1)?.exit(1);
+    expect(await vms.images.info('env-2')).toMatchObject({ status: 'failed' });
+    await expect(vms.create({ ...spec(), imageId: 'env-2' })).rejects.toMatchObject({
+      status: 400,
+    });
+
+    await vms.images.build('env-3', 'FROM x');
+    const build = host.procs.at(-1);
+    await vms.images.delete('env-3');
+    expect(build?.killed).toEqual(['SIGKILL']);
+    expect(host.commands).toContain(`rm ${path.join(config.imagesDir, 'env-3.ext4')}`);
+    expect(await vms.images.info('env-3')).toBeNull();
+    expect(await vms.images.info('never-built')).toBeNull();
+    await expect(vms.images.build('../etc', 'FROM x')).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('knows images built before vmd restarted by their rootfs', async () => {
+    host.files.set(path.join(config.imagesDir, 'old.ext4'), 'rootfs');
+    const restarted = new VmManager(config, host);
+    expect(await restarted.images.info('old')).toMatchObject({ status: 'ready' });
+  });
+});
+
 describe('vmd API with the gateway driver', () => {
   let socket: string;
   let server: ReturnType<typeof createVmdServer>;
@@ -203,6 +266,18 @@ describe('vmd API with the gateway driver', () => {
     await driver.destroy(vmId);
     await driver.destroy(vmId); // idempotent
     expect(await driver.list()).toEqual([]);
+  });
+
+  it('builds, reports and deletes guest environment images', async () => {
+    const driver = new VmdDriver(socket);
+    await driver.buildImage('env-1', 'FROM launchpad-guest:latest');
+    expect(await driver.image('env-1')).toMatchObject({ imageId: 'env-1', status: 'building' });
+    host.procs.at(-1)?.exit(0);
+    expect(await driver.image('env-1')).toMatchObject({ status: 'ready' });
+    await driver.deleteImage('env-1');
+    await driver.deleteImage('env-1'); // idempotent
+    expect(await driver.image('env-1')).toBeNull();
+    await expect(driver.buildImage('env-2', '')).rejects.toThrow('HTTP 400');
   });
 
   it('validates specs', async () => {
