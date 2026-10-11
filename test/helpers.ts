@@ -17,6 +17,7 @@ import { createGeminiMediaProvider } from '../src/server/tools/geminiMedia.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
 import { ToolRegistry } from '../src/server/tools/registry.js';
+import { createSeedanceProvider } from '../src/server/tools/seedance.js';
 import { createGmailProvider } from '../src/server/tools/gmail.js';
 import { createSlackProvider } from '../src/server/tools/slack.js';
 
@@ -395,6 +396,34 @@ const LLM_HOSTS = [
   CUSTOM_LLM_URL,
 ];
 
+const SEEDANCE_TASKS = 'https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks';
+const SEEDANCE_STORAGE = 'https://ark-content-generation.tos-ap-southeast-1.bytepluses.com/';
+export const SEEDANCE_VIDEO_BYTES = 'fake-seedance-mp4';
+
+/** Fake ModelArk: task `done` has a video on storage, `elsewhere` one off BytePlus, others run. */
+function fakeSeedanceFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (url.startsWith(SEEDANCE_STORAGE))
+      return Promise.resolve(new Response(SEEDANCE_VIDEO_BYTES));
+    const auth = new Headers(init.headers).get('authorization');
+    if (auth?.endsWith('bad-key')) return Promise.resolve(new Response('{}', { status: 401 }));
+    const id = url.startsWith(`${SEEDANCE_TASKS}/`) ? url.slice(SEEDANCE_TASKS.length + 1) : null;
+    if (id === null) return Promise.resolve(Response.json({ id: 'cgt-1', items: [], total: 0 }));
+    const video =
+      id === 'done' ? `${SEEDANCE_STORAGE}v.mp4?sig=1` : 'https://attacker.example/v.mp4';
+    const running = id !== 'done' && id !== 'elsewhere';
+    return Promise.resolve(
+      Response.json(
+        running
+          ? { id, status: 'running' }
+          : { id, status: 'succeeded', content: { video_url: video } },
+      ),
+    );
+  };
+}
+
 const GOOGLE_HOSTS = ['https://gmail.googleapis.com/', 'https://oauth2.googleapis.com/'];
 
 /** Routes upstream calls to the fake API of the tool they are for. */
@@ -405,10 +434,12 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const llm = fakeLlmFetch(calls);
   const linear = fakeLinearFetch(calls);
   const gmail = fakeGmailFetch(calls);
+  const seedance = fakeSeedanceFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     if (GOOGLE_HOSTS.some((host) => url.startsWith(host))) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
+    if (/^https:\/\/[^/]*bytepluses\.com\//.test(url)) return seedance(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
     return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);
@@ -502,6 +533,7 @@ export async function createHarness(): Promise<Harness> {
       createLinearProvider(fetch),
       createGmailProvider(fetch, GMAIL_CLIENT),
       createGeminiMediaProvider(fetch),
+      createSeedanceProvider(fetch),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),

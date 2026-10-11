@@ -22,6 +22,7 @@ import { createGeminiMediaProvider } from './tools/geminiMedia.js';
 import { createCustomLlmProvider } from './tools/llm/custom.js';
 import { createOpenAIProvider } from './tools/llm/openai.js';
 import { createMondayProvider } from './tools/monday.js';
+import { createSeedanceProvider } from './tools/seedance.js';
 import { ToolRegistry } from './tools/registry.js';
 import { createSlackProvider } from './tools/slack.js';
 
@@ -46,6 +47,7 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
     createLinearProvider(),
     createGmailProvider(fetch, config.gmail),
     createGeminiMediaProvider(),
+    createSeedanceProvider(),
     createAnthropicProvider(),
     createOpenAIProvider(),
     createGeminiProvider(),
