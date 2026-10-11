@@ -1,5 +1,10 @@
 import type { ToolExample } from '../tools/types.js';
-import type { Harness } from './protocol.js';
+import {
+  type Harness,
+  MAX_OUTPUT_FILE_MIB,
+  MAX_OUTPUT_TOTAL_MIB,
+  RUNNER_LIMITS,
+} from './protocol.js';
 
 export interface PromptGrant {
   tool: string;
@@ -115,7 +120,7 @@ ${gitSection(ctx.grants)}If a call is refused with HTTP 403 and an \`x-gateway-d
 
 ## Results
 - End with a short final message: what you did, what you found, and anything left undone. It is shown to the person who launched you.
-- Put files worth keeping (reports, data, patches) in \`${OUT_DIR}\`. They are collected when you finish.
+- Put files worth keeping (reports, data, patches) in \`${OUT_DIR}\`. They are collected when you finish: at most ${RUNNER_LIMITS.outputFiles} files, ${MAX_OUTPUT_FILE_MIB} MiB per file and ${MAX_OUTPUT_TOTAL_MIB} MiB in all; files beyond these limits are not kept, so mention them in your final message.
 ${
   ctx.hasMemory
     ? `- \`${MEMORY_FILE}\` holds notes from your previous runs of this scheduled task. Read it first. Update it with what the next run should know (keep it short); it is carried over.`

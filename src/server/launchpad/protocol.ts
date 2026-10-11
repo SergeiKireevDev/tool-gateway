@@ -7,9 +7,10 @@ import type { LlmEndpointApi } from '../tools/types.js';
  */
 
 const KIB = 1024;
-const MIB = KIB * KIB;
-const MAX_OUTPUT_FILE_MIB = 10;
-const MAX_OUTPUT_TOTAL_MIB = 50;
+export const MIB = KIB * KIB;
+/** Large enough for generated media (videos are often tens of MiB). */
+export const MAX_OUTPUT_FILE_MIB = 100;
+export const MAX_OUTPUT_TOTAL_MIB = 200;
 const MAX_MEMORY_KIB = 64;
 
 export const RUN_TOKEN_PREFIX = 'gwr_';

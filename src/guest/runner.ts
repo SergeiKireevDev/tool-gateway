@@ -13,6 +13,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   CONFIG_DRIVE_BYTES,
+  MIB,
   RUNNER_LIMITS,
   type RunnerConfig,
   type RunnerOutcome,
@@ -113,18 +114,34 @@ async function* walk(dir: string, base = dir): AsyncGenerator<string> {
   }
 }
 
-async function uploadOutputs(outDir: string, reporter: Reporter): Promise<string[]> {
+/** Why an output file can't be kept within the run's output limits, or null when it can. */
+function overLimit(count: number, size: number, total: number): string | null {
+  if (count >= RUNNER_LIMITS.outputFiles) {
+    return `more than ${RUNNER_LIMITS.outputFiles} files`;
+  }
+  if (size > RUNNER_LIMITS.outputFileBytes) {
+    return `${mib(size)}, over the ${mib(RUNNER_LIMITS.outputFileBytes)} per-file limit`;
+  }
+  if (total + size > RUNNER_LIMITS.outputTotalBytes) {
+    return `${mib(size)}, over the ${mib(RUNNER_LIMITS.outputTotalBytes)} total limit`;
+  }
+  return null;
+}
+
+const mib = (bytes: number): string => `${(bytes / MIB).toFixed(1)} MiB`;
+
+export async function uploadOutputs(
+  outDir: string,
+  reporter: Pick<Reporter, 'uploadOutput'>,
+): Promise<string[]> {
   const problems: string[] = [];
   let total = 0;
   let count = 0;
   for await (const rel of walk(outDir)) {
     const size = (await stat(path.join(outDir, rel))).size;
-    if (
-      count >= RUNNER_LIMITS.outputFiles ||
-      size > RUNNER_LIMITS.outputFileBytes ||
-      total + size > RUNNER_LIMITS.outputTotalBytes
-    ) {
-      problems.push(`skipped ${rel} (output limits)`);
+    const limit = overLimit(count, size, total);
+    if (limit) {
+      problems.push(`skipped ${rel} (${limit})`);
       continue;
     }
     try {
@@ -136,6 +153,19 @@ async function uploadOutputs(outDir: string, reporter: Reporter): Promise<string
     }
   }
   return problems;
+}
+
+/** The run's status reason: why it didn't succeed, and which output files weren't kept. */
+export function statusReason(
+  error: string | null,
+  outputProblems: readonly string[],
+): string | null {
+  const outputs =
+    outputProblems.length > 0
+      ? `Some files in /home/agent/out were not kept: ${outputProblems.join('; ')}`
+      : null;
+  const reason = [error, outputs].filter((s) => s !== null).join('. ');
+  return reason ? reason.slice(0, RUNNER_LIMITS.eventText) : null;
 }
 
 function readMemory(file: string): string | null {
@@ -298,7 +328,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       outcome,
       finalMessage: state.finalMessage,
       memory: readMemory(memoryFile),
-      error: outcome === 'succeeded' ? null : (state.error ?? exitNote),
+      error: statusReason(outcome === 'succeeded' ? null : (state.error ?? exitNote), problems),
     });
   } catch (err) {
     console.error('runner: could not report the result', err);
