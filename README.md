@@ -5,7 +5,7 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API), **Gemini image & video generation** (Gemini API) and **Seedance video generation** (BytePlus ModelArk API). Each tool is a provider
+Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API), **Gemini image & video generation** (Gemini API), **Seedance video generation** (BytePlus ModelArk API) and **fal.ai** (queue API). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
 members and the proxy work identically for all of them.
 
@@ -295,6 +295,27 @@ Seedance model). Only model names containing `seedance` are served (not endpoint
 since BytePlus would fetch them from the internet on the agent's behalf. The finished video is on
 BytePlus storage agents can't reach: `GET …/tasks/<id>/video` makes the gateway read the task and
 download its `video_url` (only from BytePlus hosts) for them.
+
+## fal.ai
+
+Agents can run fal.ai models (image, video, audio…) through fal's queue API, as a tool (`fal`).
+Connect a fal API key under **Accounts → Connect account → fal.ai** (fal.ai/dashboard/keys).
+Clients use `/proxy/fal` instead of `https://queue.fal.run` and send their session key as
+`Authorization: Key gws_…` (or `Bearer`). The resource allowlist is a list of endpoint id patterns
+(`fal-ai/flux/*`; empty = any endpoint).
+
+| Permission          | Endpoints                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------ |
+| `requests:submit`   | `POST /<endpoint id>` (e.g. `/fal-ai/flux/dev`)                                                        |
+| `requests:read`     | `GET /<owner>/<app>/requests/<id>[/status[/stream]]`, `GET /files?url=<file URL>` (gateway)            |
+| `requests:cancel`   | `PUT /<owner>/<app>/requests/<id>/cancel`                                                              |
+| `media:remote-urls` | Lets requests reference media by URL off fal's storage (otherwise only `data:` and `…fal.media` files) |
+
+Webhooks (`fal_webhook`) are always refused (poll the request instead), and any URL in the input
+that isn't on fal's storage needs `media:remote-urls`, since fal would fetch it from the internet on
+the agent's behalf. Results point at fal's CDN, which agents can't reach:
+`GET /proxy/fal/files?url=<file URL>` makes the gateway download it (only from `fal.media` hosts,
+without the API key) for them.
 
 ## Agent launchpad
 

@@ -18,6 +18,7 @@ import { createGmailProvider } from './tools/gmail.js';
 import { createLinearProvider } from './tools/linear.js';
 import { createAnthropicProvider } from './tools/llm/anthropic.js';
 import { createGeminiProvider } from './tools/llm/gemini.js';
+import { createFalProvider } from './tools/fal.js';
 import { createGeminiMediaProvider } from './tools/geminiMedia.js';
 import { createCustomLlmProvider } from './tools/llm/custom.js';
 import { createOpenAIProvider } from './tools/llm/openai.js';
@@ -48,6 +49,7 @@ export async function openGateway(config: GatewayConfig): Promise<Services> {
     createGmailProvider(fetch, config.gmail),
     createGeminiMediaProvider(),
     createSeedanceProvider(),
+    createFalProvider(),
     createAnthropicProvider(),
     createOpenAIProvider(),
     createGeminiProvider(),
