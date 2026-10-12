@@ -8,6 +8,7 @@ import { Badge } from '../ui';
 /** Data-viz roles (validated: see the dataviz palette). */
 export const VIZ = {
   allowed: '#2a78d6',
+  failed: '#e0a100',
   denied: '#d03b3b',
   track: '#e8eef8',
 } as const;
