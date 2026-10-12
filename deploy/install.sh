@@ -205,10 +205,16 @@ fi
 if [ "$LAUNCHPAD" = yes ]; then
   say "Setting up the agent VM host (Firecracker, guest kernel, bridge, firewall)"
   GATEWAY_PORT=$PORT "$INSTALL_DIR/deploy/vm-host-setup.sh"
-  if [ ! -s "$LAUNCHPAD_STATE_DIR/rootfs.ext4" ]; then
+  # The runner reaches VMs on vmd's runner drive; the image is rebuilt only when its own files
+  # (Dockerfile, init) change.
+  GUEST_STAMP=$(cd "$INSTALL_DIR" && cat deploy/guest-image/* | sha256sum | cut -d' ' -f1)
+  if [ ! -s "$LAUNCHPAD_STATE_DIR/rootfs.ext4" ] ||
+    [ "$(cat "$LAUNCHPAD_STATE_DIR/rootfs.stamp" 2>/dev/null)" != "$GUEST_STAMP" ]; then
     say "Building the agent VM image (Docker, several minutes)"
-    (cd "$INSTALL_DIR" && deploy/build-guest-image.sh "$LAUNCHPAD_STATE_DIR/rootfs.ext4" 6G >/dev/null)
-    chown root:root "$LAUNCHPAD_STATE_DIR/rootfs.ext4"
+    (cd "$INSTALL_DIR" && deploy/build-guest-image.sh "$LAUNCHPAD_STATE_DIR/rootfs.ext4.new" 6G >/dev/null)
+    chown root:root "$LAUNCHPAD_STATE_DIR/rootfs.ext4.new"
+    mv "$LAUNCHPAD_STATE_DIR/rootfs.ext4.new" "$LAUNCHPAD_STATE_DIR/rootfs.ext4"
+    echo "$GUEST_STAMP" >"$LAUNCHPAD_STATE_DIR/rootfs.stamp"
   fi
 fi
 

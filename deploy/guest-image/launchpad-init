@@ -10,4 +10,9 @@ mount -t tmpfs tmpfs /tmp
 mount -t tmpfs tmpfs /run
 hostname agent
 ip link set lo up
+# vmd hands over the current runner on /dev/vdc (a tar): the one baked into the image is as old as
+# the image.
+if [ -b /dev/vdc ]; then
+  tar -xf /dev/vdc -C /opt/launchpad || echo "launchpad-init: could not unpack the runner drive" >&2
+fi
 exec /usr/bin/tini -s -- /usr/local/bin/node /opt/launchpad/runner.js --poweroff

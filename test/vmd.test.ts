@@ -152,17 +152,29 @@ describe('vmd VM manager', () => {
       '/boot-source',
       '/drives/rootfs',
       '/drives/config',
+      '/drives/runner',
       '/network-interfaces/eth0',
       '/actions',
     ]);
+    expect(host.files.get(path.join(root, 'runner.img'))).toBe(`copy of ${config.runnerDrive}`);
+    expect(host.api[4]?.body).toMatchObject({ path_on_host: '/runner.img', is_read_only: true });
     expect(JSON.stringify(host.api[1]?.body)).toContain(
       'ip=172.30.0.2::172.30.0.1:255.255.255.0::eth0:off',
     );
-    expect(host.api[4]?.body).toMatchObject({
+    expect(host.api[5]?.body).toMatchObject({
       host_dev_name: 'lptap1',
       guest_mac: '06:00:ac:1e:00:02',
     });
     expect(vms.list()).toEqual([{ vmId, runId: 'run-1', running: true }]);
+  });
+
+  it('packs the installed runner bundle into the runner drive at start', async () => {
+    await vms.init();
+    expect(host.commands).toContain(
+      `tar -cf ${config.runnerDrive} --owner=0 --group=0 --mode=a+rX -C ${config.runnerDir} .`,
+    );
+    expect(config.runnerDrive).toBe('/var/lib/launchpad/runner.tar');
+    expect(config.runnerDir).toMatch(/\/guest\/dist$/);
   });
 
   it('limits concurrent VMs and reuses freed slots', async () => {

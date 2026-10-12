@@ -53,8 +53,8 @@ function netmask(prefix: number): string {
 
 /**
  * Boots and destroys Firecracker microVMs, each in its own jailer chroot as an unprivileged user,
- * with its own tap on the isolated VM bridge, a private copy of the rootfs, and a read-only
- * config drive carrying the run's configuration.
+ * with its own tap on the isolated VM bridge, a private copy of the rootfs, a read-only config
+ * drive carrying the run's configuration and a read-only runner drive carrying the runner.
  */
 export class VmManager {
   private readonly vms = new Map<string, ManagedVm>();
@@ -92,6 +92,28 @@ export class VmManager {
     await this.host.mkdir(this.config.jailBase);
     await this.host.mkdir(this.config.logDir);
     await this.host.mkdir(this.config.imagesDir);
+    await this.packRunner();
+  }
+
+  /**
+   * Packs the installed runner bundle into the runner drive. Images (the default one and guest
+   * environments) are built once and keep the runner of their build: VMs get the current one on
+   * this drive, which their init unpacks over it, so a gateway update reaches them all.
+   */
+  private async packRunner(): Promise<void> {
+    const { runnerDir, runnerDrive } = this.config;
+    if (!(await this.host.exists(path.join(runnerDir, 'runner.js'))))
+      throw new Error(`Missing the runner bundle in ${runnerDir}: run npm run build`);
+    await this.host.run('tar', [
+      '-cf',
+      runnerDrive,
+      '--owner=0',
+      '--group=0',
+      '--mode=a+rX',
+      '-C',
+      runnerDir,
+      '.',
+    ]);
   }
 
   list(): VmInfo[] {
@@ -215,9 +237,11 @@ export class VmManager {
       kernel: path.join(jailRoot, 'vmlinux'),
       rootfs: path.join(jailRoot, 'rootfs.ext4'),
       configDrive: path.join(jailRoot, 'config.img'),
+      runnerDrive: path.join(jailRoot, 'runner.img'),
     };
     await host.copySparse(config.kernel, files.kernel);
     await host.copySparse(rootfs, files.rootfs);
+    await host.copySparse(config.runnerDrive, files.runnerDrive);
     await host.writePadded(files.configDrive, json, CONFIG_DRIVE_BYTES);
     for (const file of Object.values(files)) await host.chown(file, config.jailUid, config.jailGid);
 
@@ -246,6 +270,13 @@ export class VmManager {
     await api('PUT', '/drives/config', {
       drive_id: 'config',
       path_on_host: '/config.img',
+      is_root_device: false,
+      is_read_only: true,
+    });
+    // Third drive = /dev/vdc: the current runner bundle, unpacked by /sbin/launchpad-init.
+    await api('PUT', '/drives/runner', {
+      drive_id: 'runner',
+      path_on_host: '/runner.img',
       is_root_device: false,
       is_read_only: true,
     });

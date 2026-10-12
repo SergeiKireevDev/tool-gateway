@@ -11,7 +11,7 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
                                              ▼
                                   vmd (root daemon, unix socket)
                                              │ jailed Firecracker VM, private rootfs copy,
-                                             │ read-only config drive, isolated tap
+                                             │ read-only config and runner drives, isolated tap
                                              ▼
                  microVM ──(gws_; only reachable host: the gateway's VM listener)──▶ gateway
                    runner (root) → harness as `agent`        /proxy/github|monday|slack|…  tools
@@ -71,6 +71,11 @@ with `name`, `description` and `dockerfile`). Members then pick one in the launc
   `agent` user), then the image is exported to `/var/lib/launchpad/images/<id>.ext4`. The
   environment is `building` until then, and `ready` or `failed` after, with the end of the build
   log in the admin UI. Rebuild it to pick up a newer base image; a changed Dockerfile is rebuilt.
+- **The runner.** Images keep the runner bundle of their build, but VMs don't run it: at start,
+  vmd packs the installed bundle (`guest/dist`) into `runner.tar`, attaches it to every VM as a
+  read-only drive (`/dev/vdc`), and `/sbin/launchpad-init` unpacks it over `/opt/launchpad`. A
+  gateway update thus reaches every environment without a rebuild. Environments built before
+  this drive existed have an init that ignores it: rebuild them once.
 - **What the Dockerfile needs.** The runner needs Node 22, `tini` and `iproute2`, and the agent
   its CLI: start it `FROM launchpad-guest:latest` (tagged by `deploy/build-guest-image.sh`) and
   add what the agents need. The VM's network lockdown doesn't depend on the image: whatever it
@@ -289,7 +294,8 @@ Then, as admin:
 | `LAUNCHPAD_VMD_SOCKET`                                    | `/run/launchpad/vmd.sock`      |                                                                    |
 | `LAUNCHPAD_RUNNER_SCRIPT`                                 | `guest/dist/runner.js`         | runner bundle used by `local-unsafe`                               |
 | `VMD_SOCKET_GID`                                          | unset (root only)              | group allowed to use vmd's socket                                  |
-| `VMD_STATE_DIR`                                           | `/var/lib/launchpad`           | `rootfs.ext4`, `vmlinux`, `logs/`, `images/`                       |
+| `VMD_STATE_DIR`                                           | `/var/lib/launchpad`           | `rootfs.ext4`, `vmlinux`, `runner.tar`, `logs/`, `images/`         |
+| `VMD_RUNNER_DIR`                                          | `guest/dist`                   | runner bundle vmd hands to every VM                                |
 | `VMD_BRIDGE` / `VMD_BRIDGE_ADDRESS` / `VMD_PREFIX_LENGTH` | `lpbr0` / `172.30.0.1` / `24`  |                                                                    |
 | `VMD_MAX_VMS`                                             | `32`                           | hard cap on VMs (the launchpad's own limits apply first)           |
 | `VMD_JAIL_UID` / `VMD_JAIL_GID`                           | `900`                          | unprivileged user Firecracker runs as                              |

@@ -30,6 +30,10 @@ export interface VmdConfig {
   imageBuildScript: string;
   /** Size of a guest environment's rootfs (as `mkfs.ext4` takes it, e.g. `6G`). */
   imageSize: string;
+  /** The runner bundle (`npm run build:guest`), handed to every VM so images never run a stale one. */
+  runnerDir: string;
+  /** The runner drive vmd packs from `runnerDir` at start (a tar the guest's init unpacks). */
+  runnerDrive: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -92,6 +96,8 @@ export function loadVmdConfig(env: Env = process.env): VmdConfig {
     prefixLength: int(env, 'VMD_PREFIX_LENGTH', DEFAULT_PREFIX),
     maxVms,
     logDir: path.join(stateDir, 'logs'),
+    runnerDir: read(env, 'VMD_RUNNER_DIR') ?? path.join(REPO_ROOT, 'guest', 'dist'),
+    runnerDrive: path.join(stateDir, 'runner.tar'),
     ...imageConfig(env, stateDir),
   };
 }
