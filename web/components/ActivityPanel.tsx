@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
 import type { ActivityEntry } from '@/lib/types';
+import { CallBadge } from './CallBadge';
 import { Badge, Card, EmptyState, ErrorBanner, SectionHeader, useNow } from './ui';
 
 const POLL_MS = 5000;
@@ -80,9 +81,7 @@ export function ActivityPanel({ api }: { api: Api }) {
                       <Badge tone={e.kind === 'admin' ? 'slate' : 'indigo'}>{e.kind}</Badge>
                     ) : (
                       <span className="flex items-center gap-2">
-                        <Badge tone={e.decision === 'denied' ? 'red' : 'green'}>
-                          {e.decision} {e.status}
-                        </Badge>
+                        <CallBadge call={e} />
                         <span className="text-xs text-slate-500">{e.detail}</span>
                       </span>
                     )}
