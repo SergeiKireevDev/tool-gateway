@@ -148,6 +148,12 @@ const MEMBER_TABS: TabDef[] = [
   { id: 'webhooks', label: 'Webhooks', render: (p) => <WebhooksPanel {...p} /> },
 ];
 
+/** The tab named in the URL hash (`#runs`), so a refresh stays on it; the first tab otherwise. */
+function tabFromHash(tabs: TabDef[]): string {
+  const id = decodeURIComponent(window.location.hash.slice(1));
+  return tabs.some((t) => t.id === id) ? id : (tabs[0]?.id ?? '');
+}
+
 async function loadAdminData(api: Api): Promise<GatewayData> {
   const [tools, accounts, templates, sessions, members] = await Promise.all([
     api<Tool[]>('GET', '/tools'),
@@ -308,7 +314,8 @@ function Workspace({
   identity: string;
   onSignOut: () => void;
 }) {
-  const [tabId, setTabId] = useState(tabs[0]?.id ?? '');
+  // Workspaces only render in the browser (see AdminApp), so the hash can be read right away.
+  const [tabId, setTabId] = useState(() => tabFromHash(tabs));
   const [data, setData] = useState<GatewayData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -330,6 +337,17 @@ function Workspace({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Back/forward between tabs.
+  useEffect(() => {
+    const onHashChange = () => {
+      setTabId(tabFromHash(tabs));
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, [tabs]);
 
   const tab = tabs.find((t) => t.id === tabId) ?? tabs[0];
 
@@ -365,6 +383,7 @@ function Workspace({
               key={t.id}
               type="button"
               onClick={() => {
+                window.location.hash = t.id;
                 setTabId(t.id);
               }}
               aria-current={t.id === tab?.id ? 'page' : undefined}
