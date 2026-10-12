@@ -983,6 +983,15 @@ function ChainNote({ parent }: { parent: Run }) {
   );
 }
 
+/**
+ * The environment a chained agent starts with: the one its parent ran in, if members can still
+ * launch in it ('' = the default one).
+ */
+function parentEnvironment(parent: Run | null, environments: EnvironmentChoice[]): string {
+  const id = parent?.environmentId;
+  return id && environments.some((e) => e.id === id) ? id : '';
+}
+
 /** Launch an agent now, schedule it, or trigger it on webhook events. */
 export function LaunchForm({
   api,
@@ -1022,7 +1031,9 @@ export function LaunchForm({
   const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
   const [eventTypes, setEventTypes] = useState('');
   const [filters, setFilters] = useState(NO_FILTERS);
-  const [environmentId, setEnvironmentId] = useState('');
+  const [environmentId, setEnvironmentId] = useState(() =>
+    parentEnvironment(parent, options.environments),
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 

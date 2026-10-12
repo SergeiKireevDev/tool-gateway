@@ -145,6 +145,9 @@ left output files, a member clicks **Chain an agent**: the launch form opens cha
 - **Checks.** The parent must be one of the member's own runs, finished, with at least one output
   file. The new run is otherwise an ordinary launch: any template, agent, model and environment
   the member may use.
+- **Environment.** The form starts on the environment the parent ran in (the default one if the
+  parent's is no longer offered); the member can pick another. Over the API, `environmentId` is
+  independent of the parent: leave it out for the default environment.
 - **The chain.** The run records its parent (`parentRunId`). Its page shows the chain as a graph:
   the parent node, the run, and the runs chained after it (`GET …/runs?parentRunId=<id>`); a click
   opens a node's run.
