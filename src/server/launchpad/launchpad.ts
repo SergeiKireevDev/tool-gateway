@@ -30,7 +30,6 @@ import {
   type RunInput,
   type RunnerConfig,
   type RunnerFinishBody,
-  OUTPUT_CHUNK_BYTES,
   RUNNER_LIMITS,
   SCRIPT_HARNESS,
 } from './protocol.js';
@@ -45,11 +44,19 @@ import {
   type Workflow,
   type WorkflowStep,
 } from './runStore.js';
+import { ATTACHMENT_LIMITS, type Attachment, Attachments } from './attachments.js';
+import { writeChunks } from './chunks.js';
 import { Environments } from './environments.js';
 import { Skills } from './skills.js';
 import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
 import { buildPlannerPrompt } from './workflowPrompt.js';
+
+/** A run's input files: those its member attached, and those of the run it is chained after. */
+interface RunInputs {
+  attached: RunInput[];
+  chained: RunInput[];
+}
 
 /** Session keys outlive the run's timeout by this much, so the agent is stopped first. */
 const KEY_MARGIN_MINUTES = 5;
@@ -116,11 +123,20 @@ export interface LaunchOptions {
   workflowStep?: WorkflowStep;
   /** A run of the member's whose output files the run starts from (chaining). */
   parentRunId?: string;
+  /** Files the member uploaded for this launch, copied to `/home/agent/in` (launches now). */
+  attachmentIds?: string[];
 }
 
-/** Extra fields of a launch now: the run to chain it after, if any. */
-export const chainSchema = z.object({
+/**
+ * Extra fields of a launch now: the run to chain it after, and the files the member uploaded for
+ * it, if any.
+ */
+export const launchNowSchema = z.object({
   parentRunId: z.string().min(1).max(MAX_ID_LENGTH).optional(),
+  attachmentIds: z
+    .array(z.string().min(1).max(MAX_ID_LENGTH))
+    .max(ATTACHMENT_LIMITS.files)
+    .optional(),
 });
 
 export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
@@ -220,11 +236,14 @@ export class Launchpad {
   readonly environments: Environments;
   /** The skill library: what agents learned during their runs, kept per member. */
   readonly skills: Skills;
+  /** Files members attach to their launches. */
+  readonly attachments: Attachments;
 
   constructor(private readonly deps: LaunchpadDeps) {
     this.now = deps.now ?? (() => new Date());
     this.environments = new Environments(deps.runs.db, deps.driver, this.now);
     this.skills = new Skills(deps.runs.db, this.now);
+    this.attachments = new Attachments(deps.runs.db, this.now);
   }
 
   /** Called after a run reached a final state (the scheduler keeps memory from it). */
@@ -421,7 +440,8 @@ export class Launchpad {
   launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
     const plan = this.plan(member, input, opts.workflowStep);
     if (opts.parentRunId !== undefined) this.chainParent(member, opts.parentRunId);
-    return this.launchPlan(member, plan, opts);
+    const attachments = this.attachments.forLaunch(member.id, opts.attachmentIds ?? []);
+    return this.launchPlan(member, plan, opts, attachments);
   }
 
   /**
@@ -437,8 +457,13 @@ export class Launchpad {
     return parent;
   }
 
-  /** Queues a run checked by `plan` or `planScript`. */
-  launchPlan(member: Member, plan: LaunchPlan, opts: LaunchOptions = {}): Run {
+  /** Queues a run checked by `plan` or `planScript`, with the attachments `launch` checked. */
+  launchPlan(
+    member: Member,
+    plan: LaunchPlan,
+    opts: LaunchOptions = {},
+    attachments: readonly Attachment[] = [],
+  ): Run {
     const run = this.deps.runs.insert({
       id: randomId(),
       memberId: member.id,
@@ -463,7 +488,9 @@ export class Launchpad {
       memoryIn: opts.memoryIn ?? null,
       createdAt: this.now().toISOString(),
     });
-    this.log(run, `${launchedBy(member, opts)} a ${plan.harness} agent`);
+    this.attachments.claim(run.id, attachments);
+    const attached = attachments.length > 0 ? ` with ${attachments.length} attached file(s)` : '';
+    this.log(run, `${launchedBy(member, opts)} a ${plan.harness} agent${attached}`);
     void this.pump();
     return this.deps.runs.require(run.id);
   }
@@ -564,11 +591,7 @@ export class Launchpad {
       startedAt.getTime() + run.timeoutSeconds * MS_PER_SECOND,
     ).toISOString();
     const grants = this.promptGrants(session.grants);
-    // A chained run gets the output files its parent still has (they expire).
-    const inputs =
-      run.parentRunId === null
-        ? undefined
-        : this.deps.runs.outputs(run.parentRunId).map(({ path, size }) => ({ path, size }));
+    const inputs = this.inputs(run);
     return {
       runId: run.id,
       runToken,
@@ -580,10 +603,29 @@ export class Launchpad {
       egressDomains: session.egressDomains ?? [],
       prompt: run.prompt,
       systemPrompt: this.systemPrompt(run, grants, session.egressDomains ?? [], deadline, inputs),
-      ...(inputs && { inputs }),
+      ...(inputs && { inputs: [...inputs.attached, ...inputs.chained] }),
       memory: run.memoryIn,
       deadline,
     };
+  }
+
+  /**
+   * The files the runner copies to `/home/agent/in`: those the member attached, and for a chained
+   * run the output files its parent still has (they expire), except those an attachment of the
+   * same name replaces. Undefined when the run has neither.
+   */
+  private inputs(run: Run): RunInputs | undefined {
+    const attached = this.attachments.inputs(run.id);
+    if (run.parentRunId === null && attached.length === 0) return undefined;
+    const names = new Set(attached.map((a) => a.path));
+    const chained =
+      run.parentRunId === null
+        ? []
+        : this.deps.runs
+            .outputs(run.parentRunId)
+            .filter((o) => !names.has(o.path))
+            .map(({ path, size }) => ({ path, size }));
+    return { attached, chained };
   }
 
   /** What the run's agent is told: the usual agent prompt, or a workflow planner's. */
@@ -592,7 +634,7 @@ export class Launchpad {
     grants: PromptGrant[],
     egressDomains: string[],
     deadline: string,
-    inputs: RunInput[] | undefined,
+    inputs: RunInputs | undefined,
   ): string {
     if (run.harness === SCRIPT_HARNESS) return '';
     if (run.workflowStep !== 'plan') {
@@ -604,7 +646,10 @@ export class Launchpad {
         hasMemory: run.memoryIn !== null,
         instructions: run.instructions,
         chain:
-          run.parentRunId === null ? null : { parentRunId: run.parentRunId, files: inputs ?? [] },
+          run.parentRunId === null
+            ? null
+            : { parentRunId: run.parentRunId, files: inputs?.chained ?? [] },
+        attachments: inputs?.attached ?? [],
       });
     }
     const workflow = this.deps.runs.requireWorkflow(run.workflowId ?? '');
@@ -681,10 +726,14 @@ export class Launchpad {
     return run;
   }
 
-  /** An input file of a chained run: an output file of its parent, streamed to the runner. */
+  /**
+   * An input file of a run, streamed to the runner: a file the member attached, or for a chained
+   * run an output file of its parent.
+   */
   runnerInput(run: Run, path: string): { size: number; chunks: Iterable<Buffer> } {
     const file =
-      run.parentRunId === null ? null : this.deps.runs.outputStream(run.parentRunId, path);
+      this.attachments.stream(run.id, path) ??
+      (run.parentRunId === null ? null : this.deps.runs.outputStream(run.parentRunId, path));
     if (!file) throw notFound('Input file not found');
     return file;
   }
@@ -733,27 +782,19 @@ export class Launchpad {
     upload: { id: string; size: number },
     content: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
   ): Promise<void> {
-    const pending: Uint8Array[] = [];
-    let pendingBytes = 0;
-    let seq = 0;
-    const flush = (): void => {
-      if (pendingBytes === 0) return;
-      this.deps.runs.putOutputChunk(run.id, upload.id, seq, Buffer.concat(pending));
-      seq += 1;
-      pending.length = 0;
-      pendingBytes = 0;
-    };
-    for await (const piece of content) {
-      upload.size += piece.length;
-      if (upload.size > RUNNER_LIMITS.outputFileBytes) throw badRequest('Output file too large');
-      if (run.outputsBytes + upload.size > RUNNER_LIMITS.outputTotalBytes) {
-        throw badRequest('Output files exceed the run total');
-      }
-      pending.push(piece);
-      pendingBytes += piece.length;
-      if (pendingBytes >= OUTPUT_CHUNK_BYTES) flush();
-    }
-    flush();
+    await writeChunks(
+      content,
+      (seq, data) => {
+        this.deps.runs.putOutputChunk(run.id, upload.id, seq, data);
+      },
+      (size) => {
+        upload.size = size;
+        if (size > RUNNER_LIMITS.outputFileBytes) throw badRequest('Output file too large');
+        if (run.outputsBytes + size > RUNNER_LIMITS.outputTotalBytes) {
+          throw badRequest('Output files exceed the run total');
+        }
+      },
+    );
   }
 
   async reportFinish(run: Run, body: RunnerFinishBody): Promise<Run> {
@@ -860,6 +901,7 @@ export class Launchpad {
       }
     }
     this.deps.runs.purgeExpiredOutputs(new Date(now).toISOString());
+    this.attachments.purge(this.deps.runs.settings().outputRetentionDays);
     await this.environments.refresh().catch((err: unknown) => {
       console.error('Launchpad: could not check guest environment builds', err);
     });

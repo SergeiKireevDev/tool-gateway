@@ -22,8 +22,8 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
 ## What a run is
 
 1. **Launch.** A member picks a task (prompt), a template, a harness (Claude Code, Codex, Gemini
-   CLI or pi), optionally a [guest environment](#guest-environments), and "now", a schedule or a
-   webhook trigger. The launchpad checks the following, then queues the run:
+   CLI or pi), optionally a [guest environment](#guest-environments) and
+   [attachments](#attachments), and "now", a schedule or a webhook trigger. The launchpad checks the following, then queues the run:
    - the member may launch;
    - the template is theirs;
    - one account per tool is available;
@@ -131,6 +131,29 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
 - **Stopping.** Like schedules, a trigger stops when its member's key is rotated or revoked, when the
   member is deleted or expired, or when a launch fails. The member can resume it; the admin can
   pause it. Deleting the webhook leaves the trigger without events.
+
+## Attachments
+
+A member can attach files to an agent launched now (**Attachments** in the launch form). The agent
+finds them in `/home/agent/in` when it starts.
+
+- **Upload, then launch.** Each file is uploaded first (`PUT /api/me/launchpad/attachments/<name>`,
+  the raw file as the body, `content-type: application/octet-stream`), which returns its `id`. The
+  launch then names them (`attachmentIds` in `POST /api/me/launchpad/runs`). Uploads are streamed
+  into the database in 4 MiB chunks, like output files. Names are plain file names: letters,
+  digits, dots, dashes and underscores (the form replaces other characters with `_`).
+- **Limits.** At most 20 files per launch, 1 GiB per file and 2 GiB in all. The same limits apply
+  to files uploaded but not launched with yet.
+- **Checks.** An attachment is the member's own, and goes with one launch only. Two attachments
+  of a launch can't have the same name. Schedules, triggers and workflows take no attachments.
+- **Input.** When the run starts, its attachments are added to its input files
+  (`GET /runner/inputs/<name>`), and its system prompt lists them. A chained run gets both its
+  attachments and its parent's output files; an attachment replaces a parent file of the same name.
+- **Keeping them.** The run's page lists its attachments (`GET …/runs/<id>/attachments[/<name>]`,
+  for the member and the admin). They are deleted when the run's output files would be: after the
+  output retention, counted from the run's end. Files not launched with are deleted after a day
+  (`DELETE /api/me/launchpad/attachments/<id>` removes one earlier); the form deletes them itself
+  when the launch fails.
 
 ## Chaining agents
 

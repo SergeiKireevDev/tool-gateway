@@ -47,14 +47,17 @@ export function createApi(
   base: string = ADMIN_API,
 ): Api {
   return async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+    // A file (Blob) is sent as is, anything else as JSON.
+    const raw = body instanceof Blob;
+    const contentType = raw ? 'application/octet-stream' : 'application/json';
     const res = await fetch(`${base}${path}`, {
       method,
       headers: {
         'x-gateway-request': '1',
         ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(body === undefined ? {} : { 'content-type': contentType }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: raw ? body : body === undefined ? undefined : JSON.stringify(body),
       cache: 'no-store',
     });
     if (res.status === HTTP_UNAUTHORIZED) onUnauthorized();

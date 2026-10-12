@@ -82,6 +82,15 @@ export interface OutputFile {
   expiresAt: string;
 }
 
+/** A file the member attached to the launch, copied to the agent's /home/agent/in. */
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+  runId: string | null;
+  createdAt: string;
+}
+
 export interface ModelUsage {
   provider: string;
   model: string;

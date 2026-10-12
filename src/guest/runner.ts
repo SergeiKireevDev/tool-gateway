@@ -138,8 +138,8 @@ function overLimit(count: number, size: number, total: number): string | null {
 const mib = (bytes: number): string => `${(bytes / MIB).toFixed(1)} MiB`;
 
 /**
- * Downloads a chained run's input files (its parent's output files) into `inDir`, owned by the
- * agent. Returns the files it could not get.
+ * Downloads a run's input files (attached to its launch, or its parent's output files for a chained
+ * run) into `inDir`, owned by the agent. Returns the files it could not get.
  */
 export async function downloadInputs(
   inputs: readonly RunInput[],
@@ -404,7 +404,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     for (const problem of missing) reporter.push({ type: 'error', text: problem });
     reporter.push({
       type: 'status',
-      text: `Copied ${config.inputs.length - missing.length} input file(s) from the parent run`,
+      text: `Copied ${config.inputs.length - missing.length} input file(s) to /home/agent/in`,
     });
   }
 

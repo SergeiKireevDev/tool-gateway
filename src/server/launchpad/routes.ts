@@ -9,7 +9,8 @@ import { created, h, param } from '../http/handlers.js';
 import type { Member } from '../store/types.js';
 import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
 import type { GuestEnvironment } from './environments.js';
-import { type Actor, chainSchema, type Launchpad } from './launchpad.js';
+import { ATTACHMENT_LIMITS } from './attachments.js';
+import { type Actor, type Launchpad, launchNowSchema } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
 import type { Triggers } from './triggers.js';
 import type { Workflows, WorkflowView } from './workflows.js';
@@ -190,6 +191,20 @@ function runReadRoutes(
       next(err);
     }
   });
+  router.get(
+    '/runs/:id/attachments',
+    h((req, res) => launchpad.attachments.forRun(run(req, res).id)),
+  );
+  router.get('/runs/:id/attachments/:name', (req, res, next) => {
+    try {
+      const name = param(req, 'name');
+      const file = launchpad.attachments.stream(run(req, res).id, name);
+      if (!file) throw notFound('Attachment not found');
+      sendFile(res, file, name);
+    } catch (err) {
+      next(err);
+    }
+  });
   router.post(
     '/runs/:id/cancel',
     h(async (req, res) =>
@@ -197,6 +212,10 @@ function runReadRoutes(
     ),
   );
 }
+
+/** Whether a request announces a body larger than `max` bytes (it is checked as it streams too). */
+const declaredOver = (req: Request, max: number): boolean =>
+  Number(req.get('content-length') ?? 0) > max;
 
 /** Sends a stored file, chunk by chunk, so a large file is never held in memory whole. */
 function sendFile(
@@ -329,6 +348,32 @@ function skillRoutes(
   );
 }
 
+/**
+ * Files a member uploads for a launch to come (then launches with `attachmentIds`). The body is
+ * the file, streamed into the database, not parsed into memory.
+ */
+function attachmentRoutes(
+  router: Router,
+  launchpad: Launchpad,
+  memberOf: (res: Response) => Member,
+): void {
+  router.put(
+    '/attachments/:name',
+    created(async (req, res) => {
+      if (declaredOver(req, ATTACHMENT_LIMITS.fileBytes)) {
+        throw badRequest('File too large');
+      }
+      return launchpad.attachments.upload(memberOf(res).id, param(req, 'name'), req);
+    }),
+  );
+  router.delete(
+    '/attachments/:aid',
+    h((req, res) => {
+      launchpad.attachments.discard(memberOf(res).id, param(req, 'aid'));
+    }),
+  );
+}
+
 /** Member portal: launch agents and follow their own runs (mounted under `/api/me/launchpad`). */
 export function memberLaunchRoutes(
   launchpad: Launchpad,
@@ -385,12 +430,16 @@ export function memberLaunchRoutes(
   router.post(
     '/runs',
     created((req, res) => {
-      const { parentRunId } = chainSchema.parse(req.body);
-      const run = launchpad.launch(memberOf(res), req.body, parentRunId ? { parentRunId } : {});
+      const { parentRunId, attachmentIds } = launchNowSchema.parse(req.body);
+      const run = launchpad.launch(memberOf(res), req.body, {
+        ...(parentRunId && { parentRunId }),
+        ...(attachmentIds && { attachmentIds }),
+      });
       return runView(launchpad, gateway, run);
     }),
   );
   runReadRoutes(router, launchpad, gateway, actorOf);
+  attachmentRoutes(router, launchpad, memberOf);
   router.get(
     SKILLS_PATH,
     h((_req, res) => launchpad.skills.list(memberOf(res).id)),
@@ -606,7 +655,7 @@ export function runnerRoutes(launchpad: Launchpad): Router {
     h(async (req) => {
       const run = runOf(req);
       const path = (req.params.path as unknown as string[]).join('/');
-      if (Number(req.get('content-length') ?? 0) > RUNNER_LIMITS.outputFileBytes) {
+      if (declaredOver(req, RUNNER_LIMITS.outputFileBytes)) {
         throw badRequest('Output file too large');
       }
       await launchpad.reportOutput(run, path, req);

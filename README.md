@@ -323,7 +323,7 @@ platform API (`https://api.fal.ai/v1/models/requests/by-endpoint`) for allowed e
 ## Agent launchpad
 
 Members can launch AI agents (Claude Code, Codex, Gemini CLI, pi) from the **Agents** tab. They
-run once, on a schedule or on webhook events, each in a disposable Firecracker microVM that can only reach the
+run once (with files attached, copied to `/home/agent/in`), on a schedule or on webhook events, each in a disposable Firecracker microVM that can only reach the
 gateway. Every tool and model call goes through the gateway with a session key scoped by the
 template the member picked, and has a token budget. The run's transcript, its gateway calls,
 output files and `MEMORY.md` are kept and shown per run. What each agent learned is exported as
