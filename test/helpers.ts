@@ -427,15 +427,24 @@ function fakeSeedanceFetch(calls: Harness['upstreamCalls']): typeof fetch {
 
 export const FAL_FILE_BYTES = 'fake-fal-png';
 
-/** Fake fal.ai queue and CDN: a key ending in `bad-key` is refused, everything else succeeds. */
+/**
+ * Fake fal.ai queue, platform API and CDN: a key ending in `bad-key` is refused, everything else
+ * succeeds.
+ */
 function fakeFalFetch(calls: Harness['upstreamCalls']): typeof fetch {
   return (input, init = {}) => {
     const url = input instanceof Request ? input.url : String(input);
     calls.push({ url, init });
-    if (!url.startsWith('https://queue.fal.run/'))
+    const api = url.startsWith('https://api.fal.ai/');
+    if (!api && !url.startsWith('https://queue.fal.run/'))
       return Promise.resolve(new Response(FAL_FILE_BYTES));
     const auth = new Headers(init.headers).get('authorization');
     if (auth?.endsWith('bad-key')) return Promise.resolve(Response.json({}, { status: 401 }));
+    if (api) {
+      return Promise.resolve(
+        Response.json({ items: [{ request_id: 'req-1' }], next_cursor: null, has_more: false }),
+      );
+    }
     return Promise.resolve(Response.json({ request_id: 'req-1', status: 'IN_QUEUE' }));
   };
 }
@@ -457,7 +466,7 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
     if (GOOGLE_HOSTS.some((host) => url.startsWith(host))) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (/^https:\/\/[^/]*bytepluses\.com\//.test(url)) return seedance(input, init);
-    if (/^https:\/\/([^/]*\.)?fal\.(run|media)\//.test(url)) return fal(input, init);
+    if (/^https:\/\/([^/]*\.)?fal\.(run|media|ai)\//.test(url)) return fal(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
     return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);

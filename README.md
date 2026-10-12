@@ -304,18 +304,21 @@ Clients use `/proxy/fal` instead of `https://queue.fal.run` and send their sessi
 `Authorization: Key gws_…` (or `Bearer`). The resource allowlist is a list of endpoint id patterns
 (`fal-ai/flux/*`; empty = any endpoint).
 
-| Permission          | Endpoints                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `requests:submit`   | `POST /<endpoint id>` (e.g. `/fal-ai/flux/dev`)                                                        |
-| `requests:read`     | `GET /<owner>/<app>/requests/<id>[/status[/stream]]`, `GET /files?url=<file URL>` (gateway)            |
-| `requests:cancel`   | `PUT /<owner>/<app>/requests/<id>/cancel`                                                              |
-| `media:remote-urls` | Lets requests reference media by URL off fal's storage (otherwise only `data:` and `…fal.media` files) |
+| Permission          | Endpoints                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `requests:submit`   | `POST /<endpoint id>` (e.g. `/fal-ai/flux/dev`)                                                                            |
+| `requests:read`     | `GET /<owner>/<app>/requests/<id>[/status[/stream]]`, `GET /<endpoint id>/requests`, `GET /files?url=<file URL>` (gateway) |
+| `requests:cancel`   | `PUT /<owner>/<app>/requests/<id>/cancel`                                                                                  |
+| `media:remote-urls` | Lets requests reference media by URL off fal's storage (otherwise only `data:` and `…fal.media` files)                     |
 
 Webhooks (`fal_webhook`) are always refused (poll the request instead), and any URL in the input
 that isn't on fal's storage needs `media:remote-urls`, since fal would fetch it from the internet on
 the agent's behalf. Results point at fal's CDN, which agents can't reach:
 `GET /proxy/fal/files?url=<file URL>` makes the gateway download it (only from `fal.media` hosts,
-without the API key) for them.
+without the API key) for them. Past generations can be listed with `GET /<endpoint id>/requests`
+(e.g. `/fal-ai/flux/dev/requests?limit=20&expand=payloads`), which the gateway sends to fal's
+platform API (`https://api.fal.ai/v1/models/requests/by-endpoint`) for allowed endpoints only;
+`limit`, `cursor`, `start`, `end`, `status`, `request_id`, `expand` and `sort_by` are passed on.
 
 ## Agent launchpad
 

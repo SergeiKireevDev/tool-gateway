@@ -121,6 +121,35 @@ describe('fal.ai', () => {
       .expect(403);
   });
 
+  it('lists past requests to an allowed endpoint from the platform API', async () => {
+    const key = await keyFor(['requests:read'], ['fal-ai/flux/*']);
+    const res = await get(key, `${ENDPOINT}/requests?limit=10&expand=payloads&status=success`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([{ request_id: 'req-1' }]);
+    expect(lastCall().url).toBe(
+      'https://api.fal.ai/v1/models/requests/by-endpoint?limit=10&expand=payloads&status=success&endpoint_id=fal-ai%2Fflux%2Fdev',
+    );
+    expect(lastCall().headers.get('authorization')).toBe('Key real-fal-secret');
+
+    const before = h.upstreamCalls.length;
+    const other = await get(key, '/fal-ai/kling-video/v2/text-to-video/requests');
+    expect(other.status).toBe(403);
+    expect(other.body.message).toContain('not in the allowlist');
+    await get(key, `${ENDPOINT}/requests?endpoint_id=fal-ai/kling-video/v2`).expect(403);
+    await get(key, `${ENDPOINT}/requests?fal_webhook=https://attacker.example/`).expect(403);
+    await request(app)
+      .post(`${BASE}${ENDPOINT}/requests`)
+      .set('authorization', `Bearer ${key}`)
+      .send(PROMPT)
+      .expect(403);
+    await get(await keyFor(['requests:submit']), `${ENDPOINT}/requests`).expect(403);
+    expect(h.upstreamCalls.length).toBe(before);
+
+    const any = await keyFor(['requests:read']);
+    await get(any, '/bytedance/seedance-2.0/requests').expect(200);
+    expect(lastCall().url).toContain('endpoint_id=bytedance%2Fseedance-2.0');
+  });
+
   it("downloads files from fal's storage only, without the API key", async () => {
     const key = await keyFor(['requests:read']);
     const file = await get(key, `/files?url=${encodeURIComponent(FILE)}`).expect(200);
