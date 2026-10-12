@@ -14,6 +14,7 @@ import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
 import { createCustomLlmProvider } from '../src/server/tools/llm/custom.js';
 import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
 import { createFalProvider } from '../src/server/tools/fal.js';
+import { createGoogleMapsProvider } from '../src/server/tools/googleMaps.js';
 import { createGeminiMediaProvider } from '../src/server/tools/geminiMedia.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
@@ -449,6 +450,34 @@ function fakeFalFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+export const MAPS_PHOTO_BYTES = 'fake-maps-jpeg';
+const MAPS_PHOTO = 'https://lh3.googleusercontent.com/places/photo-1=s1600';
+
+/**
+ * Fake Google Maps Platform: a `bad-key` is denied, photos redirect to Google's image CDN (or,
+ * for photo `elsewhere`, off Google), everything else echoes the request.
+ */
+function fakeMapsFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (url.startsWith(MAPS_PHOTO)) return Promise.resolve(new Response(MAPS_PHOTO_BYTES));
+    if (url.includes('key=bad-key')) {
+      return Promise.resolve(
+        Response.json({
+          status: 'REQUEST_DENIED',
+          error_message: 'The provided API key is invalid.',
+        }),
+      );
+    }
+    if (url.includes('/place/photo?') || /\/media(\?|$)/.test(url)) {
+      const location = url.includes('elsewhere') ? 'https://attacker.example/p.jpg' : MAPS_PHOTO;
+      return Promise.resolve(new Response(null, { status: 302, headers: { location } }));
+    }
+    return Promise.resolve(Response.json({ status: 'OK', url, body: init.body ?? null }));
+  };
+}
+
 const GOOGLE_HOSTS = ['https://gmail.googleapis.com/', 'https://oauth2.googleapis.com/'];
 
 /** Routes upstream calls to the fake API of the tool they are for. */
@@ -461,12 +490,16 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const gmail = fakeGmailFetch(calls);
   const seedance = fakeSeedanceFetch(calls);
   const fal = fakeFalFetch(calls);
+  const maps = fakeMapsFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     if (GOOGLE_HOSTS.some((host) => url.startsWith(host))) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (/^https:\/\/[^/]*bytepluses\.com\//.test(url)) return seedance(input, init);
     if (/^https:\/\/([^/]*\.)?fal\.(run|media|ai)\//.test(url)) return fal(input, init);
+    if (/^https:\/\/(maps|places|routes|addressvalidation)\.googleapis\.com\//.test(url))
+      return maps(input, init);
+    if (url.startsWith('https://lh3.googleusercontent.com/')) return maps(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
     return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);
@@ -562,6 +595,7 @@ export async function createHarness(): Promise<Harness> {
       createGeminiMediaProvider(fetch),
       createSeedanceProvider(fetch),
       createFalProvider(fetch),
+      createGoogleMapsProvider(fetch),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),
