@@ -186,6 +186,23 @@ export interface GuestEnvironment extends EnvironmentChoice {
   updatedAt: string;
 }
 
+/** A skill in the library: what an agent learned during a run (its `SKILL.md`). */
+export interface SkillSummary {
+  id: string;
+  memberId: string;
+  memberName: string;
+  name: string;
+  description: string;
+  /** The run that last exported it. */
+  runId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Skill extends SkillSummary {
+  content: string;
+}
+
 export type Preset = 'hourly' | 'daily' | 'weekly' | 'monthly';
 
 export interface Schedule {

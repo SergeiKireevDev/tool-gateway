@@ -6,7 +6,7 @@ import type { LlmEndpointApi } from '../tools/types.js';
  * under `/runner/*` with the run token. Shared by the server and the guest bundle.
  */
 
-const KIB = 1024;
+export const KIB = 1024;
 export const MIB = KIB * KIB;
 /**
  * Large enough for generated media (long videos reach hundreds of MiB). Output files are streamed
@@ -21,6 +21,7 @@ export const MAX_OUTPUT_TOTAL_MIB = 2048;
 const OUTPUT_CHUNK_MIB = 4;
 export const OUTPUT_CHUNK_BYTES = OUTPUT_CHUNK_MIB * MIB;
 const MAX_MEMORY_KIB = 64;
+const MAX_SKILL_KIB = 64;
 
 export const RUN_TOKEN_PREFIX = 'gwr_';
 /** Size of the raw config drive; the JSON config is NUL-padded to it. */
@@ -149,7 +150,23 @@ export interface RunnerFinishBody {
   /** Updated `MEMORY.md`, or null when the agent didn't write one. */
   memory: string | null;
   error: string | null;
+  /**
+   * Skills the agent exported (`/home/agent/skills/<name>/SKILL.md`), for the member's skill
+   * library. Absent from older runners.
+   */
+  skills?: RunnerSkill[];
 }
+
+/** A skill an agent exported: what it learned during its run, in `SKILL.md` form. */
+export interface RunnerSkill {
+  /** The skill's directory name: lowercase letters, digits and dashes. */
+  name: string;
+  /** The `SKILL.md` file (YAML frontmatter with a `description`, then instructions). */
+  content: string;
+}
+
+/** Skill names: what Claude Code accepts as a skill directory name. */
+export const SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 /** Limits the server enforces on runner reports. */
 export const RUNNER_LIMITS = {
@@ -167,5 +184,9 @@ export const RUNNER_LIMITS = {
   outputFiles: 200,
   /** `MEMORY.md`, in characters. */
   memory: MAX_MEMORY_KIB * KIB,
+  /** Skills one run can export. */
+  skills: 20,
+  /** One `SKILL.md`, in characters. */
+  skillContent: MAX_SKILL_KIB * KIB,
   finalMessage: 100_000,
 } as const;

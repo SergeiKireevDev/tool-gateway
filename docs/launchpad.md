@@ -44,7 +44,8 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
    The runner streams the normalized transcript and stops the agent at the deadline.
 
 4. **Finish.** The runner uploads `/home/agent/out` (at most 200 files, 1 GiB per file and
-   2 GiB in all; files it can't keep are listed in the run's status reason) and `MEMORY.md`, then
+   2 GiB in all; files it can't keep are listed in the run's status reason), `MEMORY.md` and the
+   skills the agent exported to the [skill library](#skill-library), then
    reports the result. Output files are streamed from disk and stored in 4 MiB chunks, so neither
    the VM nor the gateway holds a whole file in memory. The launchpad then **always** revokes the key and destroys the VM. A reaper does the same for runs
    whose VM died, that passed their deadline, or that were left by a gateway restart. It also
@@ -151,6 +152,25 @@ left output files, a member clicks **Chain an agent**: the launch form opens cha
 - **The chain.** The run records its parent (`parentRunId`). Its page shows the chain as a graph:
   the parent node, the run, and the runs chained after it (`GET …/runs?parentRunId=<id>`); a click
   opens a node's run.
+
+## Skill library
+
+Agents leave what they learned for the next ones. Their system prompt asks them to export, before
+they finish, everything they learned during the session that would help a future agent: how the
+systems and tools they used behave, requests that worked, pitfalls and workarounds. Each skill is a
+`SKILL.md` (YAML frontmatter with `name` and `description`, then Markdown instructions) in
+`/home/agent/skills/<name>/`.
+
+- **Export.** When the agent exits, the runner reads `/home/agent/skills/*/SKILL.md` (at most 20
+  skills of 64 KiB each; names are lowercase letters, digits and dashes) and sends them with its
+  result (`skills` in `POST /runner/finish`). It doesn't follow symlinks, and lists the skills it
+  skipped in the run's log. Skills are kept whatever the run's outcome: what a failed run learned
+  helps too.
+- **Library.** The gateway keeps them in its database, per member: a skill named like one of the
+  member's existing skills replaces it (agents are told to improve, not duplicate). Credentials
+  are redacted, like in transcripts. Members see their own under **Skills**
+  (`GET /api/me/launchpad/skills`, `GET|DELETE …/skills/<id>`); the admin sees everyone's
+  (`GET /api/admin/launchpad/skills[?memberId=]`) and can delete them.
 
 ## Workflows: plan, then execute
 

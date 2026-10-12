@@ -1,9 +1,13 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import {
   chownSync,
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   writeFileSync,
@@ -18,6 +22,8 @@ import {
   type RunInput,
   type RunnerConfig,
   type RunnerOutcome,
+  type RunnerSkill,
+  SKILL_NAME_RE,
 } from '../server/launchpad/protocol.js';
 import { HARNESS_ADAPTERS, type HarnessState, newState } from './harnesses.js';
 import { Reporter } from './reporter.js';
@@ -25,8 +31,8 @@ import { Reporter } from './reporter.js';
 /**
  * Runs inside the agent VM as root (PID 1's child): reads the run's config from the config drive,
  * starts the harness as the unprivileged `agent` user, streams its transcript to the gateway,
- * stops it at the deadline, uploads `/home/agent/out` and `MEMORY.md`, reports the result and
- * powers the VM off.
+ * stops it at the deadline, uploads `/home/agent/out`, `MEMORY.md` and the skills the agent
+ * exported, reports the result and powers the VM off.
  */
 
 const CONFIG_DEVICE = '/dev/vdb';
@@ -198,9 +204,60 @@ export function statusReason(
 }
 
 function readMemory(file: string): string | null {
-  if (!existsSync(file)) return null;
-  const text = readFileSync(file, 'utf8');
-  return text.slice(0, RUNNER_LIMITS.memory);
+  return readAgentFile(file, RUNNER_LIMITS.memory);
+}
+
+const SKILL_FILE = 'SKILL.md';
+const MAX_UTF8_BYTES_PER_CHAR = 4;
+
+/**
+ * A regular file's text, or null. The runner is root and the agent owns the file's directory: it
+ * doesn't follow a symlink the agent could point at a root-only file (e.g. the config drive).
+ */
+function readAgentFile(file: string, maxChars: number): string | null {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    const buf = Buffer.alloc(maxChars * MAX_UTF8_BYTES_PER_CHAR);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return buf.subarray(0, n).toString('utf8').slice(0, maxChars);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The skills the agent exported: `<skillsDir>/<name>/SKILL.md`, within the runner's limits.
+ * Returns why the others were not kept.
+ */
+export function readSkills(skillsDir: string): { skills: RunnerSkill[]; problems: string[] } {
+  const skills: RunnerSkill[] = [];
+  const problems: string[] = [];
+  if (!existsSync(skillsDir)) return { skills, problems };
+  const entries = readdirSync(skillsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    if (!SKILL_NAME_RE.test(entry.name)) {
+      problems.push(`skipped skill ${entry.name} (invalid name)`);
+      continue;
+    }
+    const file = path.join(skillsDir, entry.name, SKILL_FILE);
+    const content = readAgentFile(file, RUNNER_LIMITS.skillContent);
+    if (!content?.trim()) {
+      problems.push(`skipped skill ${entry.name} (no ${SKILL_FILE})`);
+    } else if (skills.length >= RUNNER_LIMITS.skills) {
+      problems.push(`skipped skill ${entry.name} (more than ${RUNNER_LIMITS.skills} skills)`);
+    } else {
+      skills.push({ name: entry.name, content });
+    }
+  }
+  return { skills, problems };
 }
 
 const GITHUB_TOOL = 'gateway_github';
@@ -331,7 +388,10 @@ export async function main(argv: readonly string[]): Promise<void> {
   reporter.start();
   const ids = agentIds();
   const home = args.home;
-  for (const dir of [home, path.join(home, 'work'), path.join(home, 'out')]) makeDir(dir, ids);
+  const skillsDir = path.join(home, 'skills');
+  for (const dir of [home, path.join(home, 'work'), path.join(home, 'out'), skillsDir]) {
+    makeDir(dir, ids);
+  }
   if (config.gatewayTools.includes(GITHUB_TOOL)) {
     writeOwned(path.join(home, '.gitconfig'), gitConfig(config), ids);
   }
@@ -357,6 +417,11 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   const problems = await uploadOutputs(path.join(home, 'out'), reporter);
   for (const problem of problems) reporter.push({ type: 'log', text: problem });
+  const exported = readSkills(skillsDir);
+  for (const problem of exported.problems) reporter.push({ type: 'log', text: problem });
+  if (exported.skills.length > 0) {
+    reporter.push({ type: 'status', text: `Exported ${exported.skills.length} skill(s)` });
+  }
   const outcome = outcomeOf(result, state);
   const exitNote =
     result.code !== null && result.code !== 0
@@ -367,6 +432,7 @@ export async function main(argv: readonly string[]): Promise<void> {
       outcome,
       finalMessage: state.finalMessage,
       memory: readMemory(memoryFile),
+      skills: exported.skills,
       error: statusReason(outcome === 'succeeded' ? null : (state.error ?? exitNote), problems),
     });
   } catch (err) {

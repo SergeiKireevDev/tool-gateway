@@ -46,6 +46,7 @@ import {
   type WorkflowStep,
 } from './runStore.js';
 import { Environments } from './environments.js';
+import { Skills } from './skills.js';
 import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
 import { buildPlannerPrompt } from './workflowPrompt.js';
@@ -217,10 +218,13 @@ export class Launchpad {
   private readonly finishedListeners: ((run: Run) => void)[] = [];
   /** The guest environments the admin added, which runs can boot. */
   readonly environments: Environments;
+  /** The skill library: what agents learned during their runs, kept per member. */
+  readonly skills: Skills;
 
   constructor(private readonly deps: LaunchpadDeps) {
     this.now = deps.now ?? (() => new Date());
     this.environments = new Environments(deps.runs.db, deps.driver, this.now);
+    this.skills = new Skills(deps.runs.db, this.now);
   }
 
   /** Called after a run reached a final state (the scheduler keeps memory from it). */
@@ -753,6 +757,9 @@ export class Launchpad {
   }
 
   async reportFinish(run: Run, body: RunnerFinishBody): Promise<Run> {
+    // Kept whatever the outcome: what a failed run learned helps the next one.
+    const skills = isActive(run.status) ? this.skills.saveFromRun(run, body.skills ?? []) : 0;
+    if (skills > 0) this.log(run, `Exported ${skills} skill(s) to the skill library`);
     await this.finish(run.id, body.outcome, {
       finalMessage:
         body.finalMessage === null ? null : clip(body.finalMessage, RUNNER_LIMITS.finalMessage),
