@@ -8,9 +8,18 @@ import type { LlmEndpointApi } from '../tools/types.js';
 
 const KIB = 1024;
 export const MIB = KIB * KIB;
-/** Large enough for generated media (videos are often tens of MiB). */
-export const MAX_OUTPUT_FILE_MIB = 100;
-export const MAX_OUTPUT_TOTAL_MIB = 200;
+/**
+ * Large enough for generated media (long videos reach hundreds of MiB). Output files are streamed
+ * from the runner to the database in chunks, so neither side holds a whole file in memory.
+ */
+export const MAX_OUTPUT_FILE_MIB = 1024;
+export const MAX_OUTPUT_TOTAL_MIB = 2048;
+/**
+ * Output files are stored in chunks of this size: SQLite caps one blob at 1e9 bytes, and a
+ * download only holds one chunk in memory.
+ */
+const OUTPUT_CHUNK_MIB = 4;
+export const OUTPUT_CHUNK_BYTES = OUTPUT_CHUNK_MIB * MIB;
 const MAX_MEMORY_KIB = 64;
 
 export const RUN_TOKEN_PREFIX = 'gwr_';

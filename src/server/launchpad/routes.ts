@@ -1,4 +1,6 @@
 import express, { type Request, type Response, type Router } from 'express';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
 import { badRequest, notFound } from '../errors.js';
 import type { Gateway } from '../gateway.js';
@@ -167,14 +169,18 @@ function runReadRoutes(
       const r = run(req, res);
       const parts = req.params.path as unknown as readonly string[];
       const path = parts.join('/');
-      const content = launchpad.runs.output(r.id, path);
-      if (!content) throw notFound('Output file not found');
+      const file = launchpad.runs.outputStream(r.id, path);
+      if (!file) throw notFound('Output file not found');
       const name = parts.at(-1) ?? 'output';
       res
         .set('content-type', 'application/octet-stream')
+        .set('content-length', String(file.size))
         .set('content-disposition', `attachment; filename="${name.replace(/"/g, '')}"`)
-        .set('x-content-type-options', 'nosniff')
-        .send(content);
+        .set('x-content-type-options', 'nosniff');
+      // Chunk by chunk, so a large file is never held in memory whole.
+      pipeline(Readable.from(file.chunks), res).catch(() => {
+        res.destroy();
+      });
     } catch (err) {
       next(err);
     }
@@ -507,8 +513,6 @@ function environmentRoutes(router: Router, launchpad: Launchpad, gateway: Gatewa
   );
 }
 
-const OUTPUT_BODY_LIMIT = RUNNER_LIMITS.outputFileBytes;
-
 /**
  * Runner reports, authenticated by the run token (`Authorization: Bearer gwr_…`). Served on the
  * VM listener; the agent inside the VM doesn't have the token.
@@ -526,14 +530,16 @@ export function runnerRoutes(launchpad: Launchpad): Router {
       return { stored: launchpad.reportEvents(run, events) };
     }),
   );
+  // The body is streamed into the database (files reach 1 GiB), not parsed into memory.
   router.put(
     '/outputs/*path',
-    express.raw({ type: () => true, limit: OUTPUT_BODY_LIMIT }),
-    h((req) => {
+    h(async (req) => {
       const run = runOf(req);
       const path = (req.params.path as unknown as string[]).join('/');
-      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-      launchpad.reportOutput(run, path, body);
+      if (Number(req.get('content-length') ?? 0) > RUNNER_LIMITS.outputFileBytes) {
+        throw badRequest('Output file too large');
+      }
+      await launchpad.reportOutput(run, path, req);
     }),
   );
   router.post(

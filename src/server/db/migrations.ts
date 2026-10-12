@@ -207,4 +207,15 @@ export const MIGRATIONS: readonly string[] = [
    ALTER TABLE runs ADD COLUMN environment_name TEXT;
    ALTER TABLE schedules ADD COLUMN environment_id TEXT;
    ALTER TABLE triggers ADD COLUMN environment_id TEXT;`,
+  // 12: output files up to 1 GiB, stored in chunks (SQLite caps one blob at 1e9 bytes). A file
+  // with an upload_id has its content in run_output_chunks; older ones keep it in content.
+  `CREATE TABLE run_output_chunks (
+     run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+     upload_id TEXT NOT NULL,
+     seq INTEGER NOT NULL,
+     data BLOB NOT NULL,
+     PRIMARY KEY (upload_id, seq)
+   );
+   CREATE INDEX run_output_chunks_run ON run_output_chunks (run_id);
+   ALTER TABLE run_outputs ADD COLUMN upload_id TEXT;`,
 ];
