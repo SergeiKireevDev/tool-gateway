@@ -37,11 +37,15 @@ export function StatusBadge({ status }: { status: RunStatus }) {
   );
 }
 
-/** How the run was launched, when not by hand: " · scheduled", " · webhook" or its workflow step. */
+/**
+ * How the run was launched, when not by hand: " · scheduled", " · chained", " · webhook" or its
+ * workflow step.
+ */
 export function runOrigin(run: Run): string {
   if (run.workflowStep)
     return ` · workflow ${WORKFLOW_STEP_LABELS[run.workflowStep].toLowerCase()} step`;
   if (run.scheduleId) return ' · scheduled';
+  if (run.parentRunId) return ' · chained';
   return run.triggerId ? ' · webhook' : '';
 }
 

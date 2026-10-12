@@ -94,7 +94,7 @@ export interface LaunchHarness extends Harness {
   /** The member portal's webhook routes (`/api/me/webhooks`). */
   hooks(cookie: string, method: 'get' | 'post', path: string): request.Test;
   admin(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string): request.Test;
-  runner(token: string, method: 'post' | 'put', path: string): request.Test;
+  runner(token: string, method: 'get' | 'post' | 'put', path: string): request.Test;
 }
 
 export async function createLaunchHarness(): Promise<LaunchHarness> {

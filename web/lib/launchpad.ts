@@ -27,6 +27,8 @@ export interface Run {
   /** The workflow the run is a step of, and which step. */
   workflowId: string | null;
   workflowStep: WorkflowStep | null;
+  /** The run whose output files this one started from (chained runs). */
+  parentRunId: string | null;
   harness: RunHarness;
   model: string | null;
   prompt: string;

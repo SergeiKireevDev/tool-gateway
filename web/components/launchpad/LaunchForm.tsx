@@ -497,6 +497,8 @@ interface Draft {
   webhookId: string;
   eventTypes: string;
   filters: FilterDraft;
+  /** The run whose output files the agent starts from ('' = none). */
+  parentRunId: string;
 }
 
 const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
@@ -529,7 +531,10 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   }
   // Workflows boot the default environment.
   const agent = { ...launch, ...(d.environmentId ? { environmentId: d.environmentId } : {}) };
-  if (d.when === 'now') return { path: '/launchpad/runs', body: { ...agent, prompt: d.prompt } };
+  if (d.when === 'now') {
+    const chain = d.parentRunId ? { parentRunId: d.parentRunId } : {};
+    return { path: '/launchpad/runs', body: { ...agent, ...chain, prompt: d.prompt } };
+  }
   if (d.when === 'webhook') {
     return {
       path: '/launchpad/triggers',
@@ -563,10 +568,13 @@ function TemplateSelect({
   templates,
   value,
   onChange,
+  withWorkflow,
 }: {
   templates: LaunchTemplate[];
   value: string;
   onChange: (value: string) => void;
+  /** Whether the workflow can be picked (not for a chained agent). */
+  withWorkflow: boolean;
 }) {
   return (
     <Select
@@ -582,9 +590,11 @@ function TemplateSelect({
             {t.name}
           </option>
         ))}
-      <optgroup label="Workflows">
-        <option value={WORKFLOW}>Plan, then execute</option>
-      </optgroup>
+      {withWorkflow && (
+        <optgroup label="Workflows">
+          <option value={WORKFLOW}>Plan, then execute</option>
+        </optgroup>
+      )}
     </Select>
   );
 }
@@ -800,7 +810,15 @@ const templateHint = (template: LaunchTemplate | undefined): string | undefined 
   `${template.tools.join(', ')} · keys last up to ${formatDuration(template.maxTtlSeconds)}`;
 
 /** What runs: a template's agent and model, or the workflow's two steps. */
-function AgentFields({ agent, templates }: { agent: AgentChoice; templates: LaunchTemplate[] }) {
+function AgentFields({
+  agent,
+  templates,
+  chained,
+}: {
+  agent: AgentChoice;
+  templates: LaunchTemplate[];
+  chained: boolean;
+}) {
   const { workflow, setModel } = agent;
   return (
     <>
@@ -812,6 +830,7 @@ function AgentFields({ agent, templates }: { agent: AgentChoice; templates: Laun
           <TemplateSelect
             templates={templates}
             value={agent.selection}
+            withWorkflow={!chained}
             onChange={(value) => {
               agent.setSelection(value);
               setModel('');
@@ -900,6 +919,70 @@ function SubmitRow({
   );
 }
 
+/**
+ * Tools of the template (and a workflow planner's model API) for which the member has several
+ * accounts: they pick one.
+ */
+function useAccountPicks(
+  accounts: Account[],
+  template: LaunchTemplate | undefined,
+  plannerTool: string | undefined,
+) {
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const ambiguous = [
+    ...new Set([...(template?.tools ?? []), ...(plannerTool ? [plannerTool] : [])]),
+  ]
+    .map((tool) => ({ tool, options: accounts.filter((a) => a.tool === tool) }))
+    .filter((x) => x.options.length > 1);
+  const pickedFor = (tools: readonly string[]): string[] =>
+    ambiguous
+      .filter((x) => tools.includes(x.tool))
+      .map((x) => picked[x.tool] ?? x.options[0]?.id ?? '')
+      .filter(Boolean);
+  return { ambiguous, picked, setPicked, pickedFor };
+}
+
+/** Run once now, on a schedule, or on webhook events. */
+function WhenField({ when, setWhen }: { when: When; setWhen: (when: When) => void }) {
+  return (
+    <Field label="When">
+      <Select
+        value={when}
+        onChange={(e) => {
+          setWhen(e.target.value as When);
+        }}
+      >
+        {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
+          <option key={w} value={w}>
+            {WHEN_LABELS[w]}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  );
+}
+
+const PARENT_PROMPT_PREVIEW = 200;
+
+/** What a chained agent starts from: the run it is chained after, and where its files go. */
+function ChainNote({ parent }: { parent: Run }) {
+  const task = parent.instructions ?? parent.prompt;
+  return (
+    <div className="rounded-lg bg-indigo-50 p-3 text-sm text-slate-700 ring-1 ring-indigo-200">
+      <p className="font-medium text-slate-800">
+        Chained after a {HARNESS_LABELS[parent.harness]} run
+      </p>
+      <p className="mt-1 truncate text-xs text-slate-600" title={task}>
+        {task.slice(0, PARENT_PROMPT_PREVIEW)}
+      </p>
+      <p className="mt-1 text-xs text-slate-600">
+        The new agent finds that run&apos;s output files in /home/agent/in. Tell it what to do with
+        them.
+      </p>
+    </div>
+  );
+}
+
 /** Launch an agent now, schedule it, or trigger it on webhook events. */
 export function LaunchForm({
   api,
@@ -910,6 +993,7 @@ export function LaunchForm({
   onScheduled,
   onTriggered,
   onWorkflow,
+  parent = null,
 }: {
   api: Api;
   options: LaunchOptions;
@@ -920,15 +1004,17 @@ export function LaunchForm({
   onScheduled: (schedule: Schedule) => void;
   onTriggered: (trigger: Trigger) => void;
   onWorkflow: (workflow: Workflow) => void;
+  /** The run to chain the agent after: it starts from its output files, once, now. */
+  parent?: Run | null;
 }) {
   const { templates } = options;
   const [prompt, setPrompt] = useState('');
   const agent = useAgentChoice(api, templates);
   const { workflow, templateId, template, harness, choice, model, executor, executorModel } = agent;
-  const [picked, setPicked] = useState<Record<string, string>>({});
   const [chosenWhen, setWhen] = useState<When>('now');
-  // Workflows run once, now.
-  const when: When = workflow ? 'now' : chosenWhen;
+  // Workflows and chained agents run once, now.
+  const once = workflow || parent !== null;
+  const when: When = once ? 'now' : chosenWhen;
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState(1);
   const [day, setDay] = useState(1);
@@ -940,19 +1026,12 @@ export function LaunchForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Tools of the template (and a workflow planner's model API) for which the member has several
-  // accounts: they pick one.
   const plannerTool = workflow ? choice?.provider : undefined;
-  const ambiguous = [
-    ...new Set([...(template?.tools ?? []), ...(plannerTool ? [plannerTool] : [])]),
-  ]
-    .map((tool) => ({ tool, options: accounts.filter((a) => a.tool === tool) }))
-    .filter((x) => x.options.length > 1);
-  const pickedFor = (tools: readonly string[]): string[] =>
-    ambiguous
-      .filter((x) => tools.includes(x.tool))
-      .map((x) => picked[x.tool] ?? x.options[0]?.id ?? '')
-      .filter(Boolean);
+  const { ambiguous, picked, setPicked, pickedFor } = useAccountPicks(
+    accounts,
+    template,
+    plannerTool,
+  );
 
   if (!templates.some((t) => t.harnesses.length > 0)) {
     return (
@@ -985,6 +1064,7 @@ export function LaunchForm({
       webhookId,
       eventTypes,
       filters,
+      parentRunId: parent?.id ?? '',
     });
     try {
       const sent = await api<Run | Schedule | Trigger | Workflow>(
@@ -1011,8 +1091,9 @@ export function LaunchForm({
         void submit();
       }}
     >
+      {parent && <ChainNote parent={parent} />}
       <TaskField trigger={!workflow && when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
-      <AgentFields agent={agent} templates={templates} />
+      <AgentFields agent={agent} templates={templates} chained={parent !== null} />
       {!workflow && (
         <EnvironmentField
           environments={options.environments}
@@ -1043,22 +1124,7 @@ export function LaunchForm({
           </Select>
         </Field>
       ))}
-      {!workflow && (
-        <Field label="When">
-          <Select
-            value={when}
-            onChange={(e) => {
-              setWhen(e.target.value as When);
-            }}
-          >
-            {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
-              <option key={w} value={w}>
-                {WHEN_LABELS[w]}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      )}
+      {!once && <WhenField when={when} setWhen={setWhen} />}
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}

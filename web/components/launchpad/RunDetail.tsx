@@ -15,6 +15,7 @@ import {
 } from '@/lib/launchpad';
 import { Button, Card, ErrorBanner, useNow } from '../ui';
 import { runDuration, runOrigin, StatusBadge, TokenMeter } from './RunBits';
+import { RunChain } from './RunChain';
 import { RunLog } from './RunLog';
 import { RunSteps } from './RunSteps';
 import { RunTools } from './RunTools';
@@ -209,6 +210,44 @@ function RunPrompt({ run }: { run: Run }) {
   );
 }
 
+/** The token meter, and what can be done with the run: stop it, or chain an agent after it. */
+function RunActions({
+  run,
+  stopping,
+  onStop,
+  onChain,
+}: {
+  run: Run;
+  stopping: boolean;
+  onStop: () => void;
+  /** Set when an agent can be chained after the run (it left output files). */
+  onChain: ((run: Run) => void) | undefined;
+}) {
+  const active = isActive(run.status);
+  return (
+    <div className="flex flex-col items-end gap-3">
+      <TokenMeter used={run.tokensUsed} budget={run.tokenBudget} />
+      {active && (
+        <Button variant="danger" size="sm" disabled={stopping} onClick={onStop}>
+          Stop agent
+        </Button>
+      )}
+      {onChain && !active && (
+        <Button
+          variant="secondary"
+          size="sm"
+          title="Start a new agent that gets this run's output files"
+          onClick={() => {
+            onChain(run);
+          }}
+        >
+          Chain an agent
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /** One run: status, live log, steps, every gateway call, and its result. */
 export function RunDetail({
   api,
@@ -216,6 +255,8 @@ export function RunDetail({
   downloadBase,
   showMember,
   onBack,
+  onChain,
+  onOpenRun,
 }: {
   api: Api;
   runId: string;
@@ -223,6 +264,10 @@ export function RunDetail({
   showMember: boolean;
   /** Back to the list; none when the run is shown inside a workflow. */
   onBack?: () => void;
+  /** Launch an agent from this run's output files (members only). */
+  onChain?: (run: Run) => void;
+  /** Open another run of its chain. */
+  onOpenRun?: (runId: string) => void;
 }) {
   const now = useNow();
   const { loaded, events, error, reload } = useRun(api, runId);
@@ -271,16 +316,15 @@ export function RunDetail({
                 ` · must finish by ${formatDateTime(run.deadline)}`}
             </p>
           </div>
-          <div className="flex flex-col items-end gap-3">
-            <TokenMeter used={run.tokensUsed} budget={run.tokenBudget} />
-            {isActive(run.status) && (
-              <Button variant="danger" size="sm" disabled={stopping} onClick={() => void stop()}>
-                Stop agent
-              </Button>
-            )}
-          </div>
+          <RunActions
+            run={run}
+            stopping={stopping}
+            onStop={() => void stop()}
+            onChain={loaded.outputs.length > 0 ? onChain : undefined}
+          />
         </div>
         <UsageTable usage={loaded.usage} />
+        <RunChain api={api} run={run} onOpenRun={onOpenRun} />
       </Card>
       <div className="mt-4">
         <ErrorBanner message={error} />

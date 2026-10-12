@@ -218,4 +218,7 @@ export const MIGRATIONS: readonly string[] = [
    );
    CREATE INDEX run_output_chunks_run ON run_output_chunks (run_id);
    ALTER TABLE run_outputs ADD COLUMN upload_id TEXT;`,
+  // 13: chained runs start from the output files of an earlier run of the member (their parent)
+  `ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
+   CREATE INDEX runs_parent ON runs (parent_run_id);`,
 ];
