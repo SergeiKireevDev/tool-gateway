@@ -32,6 +32,7 @@ import { AccountsPanel } from './AccountsPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { LaunchpadSettingsPanel } from './launchpad/LaunchpadSettingsPanel';
 import { RunsWorkspace } from './launchpad/RunsWorkspace';
+import { SkillsPanel } from './launchpad/SkillsPanel';
 import { LoginScreen } from './LoginScreen';
 import { MyTemplatesPanel } from './MyTemplatesPanel';
 import { MembersPanel } from './MembersPanel';
@@ -110,6 +111,7 @@ const ADMIN_TABS: TabDef[] = [
     label: 'Agent runs',
     render: (p) => <RunsWorkspace api={p.api} base={ADMIN_API} admin accounts={p.data.accounts} />,
   },
+  { id: 'skills', label: 'Skills', render: (p) => <SkillsPanel api={p.api} admin /> },
   { id: 'launchpad', label: 'Launchpad', render: (p) => <LaunchpadSettingsPanel api={p.api} /> },
   { id: 'webhooks', label: 'Webhooks', render: (p) => <WebhooksPanel {...p} /> },
   { id: 'activity', label: 'Activity', render: (p) => <ActivityPanel api={p.api} /> },
@@ -123,6 +125,7 @@ const MEMBER_TABS: TabDef[] = [
       <RunsWorkspace api={p.api} base={MEMBER_API} admin={false} accounts={p.data.accounts} />
     ),
   },
+  { id: 'skills', label: 'Skills', render: (p) => <SkillsPanel api={p.api} admin={false} /> },
   {
     id: 'sessions',
     label: 'Session keys',

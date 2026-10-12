@@ -323,7 +323,8 @@ Members can launch AI agents (Claude Code, Codex, Gemini CLI, pi) from the **Age
 run once, on a schedule or on webhook events, each in a disposable Firecracker microVM that can only reach the
 gateway. Every tool and model call goes through the gateway with a session key scoped by the
 template the member picked, and has a token budget. The run's transcript, its gateway calls,
-output files and `MEMORY.md` are kept and shown per run. Admins see every run under
+output files and `MEMORY.md` are kept and shown per run. What each agent learned is exported as
+skills (`SKILL.md`) into the member's skill library on the gateway (**Skills** tab). Admins see every run under
 **Agent runs** and set limits under **Launchpad**. Off unless `LAUNCHPAD_VM_DRIVER` is set: see
 [docs/launchpad.md](docs/launchpad.md) for the host setup and the security model.
 

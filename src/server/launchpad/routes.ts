@@ -13,7 +13,8 @@ import { type Actor, chainSchema, type Launchpad } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
 import type { Triggers } from './triggers.js';
 import type { Workflows, WorkflowView } from './workflows.js';
-import { RUN_HARNESSES, RUNNER_LIMITS } from './protocol.js';
+import { RUN_HARNESSES, RUNNER_LIMITS, SKILL_NAME_RE } from './protocol.js';
+import type { Skills } from './skills.js';
 import { RUN_STATUSES, type LaunchSettings, type Run, type RunFilter } from './runStore.js';
 
 const MAX_TIMEOUT_HOURS = 24;
@@ -35,6 +36,8 @@ const WORKFLOWS_PATH = '/workflows';
 const WORKFLOW_PATH = '/workflows/:wid';
 const ENVIRONMENTS_PATH = '/environments';
 const ENVIRONMENT_PATH = '/environments/:eid';
+const SKILLS_PATH = '/skills';
+const SKILL_PATH = '/skills/:kid';
 
 const timeoutSeconds = z
   .number()
@@ -88,6 +91,15 @@ const finishSchema = z.object({
   finalMessage: z.string().nullable(),
   memory: z.string().nullable(),
   error: z.string().max(RUNNER_LIMITS.eventText).nullable(),
+  skills: z
+    .array(
+      z.object({
+        name: z.string().regex(SKILL_NAME_RE),
+        content: z.string().max(RUNNER_LIMITS.skillContent),
+      }),
+    )
+    .max(RUNNER_LIMITS.skills)
+    .optional(),
 });
 
 const queryString = (req: Request, name: string): string | undefined => {
@@ -292,6 +304,31 @@ function triggerRoutes(
   );
 }
 
+/** Skill library routes shared by the member portal (own skills) and the admin (all). */
+function skillRoutes(
+  router: Router,
+  skills: Skills,
+  gateway: Gateway,
+  actorOf: (res: Response) => Actor,
+): void {
+  router.get(
+    SKILL_PATH,
+    h((req, res) => skills.visible(actorOf(res), param(req, 'kid'))),
+  );
+  router.delete(
+    SKILL_PATH,
+    h((req, res) => {
+      const actor = actorOf(res);
+      const skill = skills.delete(actor, param(req, 'kid'));
+      const by = actor.kind === 'admin' ? 'admin' : 'member';
+      gateway.activity.add({
+        kind: by,
+        detail: `Deleted skill "${skill.name}" of member "${skill.memberName}"`,
+      });
+    }),
+  );
+}
+
 /** Member portal: launch agents and follow their own runs (mounted under `/api/me/launchpad`). */
 export function memberLaunchRoutes(
   launchpad: Launchpad,
@@ -354,6 +391,11 @@ export function memberLaunchRoutes(
     }),
   );
   runReadRoutes(router, launchpad, gateway, actorOf);
+  router.get(
+    SKILLS_PATH,
+    h((_req, res) => launchpad.skills.list(memberOf(res).id)),
+  );
+  skillRoutes(router, launchpad.skills, gateway, actorOf);
   if (scheduler) {
     router.get(
       SCHEDULES_PATH,
@@ -437,6 +479,11 @@ export function adminLaunchRoutes(
     }),
   );
   runReadRoutes(router, launchpad, gateway, actorOf);
+  router.get(
+    SKILLS_PATH,
+    h((req) => launchpad.skills.list(queryString(req, 'memberId'))),
+  );
+  skillRoutes(router, launchpad.skills, gateway, actorOf);
 
   router.get(
     '/settings',

@@ -221,4 +221,17 @@ export const MIGRATIONS: readonly string[] = [
   // 13: chained runs start from the output files of an earlier run of the member (their parent)
   `ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
    CREATE INDEX runs_parent ON runs (parent_run_id);`,
+  // 14: the skill library: what agents learned during their runs, kept per member
+  `CREATE TABLE skills (
+     id TEXT PRIMARY KEY,
+     member_id TEXT NOT NULL,
+     member_name TEXT NOT NULL,
+     name TEXT NOT NULL,
+     description TEXT NOT NULL,
+     content TEXT NOT NULL,
+     run_id TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (member_id, name)
+   );`,
 ];

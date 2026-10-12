@@ -1,6 +1,7 @@
 import type { ToolExample } from '../tools/types.js';
 import {
   type Harness,
+  KIB,
   MAX_OUTPUT_FILE_MIB,
   MAX_OUTPUT_TOTAL_MIB,
   RUNNER_LIMITS,
@@ -38,6 +39,8 @@ export const OUT_DIR = '/home/agent/out';
 /** Where a chained run finds the output files of the run it is chained after. */
 export const IN_DIR = '/home/agent/in';
 export const MEMORY_FILE = '/home/agent/MEMORY.md';
+/** Where an agent exports what it learned, one `<name>/SKILL.md` per skill. */
+export const SKILLS_DIR = '/home/agent/skills';
 
 /** Arguments of a gateway tool call for a tool's sample request. */
 function exampleArgs(example: ToolExample): string {
@@ -113,6 +116,19 @@ ${files}`;
 }
 
 /**
+ * Asks the agent to leave what it learned as skills, which the gateway keeps in the member's skill
+ * library: the next agents need not rediscover it.
+ */
+function skillsSection(): string {
+  return `\n\n## Skills
+Before you finish, export everything you learned during this session that would help a future agent do similar work faster: how the systems, APIs, repositories and tools you used actually behave, the commands and requests that worked, pitfalls and their workarounds, conventions you had to discover. Don't restate the task, its result or generic knowledge: write what you wish you had known when you started.
+- Write each skill to \`${SKILLS_DIR}/<name>/SKILL.md\`. \`<name>\` is short, lowercase letters, digits and dashes (e.g. \`acme-api-pagination\`); one skill per topic, at most ${RUNNER_LIMITS.skills} skills of ${RUNNER_LIMITS.skillContent / KIB} KiB each.
+- Start the file with YAML frontmatter holding \`name\` (the same \`<name>\`) and \`description\` (one line: what the skill covers and when to use it), then write the instructions in Markdown.
+- They are kept in a skill library on the gateway. A skill with the name of an existing one replaces it, so improve rather than duplicate what you know.
+- Never put secrets (keys, tokens, passwords) or private data you were given in a skill.`;
+}
+
+/**
  * The system prompt every launched agent gets: how to reach tools through the gateway, what it is
  * allowed to do, and how its run ends. The task itself is the user prompt.
  */
@@ -144,5 +160,5 @@ ${
   ctx.hasMemory
     ? `- \`${MEMORY_FILE}\` holds notes from your previous runs of this scheduled task. Read it first. Update it with what the next run should know (keep it short); it is carried over.`
     : `- If this task is scheduled to run again, keep notes for your next run in \`${MEMORY_FILE}\` (short). It is carried over.`
-}${chainSection(ctx.chain)}${instructions}`;
+}${skillsSection()}${chainSection(ctx.chain)}${instructions}`;
 }
