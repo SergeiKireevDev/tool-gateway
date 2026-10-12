@@ -21,6 +21,20 @@ import {
  */
 
 const API = 'https://queue.fal.run';
+/** fal's platform API, which lists past requests to an endpoint. */
+const REQUESTS_BY_ENDPOINT = 'https://api.fal.ai/v1/models/requests/by-endpoint';
+/** Query parameters of the request listing (filters, pagination, `expand=payloads`). */
+const LIST_PARAMS = [
+  'limit',
+  'cursor',
+  'start',
+  'end',
+  'status',
+  'request_id',
+  'expand',
+  'sort_by',
+];
+const REQUESTS = 'requests';
 /** Endpoint ids under these namespaces have three segments (`workflows/<owner>/<app>`). */
 const NAMESPACES = ['workflows', 'comfy'];
 const APP_SEGMENTS = 2;
@@ -60,7 +74,7 @@ const PERMISSIONS = [
   {
     id: PERM.READ,
     label: 'Requests (read, download)',
-    description: `Poll a request and read its result (GET /<owner>/<app>/requests/<id>[/status[/stream]]), and download a generated file from fal's storage through the gateway (GET /${FILES}?url=<file URL>).`,
+    description: `List past requests to an endpoint (GET /<endpoint id>/requests), poll a request and read its result (GET /<owner>/<app>/requests/<id>[/status[/stream]]), and download a generated file from fal's storage through the gateway (GET /${FILES}?url=<file URL>).`,
   },
   {
     id: PERM.CANCEL,
@@ -162,6 +176,24 @@ function queued(request: ToolRequest, grant: Grant, rest: readonly string[]): Au
   return { allowed: true, permission: PERM.READ, detail: `request ${id}` };
 }
 
+/**
+ * `GET /<endpoint id>/requests`: lists past requests to an endpoint (with their inputs and outputs
+ * given `expand=payloads`), from fal's platform API.
+ */
+function list(request: ToolRequest, grant: Grant, segments: readonly string[]): AuthzAllowed {
+  if (request.method.toUpperCase() !== 'GET') throw notCovered(request);
+  const params = checkQuery(request.search, LIST_PARAMS);
+  requirePermission(grant, PERM.READ);
+  const endpoint = checkModel(grant, segments.join('/'));
+  params.set('endpoint_id', endpoint);
+  return {
+    allowed: true,
+    permission: PERM.READ,
+    detail: `list requests to ${endpoint}`,
+    upstreamUrl: `${REQUESTS_BY_ENDPOINT}?${params.toString()}`,
+  };
+}
+
 /** `GET /files?url=<file URL>`: downloads a file from fal's storage, which agents can't reach. */
 function download(request: ToolRequest, grant: Grant): AuthzAllowed {
   const url = checkQuery(request.search, ['url']).get('url');
@@ -187,7 +219,9 @@ function authorizeRequest(request: ToolRequest, grant: Grant): AuthzDecision {
     return download(request, grant);
   }
   const length = appLength(segments);
-  if (segments[length] === 'requests') return queued(request, grant, segments.slice(length + 1));
+  const rest = segments.slice(length + 1);
+  if (segments[length] === REQUESTS && rest.length > 0) return queued(request, grant, rest);
+  if (segments.at(-1) === REQUESTS) return list(request, grant, segments.slice(0, -1));
   if (verb === 'POST') return submit(request, grant);
   throw notCovered(request);
 }
