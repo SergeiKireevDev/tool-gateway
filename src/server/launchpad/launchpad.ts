@@ -31,7 +31,9 @@ import {
   type RunnerConfig,
   type RunnerFinishBody,
   RUNNER_LIMITS,
+  type RunnerSkill,
   SCRIPT_HARNESS,
+  SKILL_NAME_RE,
 } from './protocol.js';
 import {
   ACTIVE_STATUSES,
@@ -47,7 +49,7 @@ import {
 import { ATTACHMENT_LIMITS, type Attachment, Attachments } from './attachments.js';
 import { writeChunks } from './chunks.js';
 import { Environments } from './environments.js';
-import { Skills } from './skills.js';
+import { type Skill, Skills } from './skills.js';
 import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
 import { buildPlannerPrompt } from './workflowPrompt.js';
@@ -89,6 +91,8 @@ export const launchSchema = z.object({
   model: z.string().trim().min(1).max(MAX_MODEL_LENGTH).optional(),
   /** A guest environment the admin added; the default guest image if unset. */
   environmentId: z.string().min(1).max(MAX_ID_LENGTH).optional(),
+  /** Skills of the member's library the agent starts with, by name. */
+  skills: z.array(z.string().regex(SKILL_NAME_RE)).max(RUNNER_LIMITS.skills).optional(),
 });
 export type LaunchInput = z.infer<typeof launchSchema>;
 
@@ -152,6 +156,8 @@ export interface LaunchPlan {
   accountIds: string[];
   /** The guest environment the VM boots, or null for the default guest image. */
   environment: { id: string; name: string } | null;
+  /** Skills of the member's library the agent starts with (names). */
+  skills: string[];
   timeoutSeconds: number;
   tokenBudget: number;
 }
@@ -425,6 +431,7 @@ export class Launchpad {
       template: plan.template,
       accountIds: plan.accountIds,
       environment: this.environment(req.environmentId),
+      skills: script ? [] : this.skills.forLaunch(member.id, req.skills ?? []),
       timeoutSeconds,
       tokenBudget: settings.tokenBudgetPerRun,
     };
@@ -482,6 +489,7 @@ export class Launchpad {
       accountIds: plan.accountIds,
       environmentId: plan.environment?.id ?? null,
       environmentName: plan.environment?.name ?? null,
+      skills: plan.skills,
       timeoutSeconds: plan.timeoutSeconds,
       tokenBudget: plan.tokenBudget,
       keyGeneration: opts.keyGeneration ?? null,
@@ -489,8 +497,12 @@ export class Launchpad {
       createdAt: this.now().toISOString(),
     });
     this.attachments.claim(run.id, attachments);
-    const attached = attachments.length > 0 ? ` with ${attachments.length} attached file(s)` : '';
-    this.log(run, `${launchedBy(member, opts)} a ${plan.harness} agent${attached}`);
+    const extras = [
+      ...(attachments.length > 0 ? [`${attachments.length} attached file(s)`] : []),
+      ...(plan.skills.length > 0 ? [`${plan.skills.length} skill(s)`] : []),
+    ];
+    const extra = extras.length > 0 ? ` with ${extras.join(' and ')}` : '';
+    this.log(run, `${launchedBy(member, opts)} a ${plan.harness} agent${extra}`);
     void this.pump();
     return this.deps.runs.require(run.id);
   }
@@ -592,6 +604,8 @@ export class Launchpad {
     ).toISOString();
     const grants = this.promptGrants(session.grants);
     const inputs = this.inputs(run);
+    // Skills deleted from the library since the launch are left out.
+    const skills = this.skills.byNames(run.memberId, run.skills);
     return {
       runId: run.id,
       runToken,
@@ -602,8 +616,12 @@ export class Launchpad {
       gatewayTools: grants.map((g) => gatewayToolName(g.tool)),
       egressDomains: session.egressDomains ?? [],
       prompt: run.prompt,
-      systemPrompt: this.systemPrompt(run, grants, session.egressDomains ?? [], deadline, inputs),
+      systemPrompt: this.systemPrompt(run, grants, session.egressDomains ?? [], deadline, {
+        inputs,
+        skills,
+      }),
       ...(inputs && { inputs: [...inputs.attached, ...inputs.chained] }),
+      ...(skills.length > 0 && { skills: skills.map((s) => s.name) }),
       memory: run.memoryIn,
       deadline,
     };
@@ -634,8 +652,9 @@ export class Launchpad {
     grants: PromptGrant[],
     egressDomains: string[],
     deadline: string,
-    inputs: RunInputs | undefined,
+    given: { inputs: RunInputs | undefined; skills: readonly Skill[] },
   ): string {
+    const { inputs } = given;
     if (run.harness === SCRIPT_HARNESS) return '';
     if (run.workflowStep !== 'plan') {
       return buildSystemPrompt({
@@ -650,6 +669,7 @@ export class Launchpad {
             ? null
             : { parentRunId: run.parentRunId, files: inputs?.chained ?? [] },
         attachments: inputs?.attached ?? [],
+        skills: given.skills.map(({ name, description }) => ({ name, description })),
       });
     }
     const workflow = this.deps.runs.requireWorkflow(run.workflowId ?? '');
@@ -736,6 +756,13 @@ export class Launchpad {
       (run.parentRunId === null ? null : this.deps.runs.outputStream(run.parentRunId, path));
     if (!file) throw notFound('Input file not found');
     return file;
+  }
+
+  /** The skills a run starts with, as the runner installs them (those still in the library). */
+  runnerSkills(run: Run): RunnerSkill[] {
+    return this.skills
+      .byNames(run.memberId, run.skills)
+      .map(({ name, content }) => ({ name, content }));
   }
 
   reportEvents(run: Run, events: readonly RunEvent[]): number {

@@ -232,10 +232,14 @@ function readAgentFile(file: string, maxChars: number): string | null {
 }
 
 /**
- * The skills the agent exported: `<skillsDir>/<name>/SKILL.md`, within the runner's limits.
- * Returns why the others were not kept.
+ * The skills the agent exported: `<skillsDir>/<name>/SKILL.md`, within the runner's limits, without
+ * those the run was given (`given`, by name) and left unchanged. Returns why the others were not
+ * kept.
  */
-export function readSkills(skillsDir: string): { skills: RunnerSkill[]; problems: string[] } {
+export function readSkills(
+  skillsDir: string,
+  given: ReadonlyMap<string, string> = new Map(),
+): { skills: RunnerSkill[]; problems: string[] } {
   const skills: RunnerSkill[] = [];
   const problems: string[] = [];
   if (!existsSync(skillsDir)) return { skills, problems };
@@ -251,6 +255,8 @@ export function readSkills(skillsDir: string): { skills: RunnerSkill[]; problems
     const content = readAgentFile(file, RUNNER_LIMITS.skillContent);
     if (!content?.trim()) {
       problems.push(`skipped skill ${entry.name} (no ${SKILL_FILE})`);
+    } else if (given.get(entry.name) === content) {
+      continue;
     } else if (skills.length >= RUNNER_LIMITS.skills) {
       problems.push(`skipped skill ${entry.name} (more than ${RUNNER_LIMITS.skills} skills)`);
     } else {
@@ -258,6 +264,24 @@ export function readSkills(skillsDir: string): { skills: RunnerSkill[]; problems
     }
   }
   return { skills, problems };
+}
+
+/**
+ * Installs the skills the run starts with as `<skillsDir>/<name>/SKILL.md`, owned by the agent.
+ * Returns what it wrote, by name, to tell the skills the agent changed from those it left alone.
+ */
+export async function installSkills(
+  skillsDir: string,
+  reporter: Pick<Reporter, 'fetchSkills'>,
+  ids: { uid: number; gid: number } | null = null,
+): Promise<Map<string, string>> {
+  const installed = new Map<string, string>();
+  for (const skill of await reporter.fetchSkills()) {
+    if (!SKILL_NAME_RE.test(skill.name)) continue;
+    writeOwned(path.join(skillsDir, skill.name, SKILL_FILE), skill.content, ids);
+    installed.set(skill.name, skill.content);
+  }
+  return installed;
 }
 
 const GITHUB_TOOL = 'gateway_github';
@@ -408,6 +432,16 @@ export async function main(argv: readonly string[]): Promise<void> {
     });
   }
 
+  let given = new Map<string, string>();
+  if (config.skills?.length) {
+    try {
+      given = await installSkills(skillsDir, reporter, ids);
+      reporter.push({ type: 'status', text: `Installed ${given.size} skill(s) in ${skillsDir}` });
+    } catch (err) {
+      reporter.push({ type: 'error', text: `Could not install skills: ${(err as Error).message}` });
+    }
+  }
+
   const state = newState();
   let result: { code: number | null; timedOut: boolean } = { code: null, timedOut: false };
   try {
@@ -417,7 +451,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   const problems = await uploadOutputs(path.join(home, 'out'), reporter);
   for (const problem of problems) reporter.push({ type: 'log', text: problem });
-  const exported = readSkills(skillsDir);
+  const exported = readSkills(skillsDir, given);
   for (const problem of exported.problems) reporter.push({ type: 'log', text: problem });
   if (exported.skills.length > 0) {
     reporter.push({ type: 'status', text: `Exported ${exported.skills.length} skill(s)` });
