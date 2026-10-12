@@ -20,6 +20,7 @@ import {
 } from '@/lib/launchpad';
 import type { Account } from '@/lib/types';
 import { Button, ErrorBanner, Field, Input, Select, Textarea } from '../ui';
+import { AttachmentsField, discardAttachments, uploadAttachments } from './AttachmentsField';
 
 type When = 'now' | Preset | 'webhook';
 const WHEN_LABELS: Record<When, string> = {
@@ -499,9 +500,14 @@ interface Draft {
   filters: FilterDraft;
   /** The run whose output files the agent starts from ('' = none). */
   parentRunId: string;
+  /** Files uploaded for the launch, copied to /home/agent/in. */
+  attachmentIds: string[];
 }
 
 const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
+
+/** Files are attached to agents launched now (not to workflows, schedules or triggers). */
+const attachable = (when: When, workflow: boolean): boolean => when === 'now' && !workflow;
 
 /** Whether the form holds what its request needs: a task, and for a trigger a webhook. */
 function ready(d: Pick<Draft, 'when' | 'prompt' | 'webhookId'>): boolean {
@@ -533,7 +539,11 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   const agent = { ...launch, ...(d.environmentId ? { environmentId: d.environmentId } : {}) };
   if (d.when === 'now') {
     const chain = d.parentRunId ? { parentRunId: d.parentRunId } : {};
-    return { path: '/launchpad/runs', body: { ...agent, ...chain, prompt: d.prompt } };
+    const attached = d.attachmentIds.length > 0 ? { attachmentIds: d.attachmentIds } : {};
+    return {
+      path: '/launchpad/runs',
+      body: { ...agent, ...chain, ...attached, prompt: d.prompt },
+    };
   }
   if (d.when === 'webhook') {
     return {
@@ -1034,8 +1044,10 @@ export function LaunchForm({
   const [environmentId, setEnvironmentId] = useState(() =>
     parentEnvironment(parent, options.environments),
   );
+  const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const attaching = attachable(when, workflow);
 
   const plannerTool = workflow ? choice?.provider : undefined;
   const { ambiguous, picked, setPicked, pickedFor } = useAccountPicks(
@@ -1053,9 +1065,7 @@ export function LaunchForm({
     );
   }
 
-  const submit = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
+  const send = async (attachmentIds: string[]): Promise<void> => {
     const request = requestFor({
       when,
       workflow,
@@ -1076,17 +1086,28 @@ export function LaunchForm({
       eventTypes,
       filters,
       parentRunId: parent?.id ?? '',
+      attachmentIds,
     });
+    const sent = await api<Run | Schedule | Trigger | Workflow>(
+      'POST',
+      request.path,
+      request.body,
+    ).catch(async (err: unknown) => {
+      // Not launched with: they would only wait to be deleted.
+      await discardAttachments(api, attachmentIds);
+      throw err;
+    });
+    if (workflow) onWorkflow(sent as Workflow);
+    else if (when === 'now') onLaunched(sent as Run);
+    else if (when === 'webhook') onTriggered(sent as Trigger);
+    else onScheduled(sent as Schedule);
+  };
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
     try {
-      const sent = await api<Run | Schedule | Trigger | Workflow>(
-        'POST',
-        request.path,
-        request.body,
-      );
-      if (workflow) onWorkflow(sent as Workflow);
-      else if (when === 'now') onLaunched(sent as Run);
-      else if (when === 'webhook') onTriggered(sent as Trigger);
-      else onScheduled(sent as Schedule);
+      await send(attaching ? await uploadAttachments(api, files) : []);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1136,6 +1157,7 @@ export function LaunchForm({
         </Field>
       ))}
       {!once && <WhenField when={when} setWhen={setWhen} />}
+      <AttachmentsField shown={attaching} files={files} onChange={setFiles} />
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}

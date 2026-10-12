@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { type Api, downloadFile } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import {
+  type Attachment,
   formatBytes,
   HARNESS_LABELS,
   isActive,
@@ -35,6 +36,7 @@ interface Loaded {
   activity: RunActivity[];
   usage: ModelUsage[];
   outputs: OutputFile[];
+  attachments: Attachment[];
 }
 
 /** Polls a run, its new transcript events and its gateway calls while it is active. */
@@ -47,12 +49,13 @@ function useRun(api: Api, runId: string) {
   const load = useCallback(async () => {
     try {
       const base = `/launchpad/runs/${runId}`;
-      const [run, fresh, activity, usage, outputs] = await Promise.all([
+      const [run, fresh, activity, usage, outputs, attachments] = await Promise.all([
         api<Run>('GET', base),
         api<RunEvent[]>('GET', `${base}/events?after=${String(lastSeq.current)}`),
         api<RunActivity[]>('GET', `${base}/activity`),
         api<ModelUsage[]>('GET', `${base}/usage`),
         api<OutputFile[]>('GET', `${base}/outputs`),
+        api<Attachment[]>('GET', `${base}/attachments`),
       ]);
       const last = fresh.at(-1);
       if (last) {
@@ -63,7 +66,7 @@ function useRun(api: Api, runId: string) {
           return [...prev, ...fresh.filter((e) => !seen.has(e.seq))];
         });
       }
-      setLoaded({ run, activity, usage, outputs });
+      setLoaded({ run, activity, usage, outputs, attachments });
       setError(null);
       return isActive(run.status);
     } catch (err) {
@@ -89,16 +92,54 @@ function useRun(api: Api, runId: string) {
   return { loaded, events, error, reload: load };
 }
 
+/** Files of a run, each with its download button. */
+function FileList({
+  files,
+  downloadBase,
+  onError,
+}: {
+  files: { key: string; label: string; detail: string; path: string; name: string }[];
+  downloadBase: string;
+  onError: (message: string) => void;
+}) {
+  return (
+    <ul className="divide-y divide-slate-100 rounded-lg ring-1 ring-slate-200">
+      {files.map((f) => (
+        <li key={f.key} className="flex items-center justify-between px-3 py-2 text-sm">
+          <span className="font-mono">{f.label}</span>
+          <span className="flex items-center gap-3 text-xs text-slate-500">
+            {f.detail}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                downloadFile(downloadBase, f.path, f.name).catch((err: unknown) => {
+                  onError((err as Error).message);
+                });
+              }}
+            >
+              Download
+            </Button>
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Outputs({
   run,
   outputs,
+  attachments,
   downloadBase,
 }: {
   run: Run;
   outputs: OutputFile[];
+  attachments: Attachment[];
   downloadBase: string;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const base = `/launchpad/runs/${run.id}`;
   return (
     <div className="space-y-6">
       {run.statusReason && (
@@ -113,40 +154,43 @@ function Outputs({
             (isActive(run.status) ? 'Not finished yet.' : 'The agent left no final message.')}
         </pre>
       </section>
+      <ErrorBanner message={error} />
       <section>
         <h4 className="mb-2 text-sm font-semibold text-slate-700">Files ({outputs.length})</h4>
-        <ErrorBanner message={error} />
         {outputs.length === 0 ? (
           <p className="text-sm text-slate-500">No files in /home/agent/out.</p>
         ) : (
-          <ul className="divide-y divide-slate-100 rounded-lg ring-1 ring-slate-200">
-            {outputs.map((f) => (
-              <li key={f.path} className="flex items-center justify-between px-3 py-2 text-sm">
-                <span className="font-mono">{f.path}</span>
-                <span className="flex items-center gap-3 text-xs text-slate-500">
-                  {formatBytes(f.size)} · kept until {formatDateTime(f.expiresAt)}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      const path = f.path.split('/').map(encodeURIComponent).join('/');
-                      downloadFile(
-                        downloadBase,
-                        `/launchpad/runs/${run.id}/outputs/${path}`,
-                        f.path.split('/').at(-1) ?? 'output',
-                      ).catch((err: unknown) => {
-                        setError((err as Error).message);
-                      });
-                    }}
-                  >
-                    Download
-                  </Button>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <FileList
+            downloadBase={downloadBase}
+            onError={setError}
+            files={outputs.map((f) => ({
+              key: f.path,
+              label: f.path,
+              detail: `${formatBytes(f.size)} · kept until ${formatDateTime(f.expiresAt)}`,
+              path: `${base}/outputs/${f.path.split('/').map(encodeURIComponent).join('/')}`,
+              name: f.path.split('/').at(-1) ?? 'output',
+            }))}
+          />
         )}
       </section>
+      {attachments.length > 0 && (
+        <section>
+          <h4 className="mb-2 text-sm font-semibold text-slate-700">
+            Attached files ({attachments.length})
+          </h4>
+          <FileList
+            downloadBase={downloadBase}
+            onError={setError}
+            files={attachments.map((a) => ({
+              key: a.id,
+              label: `in/${a.name}`,
+              detail: formatBytes(a.size),
+              path: `${base}/attachments/${encodeURIComponent(a.name)}`,
+              name: a.name,
+            }))}
+          />
+        </section>
+      )}
       {(run.memoryIn ?? run.memoryOut) !== null && (
         <section>
           <h4 className="mb-2 text-sm font-semibold text-slate-700">MEMORY.md</h4>
@@ -352,7 +396,12 @@ export function RunDetail({
       {tab === 'steps' && <RunSteps events={events} />}
       {tab === 'tools' && <RunTools activity={loaded.activity} />}
       {tab === 'output' && (
-        <Outputs run={run} outputs={loaded.outputs} downloadBase={downloadBase} />
+        <Outputs
+          run={run}
+          outputs={loaded.outputs}
+          attachments={loaded.attachments}
+          downloadBase={downloadBase}
+        />
       )}
     </section>
   );

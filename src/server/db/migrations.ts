@@ -234,4 +234,22 @@ export const MIGRATIONS: readonly string[] = [
      updated_at TEXT NOT NULL,
      UNIQUE (member_id, name)
    );`,
+  // 15: files a member attaches to a launch, copied to the agent's /home/agent/in. Uploaded
+  // before the launch (run_id null), then claimed by the run. size is null while uploading.
+  `CREATE TABLE run_attachments (
+     id TEXT PRIMARY KEY,
+     member_id TEXT NOT NULL,
+     run_id TEXT REFERENCES runs (id) ON DELETE CASCADE,
+     name TEXT NOT NULL,
+     size INTEGER,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX run_attachments_member ON run_attachments (member_id, run_id);
+   CREATE INDEX run_attachments_run ON run_attachments (run_id);
+   CREATE TABLE run_attachment_chunks (
+     attachment_id TEXT NOT NULL REFERENCES run_attachments (id) ON DELETE CASCADE,
+     seq INTEGER NOT NULL,
+     data BLOB NOT NULL,
+     PRIMARY KEY (attachment_id, seq)
+   );`,
 ];

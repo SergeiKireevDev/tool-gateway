@@ -93,9 +93,9 @@ export interface RunnerConfig {
   /** Unused by the `script` harness. */
   systemPrompt: string;
   /**
-   * Output files of the run this one is chained after, which the runner downloads into
-   * `/home/agent/in` (`GET /runner/inputs/<path>`) before starting the agent. Absent when the run
-   * isn't chained, and in configs from older gateways.
+   * Files attached to the launch, and output files of the run this one is chained after, which
+   * the runner downloads into `/home/agent/in` (`GET /runner/inputs/<path>`) before starting the
+   * agent. Absent when the run has none, and in configs from older gateways.
    */
   inputs?: RunInput[];
   /** `MEMORY.md` carried over from the previous run of a schedule, or null. */
@@ -106,7 +106,7 @@ export interface RunnerConfig {
   network: { address: string; prefixLength: number; gateway: string };
 }
 
-/** An input file of a chained run: an output file of its parent run. */
+/** An input file of a run: a file attached to its launch, or an output file of its parent run. */
 export interface RunInput {
   path: string;
   size: number;
