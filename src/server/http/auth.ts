@@ -12,7 +12,7 @@ export function bearerToken(req: Request): string | null {
 /**
  * Session key presented to the proxy. Besides `Bearer`/`token`, accepts a bare key: some APIs
  * (monday.com) put the raw token in `Authorization`, and their SDKs do the same. git sends it with
- * HTTP Basic auth, as the password (or the user name).
+ * HTTP Basic auth, as the password (or the user name). fal.ai's clients send `Key X`.
  */
 export function proxyToken(req: Request): string | null {
   const bearer = bearerToken(req);
@@ -21,6 +21,8 @@ export function proxyToken(req: Request): string | null {
   if (!header) return null;
   const basic = /^basic\s+(\S+)$/i.exec(header);
   if (basic?.[1]) return basicAuthKey(basic[1]);
+  const key = /^key\s+(\S+)$/i.exec(header)?.[1];
+  if (key?.startsWith(SESSION_KEY_PREFIX)) return key;
   return header.startsWith(SESSION_KEY_PREFIX) && !/\s/.test(header) ? header : null;
 }
 

@@ -13,6 +13,7 @@ import { createLinearProvider } from '../src/server/tools/linear.js';
 import { createAnthropicProvider } from '../src/server/tools/llm/anthropic.js';
 import { createCustomLlmProvider } from '../src/server/tools/llm/custom.js';
 import { createGeminiProvider } from '../src/server/tools/llm/gemini.js';
+import { createFalProvider } from '../src/server/tools/fal.js';
 import { createGeminiMediaProvider } from '../src/server/tools/geminiMedia.js';
 import { createOpenAIProvider } from '../src/server/tools/llm/openai.js';
 import { createMondayProvider } from '../src/server/tools/monday.js';
@@ -424,6 +425,21 @@ function fakeSeedanceFetch(calls: Harness['upstreamCalls']): typeof fetch {
   };
 }
 
+export const FAL_FILE_BYTES = 'fake-fal-png';
+
+/** Fake fal.ai queue and CDN: a key ending in `bad-key` is refused, everything else succeeds. */
+function fakeFalFetch(calls: Harness['upstreamCalls']): typeof fetch {
+  return (input, init = {}) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    if (!url.startsWith('https://queue.fal.run/'))
+      return Promise.resolve(new Response(FAL_FILE_BYTES));
+    const auth = new Headers(init.headers).get('authorization');
+    if (auth?.endsWith('bad-key')) return Promise.resolve(Response.json({}, { status: 401 }));
+    return Promise.resolve(Response.json({ request_id: 'req-1', status: 'IN_QUEUE' }));
+  };
+}
+
 const GOOGLE_HOSTS = ['https://gmail.googleapis.com/', 'https://oauth2.googleapis.com/'];
 
 /** Routes upstream calls to the fake API of the tool they are for. */
@@ -435,11 +451,13 @@ function fakeUpstreams(calls: Harness['upstreamCalls']): typeof fetch {
   const linear = fakeLinearFetch(calls);
   const gmail = fakeGmailFetch(calls);
   const seedance = fakeSeedanceFetch(calls);
+  const fal = fakeFalFetch(calls);
   return (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     if (GOOGLE_HOSTS.some((host) => url.startsWith(host))) return gmail(input, init);
     if (url.startsWith('https://api.linear.app/')) return linear(input, init);
     if (/^https:\/\/[^/]*bytepluses\.com\//.test(url)) return seedance(input, init);
+    if (/^https:\/\/([^/]*\.)?fal\.(run|media)\//.test(url)) return fal(input, init);
     if (LLM_HOSTS.some((host) => url.startsWith(host))) return llm(input, init);
     if (url.startsWith('https://api.monday.com/')) return monday(input, init);
     return url.startsWith('https://slack.com/') ? slack(input, init) : github(input, init);
@@ -534,6 +552,7 @@ export async function createHarness(): Promise<Harness> {
       createGmailProvider(fetch, GMAIL_CLIENT),
       createGeminiMediaProvider(fetch),
       createSeedanceProvider(fetch),
+      createFalProvider(fetch),
       createAnthropicProvider(fetch),
       createOpenAIProvider(fetch),
       createGeminiProvider(fetch),
