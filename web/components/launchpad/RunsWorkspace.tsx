@@ -54,6 +54,8 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const [runsFilter, setRunsFilter] = useState<RunsFilter | null>(null);
   const [memberFilter, setMemberFilter] = useState('');
   const [launching, setLaunching] = useState(false);
+  /** The run a new agent is being chained after, from its page. */
+  const [chainFrom, setChainFrom] = useState<Run | null>(null);
 
   const load = useCallback(() => {
     const query = new URLSearchParams();
@@ -97,6 +99,45 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
       </EmptyState>
     );
   }
+  const closeLaunch = (): void => {
+    setLaunching(false);
+    setChainFrom(null);
+  };
+  const launchModal = options && (
+    <Modal
+      wide
+      open={launching || chainFrom !== null}
+      title={chainFrom ? 'Chain an agent' : 'New agent'}
+      onClose={closeLaunch}
+    >
+      <LaunchForm
+        // A fresh form for each parent.
+        key={chainFrom?.id ?? 'new'}
+        api={api}
+        options={options}
+        accounts={accounts}
+        webhooks={webhooks}
+        parent={chainFrom}
+        onLaunched={(run) => {
+          closeLaunch();
+          setSelected({ kind: 'run', id: run.id });
+        }}
+        onWorkflow={(workflow: Workflow) => {
+          closeLaunch();
+          setSelected({ kind: 'workflow', id: workflow.id });
+        }}
+        onScheduled={() => {
+          closeLaunch();
+          void load();
+        }}
+        onTriggered={() => {
+          closeLaunch();
+          void load();
+        }}
+      />
+    </Modal>
+  );
+
   if (selected) {
     const back = (): void => {
       setSelected(null);
@@ -111,13 +152,22 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         onBack={back}
       />
     ) : (
-      <RunDetail
-        api={api}
-        runId={selected.id}
-        downloadBase={base}
-        showMember={admin}
-        onBack={back}
-      />
+      <>
+        <RunDetail
+          // Each run's transcript is polled afresh.
+          key={selected.id}
+          api={api}
+          runId={selected.id}
+          downloadBase={base}
+          showMember={admin}
+          onBack={back}
+          onChain={admin || !options?.enabled ? undefined : setChainFrom}
+          onOpenRun={(id) => {
+            setSelected({ kind: 'run', id });
+          }}
+        />
+        {launchModal}
+      </>
     );
   }
 
@@ -222,39 +272,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         }}
       />
 
-      {options && (
-        <Modal
-          wide
-          open={launching}
-          title="New agent"
-          onClose={() => {
-            setLaunching(false);
-          }}
-        >
-          <LaunchForm
-            api={api}
-            options={options}
-            accounts={accounts}
-            webhooks={webhooks}
-            onLaunched={(run) => {
-              setLaunching(false);
-              setSelected({ kind: 'run', id: run.id });
-            }}
-            onWorkflow={(workflow: Workflow) => {
-              setLaunching(false);
-              setSelected({ kind: 'workflow', id: workflow.id });
-            }}
-            onScheduled={() => {
-              setLaunching(false);
-              void load();
-            }}
-            onTriggered={() => {
-              setLaunching(false);
-              void load();
-            }}
-          />
-        </Modal>
-      )}
+      {launchModal}
     </section>
   );
 }

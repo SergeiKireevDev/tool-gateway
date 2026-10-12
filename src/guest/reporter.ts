@@ -1,5 +1,7 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { RunEvent, RunnerFinishBody } from '../server/launchpad/protocol.js';
 import { RUNNER_LIMITS } from '../server/launchpad/protocol.js';
 import type { EventDraft } from './harnesses.js';
@@ -71,6 +73,22 @@ export class Reporter {
       `/runner/outputs/${encoded}`,
       () => Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>,
       'application/octet-stream',
+    );
+  }
+
+  /**
+   * Downloads an input file of a chained run (an output file of its parent) to `file`, streamed to
+   * disk.
+   */
+  async downloadInput(relativePath: string, file: string): Promise<void> {
+    const encoded = relativePath.split('/').map(encodeURIComponent).join('/');
+    const res = await this.fetchImpl(`${this.gatewayUrl}/runner/inputs/${encoded}`, {
+      headers: { authorization: `Bearer ${this.runToken}` },
+    });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    await pipeline(
+      Readable.fromWeb(res.body as NodeReadableStream<Uint8Array>),
+      createWriteStream(file, { mode: 0o600 }),
     );
   }
 

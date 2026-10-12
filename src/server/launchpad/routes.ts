@@ -9,7 +9,7 @@ import { created, h, param } from '../http/handlers.js';
 import type { Member } from '../store/types.js';
 import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
 import type { GuestEnvironment } from './environments.js';
-import type { Actor, Launchpad } from './launchpad.js';
+import { type Actor, chainSchema, type Launchpad } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
 import type { Triggers } from './triggers.js';
 import type { Workflows, WorkflowView } from './workflows.js';
@@ -115,6 +115,8 @@ function runFilter(req: Request): RunFilter {
   if (scheduleId) filter.scheduleId = scheduleId;
   const triggerId = queryString(req, 'triggerId');
   if (triggerId) filter.triggerId = triggerId;
+  const parentRunId = queryString(req, 'parentRunId');
+  if (parentRunId) filter.parentRunId = parentRunId;
   if (limit) filter.limit = Number(limit);
   return filter;
 }
@@ -171,16 +173,7 @@ function runReadRoutes(
       const path = parts.join('/');
       const file = launchpad.runs.outputStream(r.id, path);
       if (!file) throw notFound('Output file not found');
-      const name = parts.at(-1) ?? 'output';
-      res
-        .set('content-type', 'application/octet-stream')
-        .set('content-length', String(file.size))
-        .set('content-disposition', `attachment; filename="${name.replace(/"/g, '')}"`)
-        .set('x-content-type-options', 'nosniff');
-      // Chunk by chunk, so a large file is never held in memory whole.
-      pipeline(Readable.from(file.chunks), res).catch(() => {
-        res.destroy();
-      });
+      sendFile(res, file, parts.at(-1) ?? 'output');
     } catch (err) {
       next(err);
     }
@@ -191,6 +184,22 @@ function runReadRoutes(
       runView(launchpad, gateway, await launchpad.cancel(actorOf(res), param(req, RUN_ID))),
     ),
   );
+}
+
+/** Sends a stored file, chunk by chunk, so a large file is never held in memory whole. */
+function sendFile(
+  res: Response,
+  file: { size: number; chunks: Iterable<Buffer> },
+  name: string,
+): void {
+  res
+    .set('content-type', 'application/octet-stream')
+    .set('content-length', String(file.size))
+    .set('content-disposition', `attachment; filename="${name.replace(/"/g, '')}"`)
+    .set('x-content-type-options', 'nosniff');
+  pipeline(Readable.from(file.chunks), res).catch(() => {
+    res.destroy();
+  });
 }
 
 /** A workflow with its step runs (and their token usage), as the API returns it. */
@@ -338,7 +347,11 @@ export function memberLaunchRoutes(
   );
   router.post(
     '/runs',
-    created((req, res) => runView(launchpad, gateway, launchpad.launch(memberOf(res), req.body))),
+    created((req, res) => {
+      const { parentRunId } = chainSchema.parse(req.body);
+      const run = launchpad.launch(memberOf(res), req.body, parentRunId ? { parentRunId } : {});
+      return runView(launchpad, gateway, run);
+    }),
   );
   runReadRoutes(router, launchpad, gateway, actorOf);
   if (scheduler) {
@@ -530,6 +543,16 @@ export function runnerRoutes(launchpad: Launchpad): Router {
       return { stored: launchpad.reportEvents(run, events) };
     }),
   );
+  // A chained run's input files (its parent's outputs), streamed like downloads.
+  router.get('/inputs/*path', (req, res, next) => {
+    try {
+      const run = runOf(req);
+      const parts = req.params.path as unknown as readonly string[];
+      sendFile(res, launchpad.runnerInput(run, parts.join('/')), parts.at(-1) ?? 'input');
+    } catch (err) {
+      next(err);
+    }
+  });
   // The body is streamed into the database (files reach 1 GiB), not parsed into memory.
   router.put(
     '/outputs/*path',

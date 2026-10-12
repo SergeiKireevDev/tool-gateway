@@ -18,10 +18,10 @@ import { RunDetail } from './RunDetail';
 
 const POLL_MS = 2000;
 
-type NodeState = RunStatus | 'waiting';
+export type NodeState = RunStatus | 'waiting';
 
 /** Node frames by state: what is going stands out, what is left is dashed. */
-const NODE_FRAMES: Record<NodeState, string> = {
+export const NODE_FRAMES: Record<NodeState, string> = {
   waiting: 'border-dashed border-slate-300 bg-slate-50',
   queued: 'border-slate-300 bg-white',
   provisioning: 'border-indigo-400 bg-indigo-50',
@@ -119,13 +119,17 @@ function StepNode({
 /** The edge into a step: drawn once the step before it succeeded, moving while it starts. */
 function Edge({ from, to }: { from: Step; to: Step }) {
   const passed = from.run?.status === 'succeeded';
-  const starting = passed && (!to.run || to.run.status === 'queued');
+  return <Arrow passed={passed} moving={passed && (!to.run || to.run.status === 'queued')} />;
+}
+
+/** An edge of a graph of runs: solid once passed, dashed before, moving while the next starts. */
+export function Arrow({ passed, moving }: { passed: boolean; moving: boolean }) {
   return (
     <svg
       aria-hidden
       viewBox="0 0 48 16"
       className={`h-4 w-12 shrink-0 ${passed ? 'text-green-500' : 'text-slate-300'} ${
-        starting ? 'animate-pulse' : ''
+        moving ? 'animate-pulse' : ''
       }`}
     >
       <line

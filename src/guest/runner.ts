@@ -15,6 +15,7 @@ import {
   CONFIG_DRIVE_BYTES,
   MIB,
   RUNNER_LIMITS,
+  type RunInput,
   type RunnerConfig,
   type RunnerOutcome,
 } from '../server/launchpad/protocol.js';
@@ -129,6 +130,34 @@ function overLimit(count: number, size: number, total: number): string | null {
 }
 
 const mib = (bytes: number): string => `${(bytes / MIB).toFixed(1)} MiB`;
+
+/**
+ * Downloads a chained run's input files (its parent's output files) into `inDir`, owned by the
+ * agent. Returns the files it could not get.
+ */
+export async function downloadInputs(
+  inputs: readonly RunInput[],
+  inDir: string,
+  reporter: Pick<Reporter, 'downloadInput'>,
+  ids: { uid: number; gid: number } | null = null,
+): Promise<string[]> {
+  const problems: string[] = [];
+  for (const input of inputs) {
+    const file = path.resolve(inDir, input.path);
+    if (!file.startsWith(`${path.resolve(inDir)}${path.sep}`)) {
+      problems.push(`skipped input ${input.path} (invalid path)`);
+      continue;
+    }
+    try {
+      makeDir(path.dirname(file), ids);
+      await reporter.downloadInput(input.path, file);
+      if (ids) chownSync(file, ids.uid, ids.gid);
+    } catch (err) {
+      problems.push(`could not download input ${input.path}: ${(err as Error).message}`);
+    }
+  }
+  return problems;
+}
 
 export async function uploadOutputs(
   outDir: string,
@@ -308,6 +337,16 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
   const memoryFile = path.join(home, 'MEMORY.md');
   if (config.memory !== null) writeOwned(memoryFile, config.memory, ids);
+  if (config.inputs) {
+    const inDir = path.join(home, 'in');
+    makeDir(inDir, ids);
+    const missing = await downloadInputs(config.inputs, inDir, reporter, ids);
+    for (const problem of missing) reporter.push({ type: 'error', text: problem });
+    reporter.push({
+      type: 'status',
+      text: `Copied ${config.inputs.length - missing.length} input file(s) from the parent run`,
+    });
+  }
 
   const state = newState();
   let result: { code: number | null; timedOut: boolean } = { code: null, timedOut: false };

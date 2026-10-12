@@ -40,6 +40,8 @@ export interface Run {
   /** The workflow the run is a step of, and which step, if any. */
   workflowId: string | null;
   workflowStep: WorkflowStep | null;
+  /** The run whose output files this one started from (chained runs), if any. */
+  parentRunId: string | null;
   harness: RunHarness;
   model: string | null;
   prompt: string;
@@ -78,6 +80,7 @@ export type NewRun = Pick<
   | 'triggerId'
   | 'workflowId'
   | 'workflowStep'
+  | 'parentRunId'
   | 'harness'
   | 'model'
   | 'prompt'
@@ -182,6 +185,8 @@ export interface RunFilter {
   scheduleId?: string;
   triggerId?: string;
   workflowId?: string;
+  /** Runs chained after this one. */
+  parentRunId?: string;
   harness?: RunHarness;
   /** Runs created before this ISO time (paging, newest first). */
   before?: string;
@@ -230,6 +235,7 @@ interface RunRow {
   trigger_id: string | null;
   workflow_id: string | null;
   workflow_step: WorkflowStep | null;
+  parent_run_id: string | null;
   harness: RunHarness;
   model: string | null;
   prompt: string;
@@ -280,6 +286,7 @@ function toRun(r: RunRow): Run {
     triggerId: r.trigger_id,
     workflowId: r.workflow_id,
     workflowStep: r.workflow_step,
+    parentRunId: r.parent_run_id,
     harness: r.harness,
     model: r.model,
     prompt: r.prompt,
@@ -346,10 +353,10 @@ export class RunStore {
     this.db.sql
       .prepare(
         `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, workflow_id,
-           workflow_step, harness, model, prompt, instructions, template_id, template_name, account_ids,
-           environment_id, environment_name, run_token_hash, status, timeout_seconds, token_budget,
-           key_generation, memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+           workflow_step, parent_run_id, harness, model, prompt, instructions, template_id,
+           template_name, account_ids, environment_id, environment_name, run_token_hash, status,
+           timeout_seconds, token_budget, key_generation, memory_in, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -359,6 +366,7 @@ export class RunStore {
         run.triggerId,
         run.workflowId,
         run.workflowStep,
+        run.parentRunId,
         run.harness,
         run.model,
         redact(run.prompt),
@@ -440,6 +448,7 @@ export class RunStore {
     add('schedule_id = ?', filter.scheduleId);
     add('trigger_id = ?', filter.triggerId);
     add('workflow_id = ?', filter.workflowId);
+    add('parent_run_id = ?', filter.parentRunId);
     add('harness = ?', filter.harness);
     add('created_at < ?', filter.before);
     const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, filter.limit ?? DEFAULT_LIST_LIMIT));

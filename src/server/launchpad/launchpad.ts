@@ -27,6 +27,7 @@ import {
   type RunHarness,
   RUN_TOKEN_PREFIX,
   type RunEvent,
+  type RunInput,
   type RunnerConfig,
   type RunnerFinishBody,
   OUTPUT_CHUNK_BYTES,
@@ -112,7 +113,14 @@ export interface LaunchOptions {
   /** The workflow the run is a step of. */
   workflowId?: string;
   workflowStep?: WorkflowStep;
+  /** A run of the member's whose output files the run starts from (chaining). */
+  parentRunId?: string;
 }
+
+/** Extra fields of a launch now: the run to chain it after, if any. */
+export const chainSchema = z.object({
+  parentRunId: z.string().min(1).max(MAX_ID_LENGTH).optional(),
+});
 
 export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
 
@@ -407,7 +415,22 @@ export class Launchpad {
   }
 
   launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
-    return this.launchPlan(member, this.plan(member, input, opts.workflowStep), opts);
+    const plan = this.plan(member, input, opts.workflowStep);
+    if (opts.parentRunId !== undefined) this.chainParent(member, opts.parentRunId);
+    return this.launchPlan(member, plan, opts);
+  }
+
+  /**
+   * The run a launch is chained after: one of the member's own runs, finished, that left output
+   * files (the new run starts from them).
+   */
+  private chainParent(member: Member, parentRunId: string): Run {
+    const parent = this.visibleRun({ kind: 'member', member }, parentRunId);
+    if (isActive(parent.status)) throw conflict('The run to chain after has not finished yet');
+    if (this.deps.runs.outputCount(parent.id) === 0) {
+      throw badRequest('The run to chain after left no output files');
+    }
+    return parent;
   }
 
   /** Queues a run checked by `plan` or `planScript`. */
@@ -420,6 +443,7 @@ export class Launchpad {
       triggerId: opts.triggerId ?? null,
       workflowId: opts.workflowId ?? null,
       workflowStep: opts.workflowStep ?? null,
+      parentRunId: opts.parentRunId ?? null,
       harness: plan.harness,
       model: plan.model,
       prompt: plan.prompt,
@@ -536,6 +560,11 @@ export class Launchpad {
       startedAt.getTime() + run.timeoutSeconds * MS_PER_SECOND,
     ).toISOString();
     const grants = this.promptGrants(session.grants);
+    // A chained run gets the output files its parent still has (they expire).
+    const inputs =
+      run.parentRunId === null
+        ? undefined
+        : this.deps.runs.outputs(run.parentRunId).map(({ path, size }) => ({ path, size }));
     return {
       runId: run.id,
       runToken,
@@ -546,7 +575,8 @@ export class Launchpad {
       gatewayTools: grants.map((g) => gatewayToolName(g.tool)),
       egressDomains: session.egressDomains ?? [],
       prompt: run.prompt,
-      systemPrompt: this.systemPrompt(run, grants, session.egressDomains ?? [], deadline),
+      systemPrompt: this.systemPrompt(run, grants, session.egressDomains ?? [], deadline, inputs),
+      ...(inputs && { inputs }),
       memory: run.memoryIn,
       deadline,
     };
@@ -558,6 +588,7 @@ export class Launchpad {
     grants: PromptGrant[],
     egressDomains: string[],
     deadline: string,
+    inputs: RunInput[] | undefined,
   ): string {
     if (run.harness === SCRIPT_HARNESS) return '';
     if (run.workflowStep !== 'plan') {
@@ -568,6 +599,8 @@ export class Launchpad {
         deadline,
         hasMemory: run.memoryIn !== null,
         instructions: run.instructions,
+        chain:
+          run.parentRunId === null ? null : { parentRunId: run.parentRunId, files: inputs ?? [] },
       });
     }
     const workflow = this.deps.runs.requireWorkflow(run.workflowId ?? '');
@@ -642,6 +675,14 @@ export class Launchpad {
     const run = this.deps.runs.byTokenHash(this.deps.crypto.hashToken(token));
     if (!run) throw unauthorized('Unknown or finished run');
     return run;
+  }
+
+  /** An input file of a chained run: an output file of its parent, streamed to the runner. */
+  runnerInput(run: Run, path: string): { size: number; chunks: Iterable<Buffer> } {
+    const file =
+      run.parentRunId === null ? null : this.deps.runs.outputStream(run.parentRunId, path);
+    if (!file) throw notFound('Input file not found');
+    return file;
   }
 
   reportEvents(run: Run, events: readonly RunEvent[]): number {
@@ -900,7 +941,8 @@ function launchedBy(member: Member, opts: LaunchOptions): string {
   if (opts.scheduleId) return 'Schedule launched';
   if (opts.triggerId) return 'Webhook trigger launched';
   if (opts.workflowStep === 'execute') return 'Workflow launched';
-  return `Member "${member.name}" launched`;
+  const chained = opts.parentRunId ? ` (chained after run ${opts.parentRunId})` : '';
+  return `Member "${member.name}"${chained} launched`;
 }
 
 function reasonOf(err: unknown): string {

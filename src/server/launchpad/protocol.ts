@@ -91,12 +91,24 @@ export interface RunnerConfig {
   prompt: string;
   /** Unused by the `script` harness. */
   systemPrompt: string;
+  /**
+   * Output files of the run this one is chained after, which the runner downloads into
+   * `/home/agent/in` (`GET /runner/inputs/<path>`) before starting the agent. Absent when the run
+   * isn't chained, and in configs from older gateways.
+   */
+  inputs?: RunInput[];
   /** `MEMORY.md` carried over from the previous run of a schedule, or null. */
   memory: string | null;
   /** The runner stops the agent at this time (ISO), before the VM is killed. */
   deadline: string;
   /** Guest network (when the kernel command line didn't configure it). */
   network: { address: string; prefixLength: number; gateway: string };
+}
+
+/** An input file of a chained run: an output file of its parent run. */
+export interface RunInput {
+  path: string;
+  size: number;
 }
 
 /** Normalized transcript event, whatever the harness. */

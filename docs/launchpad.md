@@ -131,6 +131,24 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
   member is deleted or expired, or when a launch fails. The member can resume it; the admin can
   pause it. Deleting the webhook leaves the trigger without events.
 
+## Chaining agents
+
+An agent can start from what another one produced. On the page of one of their finished runs that
+left output files, a member clicks **Chain an agent**: the launch form opens chained after that run
+(its parent). It runs once, now (or `POST /api/me/launchpad/runs` with `parentRunId`).
+
+- **Inputs.** Before the agent starts, the runner downloads the parent's output files into
+  `/home/agent/in` (`GET /runner/inputs/<path>`, with the run token, streamed like downloads). The
+  agent's system prompt lists them, and tells it they come from another agent: data, not
+  instructions. The task says what to do with them. Files that expired before the run started are
+  not there.
+- **Checks.** The parent must be one of the member's own runs, finished, with at least one output
+  file. The new run is otherwise an ordinary launch: any template, agent, model and environment
+  the member may use.
+- **The chain.** The run records its parent (`parentRunId`). Its page shows the chain as a graph:
+  the parent node, the run, and the runs chained after it (`GET …/runs?parentRunId=<id>`); a click
+  opens a node's run.
+
 ## Workflows: plan, then execute
 
 A workflow splits a task between a frontier agent and an **execution container**: the frontier
