@@ -47,6 +47,8 @@ export interface Schedule extends Recurrence {
   accountIds: string[];
   /** The guest environment its runs boot (null: the default guest image). */
   environmentId: string | null;
+  /** Skills of the member's library its runs start with (names). */
+  skills: string[];
   keyGeneration: number;
   enabled: boolean;
   stoppedReason: string | null;
@@ -68,6 +70,7 @@ interface ScheduleRow {
   template_id: string;
   account_ids: string;
   environment_id: string | null;
+  skills: string;
   preset: Preset;
   minute: number;
   hour: number;
@@ -96,6 +99,7 @@ function toSchedule(r: ScheduleRow): Schedule {
     templateId: r.template_id,
     accountIds: JSON.parse(r.account_ids) as string[],
     environmentId: r.environment_id,
+    skills: JSON.parse(r.skills) as string[],
     preset: r.preset,
     minute: r.minute,
     hour: r.hour,
@@ -149,9 +153,9 @@ export class Scheduler {
     this.db.sql
       .prepare(
         `INSERT INTO schedules (id, member_id, member_name, name, prompt, harness, model, template_id, account_ids,
-           environment_id, preset, minute, hour, weekday, day_of_month, timezone, key_generation, enabled,
-           next_run_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           environment_id, skills, preset, minute, hour, weekday, day_of_month, timezone, key_generation,
+           enabled, next_run_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
       )
       .run(
         id,
@@ -164,6 +168,7 @@ export class Scheduler {
         plan.template.id,
         JSON.stringify(plan.accountIds),
         plan.environment?.id ?? null,
+        JSON.stringify(plan.skills),
         recurrence.preset,
         recurrence.minute,
         recurrence.hour,
@@ -270,6 +275,7 @@ export class Scheduler {
       harness: s.harness,
       ...(s.model ? { model: s.model } : {}),
       ...(s.environmentId ? { environmentId: s.environmentId } : {}),
+      ...(s.skills.length > 0 ? { skills: s.skills } : {}),
     };
   }
 

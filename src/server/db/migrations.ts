@@ -252,4 +252,8 @@ export const MIGRATIONS: readonly string[] = [
      data BLOB NOT NULL,
      PRIMARY KEY (attachment_id, seq)
    );`,
+  // 16: skills from the member's library given to an agent when it starts (JSON array of names)
+  `ALTER TABLE runs ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+   ALTER TABLE schedules ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+   ALTER TABLE triggers ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';`,
 ];

@@ -397,6 +397,9 @@ export function memberLaunchRoutes(
         driver: launchpad.driverName,
         defaultTimeoutSeconds: settings.defaultTimeoutSeconds,
         environments: launchpad.environments.choices(),
+        skills: launchpad.skills
+          .list(member.id)
+          .map(({ name, description }) => ({ name, description })),
         templates: view.templates.map((t) => ({
           id: t.id,
           name: t.name,
@@ -649,6 +652,11 @@ export function runnerRoutes(launchpad: Launchpad): Router {
       next(err);
     }
   });
+  // The skills of the member's library the run starts with.
+  router.get(
+    '/skills',
+    h((req) => ({ skills: launchpad.runnerSkills(runOf(req)) })),
+  );
   // The body is streamed into the database (files reach 1 GiB), not parsed into memory.
   router.put(
     '/outputs/*path',

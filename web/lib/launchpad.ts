@@ -39,6 +39,8 @@ export interface Run {
   /** The guest environment the run's VM booted (null: the default one). */
   environmentId: string | null;
   environmentName: string | null;
+  /** Skills of the member's library the agent started with (names). */
+  skills: string[];
   status: RunStatus;
   statusReason: string | null;
   timeoutSeconds: number;
@@ -173,7 +175,14 @@ export interface LaunchOptions {
   defaultTimeoutSeconds: number;
   /** Guest environments the admin added that agents can run in (besides the default one). */
   environments: EnvironmentChoice[];
+  /** The member's skill library, to pick the skills an agent starts with. */
+  skills: SkillChoice[];
   templates: LaunchTemplate[];
+}
+
+export interface SkillChoice {
+  name: string;
+  description: string;
 }
 
 export interface EnvironmentChoice {
@@ -224,6 +233,7 @@ export interface Schedule {
   model: string | null;
   templateId: string;
   environmentId: string | null;
+  skills: string[];
   preset: Preset;
   minute: number;
   hour: number;
@@ -271,6 +281,7 @@ export interface Trigger {
   model: string | null;
   templateId: string;
   environmentId: string | null;
+  skills: string[];
   enabled: boolean;
   stoppedReason: string | null;
   lastRunId: string | null;

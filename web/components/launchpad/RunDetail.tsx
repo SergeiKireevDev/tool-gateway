@@ -353,6 +353,11 @@ export function RunDetail({
               </span>
             </div>
             <RunPrompt run={run} />
+            {run.skills.length > 0 && (
+              <p className="mt-2 text-xs text-slate-500">
+                Started with skills: <span className="font-mono">{run.skills.join(', ')}</span>
+              </p>
+            )}
             <p className="mt-2 text-xs text-slate-500">
               Launched {formatDateTime(run.createdAt)} · ran {runDuration(run, now)}
               {run.deadline &&

@@ -21,6 +21,7 @@ import {
 import type { Account } from '@/lib/types';
 import { Button, ErrorBanner, Field, Input, Select, Textarea } from '../ui';
 import { AttachmentsField, discardAttachments, uploadAttachments } from './AttachmentsField';
+import { SkillsField } from './SkillsField';
 
 type When = 'now' | Preset | 'webhook';
 const WHEN_LABELS: Record<When, string> = {
@@ -491,6 +492,8 @@ interface Draft {
   model: string;
   /** The guest environment the agent runs in ('' = the default one). */
   environmentId: string;
+  /** Skills of the member's library the agent starts with. */
+  skills: string[];
   time: string;
   weekday: number;
   day: number;
@@ -535,8 +538,12 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
       },
     };
   }
-  // Workflows boot the default environment.
-  const agent = { ...launch, ...(d.environmentId ? { environmentId: d.environmentId } : {}) };
+  // Workflows boot the default environment, with no skills.
+  const agent = {
+    ...launch,
+    ...(d.environmentId ? { environmentId: d.environmentId } : {}),
+    ...(d.skills.length > 0 ? { skills: d.skills } : {}),
+  };
   if (d.when === 'now') {
     const chain = d.parentRunId ? { parentRunId: d.parentRunId } : {};
     const attached = d.attachmentIds.length > 0 ? { attachmentIds: d.attachmentIds } : {};
@@ -907,6 +914,35 @@ function EnvironmentField({
   );
 }
 
+/** What an agent (not a workflow) starts with: its environment and skills. */
+function AgentSetupFields({
+  shown,
+  options,
+  environmentId,
+  setEnvironmentId,
+  skills,
+  setSkills,
+}: {
+  shown: boolean;
+  options: LaunchOptions;
+  environmentId: string;
+  setEnvironmentId: (value: string) => void;
+  skills: string[];
+  setSkills: (value: string[]) => void;
+}) {
+  if (!shown) return null;
+  return (
+    <>
+      <EnvironmentField
+        environments={options.environments}
+        value={environmentId}
+        onChange={setEnvironmentId}
+      />
+      <SkillsField skills={options.skills} value={skills} onChange={setSkills} />
+    </>
+  );
+}
+
 function SubmitRow({
   timeoutSeconds,
   label,
@@ -1044,6 +1080,7 @@ export function LaunchForm({
   const [environmentId, setEnvironmentId] = useState(() =>
     parentEnvironment(parent, options.environments),
   );
+  const [skills, setSkills] = useState<string[]>([]);
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1078,6 +1115,7 @@ export function LaunchForm({
       accountIds: pickedFor(template?.tools ?? []),
       model: model.trim(),
       environmentId: workflow ? '' : environmentId,
+      skills,
       time,
       weekday,
       day,
@@ -1126,13 +1164,14 @@ export function LaunchForm({
       {parent && <ChainNote parent={parent} />}
       <TaskField trigger={!workflow && when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
       <AgentFields agent={agent} templates={templates} chained={parent !== null} />
-      {!workflow && (
-        <EnvironmentField
-          environments={options.environments}
-          value={environmentId}
-          onChange={setEnvironmentId}
-        />
-      )}
+      <AgentSetupFields
+        shown={!workflow}
+        options={options}
+        environmentId={environmentId}
+        setEnvironmentId={setEnvironmentId}
+        skills={skills}
+        setSkills={setSkills}
+      />
       {ambiguous.map((x) => (
         <Field
           key={x.tool}

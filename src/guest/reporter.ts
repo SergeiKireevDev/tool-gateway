@@ -2,7 +2,7 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
-import type { RunEvent, RunnerFinishBody } from '../server/launchpad/protocol.js';
+import type { RunEvent, RunnerFinishBody, RunnerSkill } from '../server/launchpad/protocol.js';
 import { RUNNER_LIMITS } from '../server/launchpad/protocol.js';
 import type { EventDraft } from './harnesses.js';
 
@@ -90,6 +90,15 @@ export class Reporter {
       Readable.fromWeb(res.body as NodeReadableStream<Uint8Array>),
       createWriteStream(file, { mode: 0o600 }),
     );
+  }
+
+  /** The skills of the member's library the run starts with. */
+  async fetchSkills(): Promise<RunnerSkill[]> {
+    const res = await this.fetchImpl(`${this.gatewayUrl}/runner/skills`, {
+      headers: { authorization: `Bearer ${this.runToken}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return ((await res.json()) as { skills: RunnerSkill[] }).skills;
   }
 
   async finish(body: RunnerFinishBody): Promise<void> {

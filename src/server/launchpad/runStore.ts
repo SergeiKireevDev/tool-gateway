@@ -53,6 +53,8 @@ export interface Run {
   /** The guest environment the VM boots (null: the default guest image). */
   environmentId: string | null;
   environmentName: string | null;
+  /** Skills of the member's library the agent starts with (names). */
+  skills: string[];
   sessionId: string | null;
   vmId: string | null;
   status: RunStatus;
@@ -90,6 +92,7 @@ export type NewRun = Pick<
   | 'accountIds'
   | 'environmentId'
   | 'environmentName'
+  | 'skills'
   | 'timeoutSeconds'
   | 'tokenBudget'
   | 'keyGeneration'
@@ -245,6 +248,7 @@ interface RunRow {
   account_ids: string;
   environment_id: string | null;
   environment_name: string | null;
+  skills: string;
   session_id: string | null;
   vm_id: string | null;
   status: RunStatus;
@@ -296,6 +300,7 @@ function toRun(r: RunRow): Run {
     accountIds: JSON.parse(r.account_ids) as string[],
     environmentId: r.environment_id,
     environmentName: r.environment_name,
+    skills: JSON.parse(r.skills) as string[],
     sessionId: r.session_id,
     vmId: r.vm_id,
     status: r.status,
@@ -354,9 +359,9 @@ export class RunStore {
       .prepare(
         `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, workflow_id,
            workflow_step, parent_run_id, harness, model, prompt, instructions, template_id,
-           template_name, account_ids, environment_id, environment_name, run_token_hash, status,
-           timeout_seconds, token_budget, key_generation, memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+           template_name, account_ids, environment_id, environment_name, skills, run_token_hash,
+           status, timeout_seconds, token_budget, key_generation, memory_in, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -376,6 +381,7 @@ export class RunStore {
         JSON.stringify(run.accountIds),
         run.environmentId,
         run.environmentName,
+        JSON.stringify(run.skills),
         run.timeoutSeconds,
         run.tokenBudget,
         run.keyGeneration,

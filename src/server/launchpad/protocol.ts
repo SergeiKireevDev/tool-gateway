@@ -98,6 +98,12 @@ export interface RunnerConfig {
    * agent. Absent when the run has none, and in configs from older gateways.
    */
   inputs?: RunInput[];
+  /**
+   * Skills of the member's library the run starts with, which the runner fetches
+   * (`GET /runner/skills`) into `/home/agent/skills` before starting the agent. Absent when the run
+   * has none, and in configs from older gateways.
+   */
+  skills?: string[];
   /** `MEMORY.md` carried over from the previous run of a schedule, or null. */
   memory: string | null;
   /** The runner stops the agent at this time (ISO), before the VM is killed. */

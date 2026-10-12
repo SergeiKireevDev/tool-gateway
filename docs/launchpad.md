@@ -194,6 +194,16 @@ systems and tools they used behave, requests that worked, pitfalls and workaroun
   are redacted, like in transcripts. Members see their own under **Skills**
   (`GET /api/me/launchpad/skills`, `GET|DELETE …/skills/<id>`); the admin sees everyone's
   (`GET /api/admin/launchpad/skills[?memberId=]`) and can delete them.
+- **Starting with skills.** A launch can give the agent skills from its member's library
+  (`skills: [<name>…]` in `POST …/runs`, `…/schedules` and `…/triggers`; the **Skills** checkboxes
+  of the launch form, listed by `GET /api/me/launchpad`). Names not in the member's library are
+  refused. Schedules and triggers keep them for each run they launch. When the run starts, its
+  config names them (`skills`); the runner fetches their current content (`GET /runner/skills`)
+  into `/home/agent/skills/<name>/SKILL.md` before starting the agent, and the system prompt lists
+  them with their descriptions. Skills deleted from the library in the meantime are left out.
+  The agent may improve them in place: on export, the runner leaves out the skills it was given
+  and didn't change, so only real changes replace them in the library. Workflows don't take
+  skills.
 
 ## Workflows: plan, then execute
 

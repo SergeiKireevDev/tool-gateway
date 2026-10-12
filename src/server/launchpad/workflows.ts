@@ -29,7 +29,7 @@ import { OUT_DIR } from './systemPrompt.js';
  * give the agent will do. The script's template can be any template. Both steps boot the default
  * guest image.
  */
-export const workflowSchema = launchSchema.omit({ environmentId: true }).extend({
+export const workflowSchema = launchSchema.omit({ environmentId: true, skills: true }).extend({
   /** The model of the template's custom LLM endpoint the script uses, if it gives one. */
   executorModel: launchSchema.shape.model,
   /** The model API the planning agent uses; any its agent can use if unset. */

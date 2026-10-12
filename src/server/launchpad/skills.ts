@@ -1,6 +1,6 @@
 import type { Database } from '../db/database.js';
 import { redact } from '../db/redact.js';
-import { notFound } from '../errors.js';
+import { badRequest, notFound } from '../errors.js';
 import { randomId } from '../store/crypto.js';
 import type { Actor } from './launchpad.js';
 import { RUNNER_LIMITS, type RunnerSkill, SKILL_NAME_RE } from './protocol.js';
@@ -91,6 +91,32 @@ export class Skills {
       throw notFound(SKILL_NOT_FOUND);
     }
     return { ...toSummary(row), content: row.content ?? '' };
+  }
+
+  /**
+   * Checks the skills a launch gives its agent: names of skills in the member's library. Returns
+   * them without duplicates, in the order given.
+   */
+  forLaunch(memberId: string, names: readonly string[]): string[] {
+    const unique = [...new Set(names)];
+    const known = new Set(this.byNames(memberId, unique).map((s) => s.name));
+    const missing = unique.filter((n) => !known.has(n));
+    if (missing.length > 0) {
+      throw badRequest(`Not in your skill library: ${missing.join(', ')}`);
+    }
+    return unique;
+  }
+
+  /** The member's skills of these names that are (still) in the library, by name. */
+  byNames(memberId: string, names: readonly string[]): Skill[] {
+    if (names.length === 0) return [];
+    const rows = this.db.sql
+      .prepare(
+        `SELECT * FROM skills WHERE member_id = ? AND name IN (${names.map(() => '?').join(', ')})
+         ORDER BY name`,
+      )
+      .all(memberId, ...names) as unknown as SkillRow[];
+    return rows.map((r) => ({ ...toSummary(r), content: r.content ?? '' }));
   }
 
   delete(actor: Actor, id: string): Skill {

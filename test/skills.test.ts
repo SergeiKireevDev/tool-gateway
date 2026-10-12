@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readSkills } from '../src/guest/runner.js';
+import request from 'supertest';
+import { installSkills, readSkills } from '../src/guest/runner.js';
 import { RUNNER_LIMITS } from '../src/server/launchpad/protocol.js';
 import { skillDescription } from '../src/server/launchpad/skills.js';
 import { createLaunchHarness, type LaunchHarness, settle } from './launchpadHelpers.js';
@@ -149,6 +150,145 @@ describe('skill library', () => {
   });
 });
 
+describe('skills an agent starts with', () => {
+  const launchBody = (extra: Record<string, unknown> = {}) => ({
+    prompt: 'Sync the issues',
+    templateId: t.ids.template,
+    harness: 'claude-code',
+    ...extra,
+  });
+
+  /** A member with two skills in their library. */
+  async function memberWithSkills(): Promise<{ id: string; cookie: string }> {
+    const alice = await t.member('alice');
+    await runExporting(alice.cookie, [
+      { name: 'github-issues', content: skillMd('github-issues', 'Paginating GitHub issues') },
+      { name: 'repo-ci', content: skillMd('repo-ci', 'How CI runs') },
+    ]);
+    return alice;
+  }
+
+  it('lists the member’s skills in the launch options', async () => {
+    const alice = await memberWithSkills();
+    const bob = await t.member('bob');
+    const options = await t.portal(alice.cookie, 'get', '/').expect(200);
+    expect(options.body.skills).toEqual([
+      { name: 'github-issues', description: 'Paginating GitHub issues' },
+      { name: 'repo-ci', description: 'How CI runs' },
+    ]);
+    expect((await t.portal(bob.cookie, 'get', '/').expect(200)).body.skills).toEqual([]);
+  });
+
+  it('gives the agent the skills picked at launch', async () => {
+    const alice = await memberWithSkills();
+    const res = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ skills: ['repo-ci', 'repo-ci'] }))
+      .expect(201);
+    expect(res.body.skills).toEqual(['repo-ci']);
+    await settle(t.launchpad);
+    const config = t.driver.lastConfig();
+    expect(config.skills).toEqual(['repo-ci']);
+    expect(config.systemPrompt).toContain('You start with these skills');
+    expect(config.systemPrompt).toContain('`/home/agent/skills/repo-ci/SKILL.md`: How CI runs');
+    expect(config.systemPrompt).not.toContain('github-issues');
+
+    const fetched = await t.runner(config.runToken, 'get', '/skills').expect(200);
+    expect(fetched.body.skills).toEqual([
+      { name: 'repo-ci', content: skillMd('repo-ci', 'How CI runs') },
+    ]);
+    await request(t.vmApp).get('/runner/skills').expect(401);
+  });
+
+  it('gives no skills unless some are picked', async () => {
+    const alice = await memberWithSkills();
+    const res = await t.portal(alice.cookie, 'post', '/runs').send(launchBody()).expect(201);
+    expect(res.body.skills).toEqual([]);
+    await settle(t.launchpad);
+    const config = t.driver.lastConfig();
+    expect(config).not.toHaveProperty('skills');
+    expect(config.systemPrompt).not.toContain('You start with these skills');
+    const fetched = await t.runner(config.runToken, 'get', '/skills').expect(200);
+    expect(fetched.body.skills).toEqual([]);
+  });
+
+  it('only gives skills of the member’s own library', async () => {
+    await memberWithSkills();
+    const bob = await t.member('bob');
+    const res = await t
+      .portal(bob.cookie, 'post', '/runs')
+      .send(launchBody({ skills: ['repo-ci'] }))
+      .expect(400);
+    expect(res.body.message).toContain('Not in your skill library: repo-ci');
+    await t
+      .portal(bob.cookie, 'post', '/runs')
+      .send(launchBody({ skills: ['../etc'] }))
+      .expect(400);
+  });
+
+  it('leaves out skills deleted before the run starts', async () => {
+    const alice = await memberWithSkills();
+    // Fill the member's slots so the run stays queued.
+    t.launchpad.runs.saveMemberLaunch({
+      memberId: alice.id,
+      launchEnabled: true,
+      maxConcurrent: 1,
+    });
+    await t.portal(alice.cookie, 'post', '/runs').send(launchBody()).expect(201);
+    await settle(t.launchpad);
+    const blocker = t.driver.lastConfig().runToken;
+    await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ skills: ['github-issues', 'repo-ci'] }))
+      .expect(201);
+    const list = (await t.portal(alice.cookie, 'get', '/skills').expect(200)).body as SkillBody[];
+    const ci = list.find((s) => s.name === 'repo-ci');
+    await t.portal(alice.cookie, 'delete', `/skills/${ci?.id ?? ''}`).expect(204);
+    await t
+      .runner(blocker, 'post', '/finish')
+      .send({ outcome: 'succeeded', finalMessage: null, memory: null, error: null })
+      .expect(200);
+    await settle(t.launchpad);
+    expect(t.driver.lastConfig().skills).toEqual(['github-issues']);
+  });
+
+  it('keeps the skills of schedules and triggers', async () => {
+    const alice = await memberWithSkills();
+    const schedule = await t
+      .portal(alice.cookie, 'post', '/schedules')
+      .send(launchBody({ skills: ['repo-ci'], preset: 'hourly' }))
+      .expect(201);
+    expect(schedule.body.skills).toEqual(['repo-ci']);
+
+    const hook = await t
+      .hooks(alice.cookie, 'post', '')
+      .send({ name: 'issues', source: 'generic', auth: 'url' })
+      .expect(201);
+    const trigger = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send({
+        instructions: 'Label the issue',
+        templateId: t.ids.template,
+        harness: 'claude-code',
+        webhookId: hook.body.webhook.id as string,
+        skills: ['github-issues'],
+      })
+      .expect(201);
+    expect(trigger.body.skills).toEqual(['github-issues']);
+    await request(t.app)
+      .post(new URL(hook.body.url as string).pathname)
+      .send({ type: 'Issue' })
+      .expect(200);
+    await settle(t.launchpad);
+    expect(t.driver.lastConfig().skills).toEqual(['github-issues']);
+
+    t.clock.now = new Date(t.clock.now.getTime() + 2 * 3_600_000);
+    await t.scheduler.tick();
+    await settle(t.launchpad);
+    expect(t.driver.lastConfig().skills).toEqual(['repo-ci']);
+  });
+});
+
 describe('skill descriptions', () => {
   it('reads the frontmatter description, if any', () => {
     expect(skillDescription(skillMd('x', 'Does things'))).toBe('Does things');
@@ -202,6 +342,47 @@ describe('runner skills', () => {
     const { skills, problems } = readSkills(dir);
     expect(skills).toHaveLength(RUNNER_LIMITS.skills);
     expect(problems).toHaveLength(1);
+  });
+
+  it('installs the skills the run starts with, owned by the agent', async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'skills-'));
+    const reporter = {
+      fetchSkills: () =>
+        Promise.resolve([
+          { name: 'alpha', content: skillMd('alpha', 'A') },
+          { name: '../escape', content: 'x' },
+        ]),
+    };
+    const given = await installSkills(dir, reporter);
+    expect([...given.keys()]).toEqual(['alpha']);
+    expect(readSkills(dir).skills).toEqual([{ name: 'alpha', content: skillMd('alpha', 'A') }]);
+  });
+
+  it('exports only the given skills the agent changed, and new ones', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'skills-'));
+    write('alpha', 'A');
+    write('beta', 'B, improved');
+    write('gamma', 'G');
+    const given = new Map([
+      ['alpha', 'A'],
+      ['beta', 'B'],
+    ]);
+    expect(readSkills(dir, given).skills.map((s) => s.name)).toEqual(['beta', 'gamma']);
+  });
+
+  it('does not count unchanged given skills against the limit', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'skills-'));
+    const given = new Map<string, string>();
+    for (let i = 0; i < RUNNER_LIMITS.skills; i++) {
+      const name = `given-${String(i).padStart(2, '0')}`;
+      write(name, 'x');
+      given.set(name, 'x');
+    }
+    write('new-skill', 'y');
+    expect(readSkills(dir, given)).toEqual({
+      skills: [{ name: 'new-skill', content: 'y' }],
+      problems: [],
+    });
   });
 
   it('finds nothing when the agent exported nothing', () => {
