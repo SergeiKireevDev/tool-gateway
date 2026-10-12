@@ -1,3 +1,5 @@
+import { createReadStream } from 'node:fs';
+import { Readable } from 'node:stream';
 import type { RunEvent, RunnerFinishBody } from '../server/launchpad/protocol.js';
 import { RUNNER_LIMITS } from '../server/launchpad/protocol.js';
 import type { EventDraft } from './harnesses.js';
@@ -61,9 +63,15 @@ export class Reporter {
     return this.flushing;
   }
 
-  async uploadOutput(relativePath: string, content: Buffer): Promise<void> {
+  /** Uploads an output file, streamed from disk (files reach 1 GiB, more than a VM may hold). */
+  async uploadOutput(relativePath: string, file: string): Promise<void> {
     const encoded = relativePath.split('/').map(encodeURIComponent).join('/');
-    await this.send('PUT', `/runner/outputs/${encoded}`, content, 'application/octet-stream');
+    await this.send(
+      'PUT',
+      `/runner/outputs/${encoded}`,
+      () => Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>,
+      'application/octet-stream',
+    );
   }
 
   async finish(body: RunnerFinishBody): Promise<void> {
@@ -75,7 +83,7 @@ export class Reporter {
   private async send(
     method: string,
     path: string,
-    body: string | Buffer,
+    body: string | (() => ReadableStream<Uint8Array>),
     type: string,
   ): Promise<void> {
     let lastError: unknown = null;
@@ -84,7 +92,8 @@ export class Reporter {
         const res = await this.fetchImpl(`${this.gatewayUrl}${path}`, {
           method,
           headers: { authorization: `Bearer ${this.runToken}`, 'content-type': type },
-          body,
+          // A stream is consumed by one attempt: each retry opens a fresh one.
+          ...(typeof body === 'string' ? { body } : { body: body(), duplex: 'half' }),
         });
         if (res.ok) return;
         const text = await res.text();

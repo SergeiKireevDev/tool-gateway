@@ -8,7 +8,7 @@ import {
   readSync,
   writeFileSync,
 } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import {
@@ -145,7 +145,7 @@ export async function uploadOutputs(
       continue;
     }
     try {
-      await reporter.uploadOutput(rel, await readFile(path.join(outDir, rel)));
+      await reporter.uploadOutput(rel, path.join(outDir, rel));
       total += size;
       count += 1;
     } catch (err) {

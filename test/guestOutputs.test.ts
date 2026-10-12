@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,8 +18,8 @@ describe('runner outputs', () => {
     truncateSync(writeAndReturn(path.join(dir, 'video.mp4')), VIDEO_BYTES);
     const uploaded: [string, number][] = [];
     const problems = await uploadOutputs(dir, {
-      uploadOutput: (rel, content) => {
-        uploaded.push([rel, content.length]);
+      uploadOutput: (rel, file) => {
+        uploaded.push([rel, statSync(file).size]);
         return Promise.resolve();
       },
     });

@@ -1,5 +1,5 @@
 import type { Database } from '../db/database.js';
-import { SECONDS_PER_HOUR } from '../units.js';
+import { MS_PER_DAY, SECONDS_PER_HOUR } from '../units.js';
 import { redact, redactDeep } from '../db/redact.js';
 import {
   type Harness,
@@ -9,6 +9,9 @@ import {
   type RunHarness,
   RUNNER_LIMITS,
 } from './protocol.js';
+
+/** Chunks of an upload that never completed are kept this long after their run finished. */
+const ABANDONED_UPLOAD_MS = MS_PER_DAY;
 
 export const RUN_STATUSES = [
   'queued',
@@ -578,27 +581,42 @@ export class RunStore {
 
   // ---------------------------------------------------------------- outputs
 
-  putOutput(
+  /** Stores one chunk of an output file being uploaded; `commitOutput` makes the file visible. */
+  putOutputChunk(runId: string, uploadId: string, seq: number, data: Uint8Array): void {
+    this.db.sql
+      .prepare('INSERT INTO run_output_chunks (run_id, upload_id, seq, data) VALUES (?, ?, ?, ?)')
+      .run(runId, uploadId, seq, data);
+  }
+
+  /** Makes an uploaded file the run's output at `path`, replacing any previous one. */
+  commitOutput(
     runId: string,
     path: string,
-    content: Buffer,
+    upload: { id: string; size: number },
     createdAt: string,
     expiresAt: string,
   ): void {
     this.db.transaction(() => {
       const previous = this.db.sql
-        .prepare('SELECT size FROM run_outputs WHERE run_id = ? AND path = ?')
-        .get(runId, path) as { size: number } | undefined;
+        .prepare('SELECT size, upload_id FROM run_outputs WHERE run_id = ? AND path = ?')
+        .get(runId, path) as { size: number; upload_id: string | null } | undefined;
+      if (previous?.upload_id) this.discardUpload(previous.upload_id);
       this.db.sql
         .prepare(
-          `INSERT OR REPLACE INTO run_outputs (run_id, path, size, content, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT OR REPLACE INTO run_outputs
+             (run_id, path, size, content, upload_id, created_at, expires_at)
+           VALUES (?, ?, ?, X'', ?, ?, ?)`,
         )
-        .run(runId, path, content.length, content, createdAt, expiresAt);
+        .run(runId, path, upload.size, upload.id, createdAt, expiresAt);
       this.db.sql
         .prepare('UPDATE runs SET outputs_bytes = outputs_bytes + ? WHERE id = ?')
-        .run(content.length - (previous?.size ?? 0), runId);
+        .run(upload.size - (previous?.size ?? 0), runId);
     });
+  }
+
+  /** Drops the chunks of an upload (an aborted one, or the file a new upload replaced). */
+  discardUpload(uploadId: string): void {
+    this.db.sql.prepare('DELETE FROM run_output_chunks WHERE upload_id = ?').run(uploadId);
   }
 
   outputs(runId: string): OutputFile[] {
@@ -627,17 +645,68 @@ export class RunStore {
     return row.n;
   }
 
+  /** An output file's size and its content, chunk by chunk (read lazily), or null. */
+  outputStream(runId: string, path: string): { size: number; chunks: Iterable<Buffer> } | null {
+    const row = this.db.sql
+      .prepare('SELECT size, upload_id FROM run_outputs WHERE run_id = ? AND path = ?')
+      .get(runId, path) as { size: number; upload_id: string | null } | undefined;
+    if (!row) return null;
+    const { upload_id: uploadId } = row;
+    return {
+      size: row.size,
+      chunks: uploadId === null ? this.legacyContent(runId, path) : this.chunks(uploadId),
+    };
+  }
+
+  /** A whole output file, for small ones (use `outputStream` for anything that may be large). */
   output(runId: string, path: string): Buffer | null {
+    const stream = this.outputStream(runId, path);
+    return stream ? Buffer.concat([...stream.chunks]) : null;
+  }
+
+  private *chunks(uploadId: string): Generator<Buffer> {
+    const next = this.db.sql.prepare(
+      'SELECT data FROM run_output_chunks WHERE upload_id = ? AND seq = ?',
+    );
+    for (let seq = 0; ; seq++) {
+      const row = next.get(uploadId, seq) as { data: Uint8Array } | undefined;
+      if (!row) return;
+      yield Buffer.from(row.data);
+    }
+  }
+
+  /** Files stored before chunking keep their content in `run_outputs`. */
+  private *legacyContent(runId: string, path: string): Generator<Buffer> {
     const row = this.db.sql
       .prepare('SELECT content FROM run_outputs WHERE run_id = ? AND path = ?')
       .get(runId, path) as { content: Uint8Array } | undefined;
-    return row ? Buffer.from(row.content) : null;
+    if (row) yield Buffer.from(row.content);
   }
 
+  /**
+   * Deletes expired output files, and chunks of uploads that never completed (the gateway stopped
+   * mid-upload) once their run has long finished.
+   */
   purgeExpiredOutputs(now: string): number {
-    return Number(
-      this.db.sql.prepare('DELETE FROM run_outputs WHERE expires_at <= ?').run(now).changes,
-    );
+    const abandonedBefore = new Date(Date.parse(now) - ABANDONED_UPLOAD_MS).toISOString();
+    return this.db.transaction(() => {
+      this.db.sql
+        .prepare(
+          `DELETE FROM run_output_chunks WHERE upload_id IN
+             (SELECT upload_id FROM run_outputs WHERE expires_at <= ? AND upload_id IS NOT NULL)`,
+        )
+        .run(now);
+      this.db.sql
+        .prepare(
+          `DELETE FROM run_output_chunks
+           WHERE run_id IN (SELECT id FROM runs WHERE finished_at <= ?)
+             AND upload_id NOT IN (SELECT upload_id FROM run_outputs WHERE upload_id IS NOT NULL)`,
+        )
+        .run(abandonedBefore);
+      return Number(
+        this.db.sql.prepare('DELETE FROM run_outputs WHERE expires_at <= ?').run(now).changes,
+      );
+    });
   }
 
   // ---------------------------------------------------------------- settings

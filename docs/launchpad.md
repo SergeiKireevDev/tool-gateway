@@ -43,9 +43,10 @@ member (Google sign-in) ──▶ gateway UI ──▶ launchpad (in the gateway
 
    The runner streams the normalized transcript and stops the agent at the deadline.
 
-4. **Finish.** The runner uploads `/home/agent/out` (at most 200 files, 100 MiB per file and
-   200 MiB in all; files it can't keep are listed in the run's status reason) and `MEMORY.md`, then
-   reports the result. The launchpad then **always** revokes the key and destroys the VM. A reaper does the same for runs
+4. **Finish.** The runner uploads `/home/agent/out` (at most 200 files, 1 GiB per file and
+   2 GiB in all; files it can't keep are listed in the run's status reason) and `MEMORY.md`, then
+   reports the result. Output files are streamed from disk and stored in 4 MiB chunks, so neither
+   the VM nor the gateway holds a whole file in memory. The launchpad then **always** revokes the key and destroys the VM. A reaper does the same for runs
    whose VM died, that passed their deadline, or that were left by a gateway restart. It also
    destroys VMs that no run owns.
 

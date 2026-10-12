@@ -29,6 +29,7 @@ import {
   type RunEvent,
   type RunnerConfig,
   type RunnerFinishBody,
+  OUTPUT_CHUNK_BYTES,
   RUNNER_LIMITS,
   SCRIPT_HARNESS,
 } from './protocol.js';
@@ -648,7 +649,16 @@ export class Launchpad {
     return this.deps.runs.appendEvents(run.id, events);
   }
 
-  reportOutput(run: Run, path: string, content: Buffer): void {
+  /**
+   * Stores an output file the runner uploads, streamed chunk by chunk into the database so a file
+   * of up to 1 GiB is never held in memory whole. It replaces any earlier file at that path only
+   * once it is complete.
+   */
+  async reportOutput(
+    run: Run,
+    path: string,
+    content: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+  ): Promise<void> {
     if (
       path.length > MAX_OUTPUT_PATH ||
       !OUTPUT_PATH_RE.test(path) ||
@@ -656,18 +666,49 @@ export class Launchpad {
     ) {
       throw badRequest('Invalid output path');
     }
-    if (content.length > RUNNER_LIMITS.outputFileBytes) throw badRequest('Output file too large');
-    const fresh = this.deps.runs.output(run.id, path) === null;
+    const fresh = this.deps.runs.outputStream(run.id, path) === null;
     if (fresh && this.deps.runs.outputCount(run.id) >= RUNNER_LIMITS.outputFiles) {
       throw badRequest('Too many output files');
     }
-    if (run.outputsBytes + content.length > RUNNER_LIMITS.outputTotalBytes) {
-      throw badRequest('Output files exceed the run total');
+    const upload = { id: randomId(), size: 0 };
+    try {
+      await this.storeChunks(run, upload, content);
+      const now = this.now();
+      const days = this.deps.runs.settings().outputRetentionDays;
+      const expiresAt = new Date(now.getTime() + days * MS_PER_DAY).toISOString();
+      this.deps.runs.commitOutput(run.id, path, upload, now.toISOString(), expiresAt);
+    } catch (err) {
+      this.deps.runs.discardUpload(upload.id);
+      throw err;
     }
-    const now = this.now();
-    const days = this.deps.runs.settings().outputRetentionDays;
-    const expiresAt = new Date(now.getTime() + days * MS_PER_DAY).toISOString();
-    this.deps.runs.putOutput(run.id, path, content, now.toISOString(), expiresAt);
+  }
+
+  private async storeChunks(
+    run: Run,
+    upload: { id: string; size: number },
+    content: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+  ): Promise<void> {
+    const pending: Uint8Array[] = [];
+    let pendingBytes = 0;
+    let seq = 0;
+    const flush = (): void => {
+      if (pendingBytes === 0) return;
+      this.deps.runs.putOutputChunk(run.id, upload.id, seq, Buffer.concat(pending));
+      seq += 1;
+      pending.length = 0;
+      pendingBytes = 0;
+    };
+    for await (const piece of content) {
+      upload.size += piece.length;
+      if (upload.size > RUNNER_LIMITS.outputFileBytes) throw badRequest('Output file too large');
+      if (run.outputsBytes + upload.size > RUNNER_LIMITS.outputTotalBytes) {
+        throw badRequest('Output files exceed the run total');
+      }
+      pending.push(piece);
+      pendingBytes += piece.length;
+      if (pendingBytes >= OUTPUT_CHUNK_BYTES) flush();
+    }
+    flush();
   }
 
   async reportFinish(run: Run, body: RunnerFinishBody): Promise<Run> {
