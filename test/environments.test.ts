@@ -134,6 +134,36 @@ describe('launching in a guest environment', () => {
     expect(t.driver.specs.at(-1)?.imageId).toBe(id);
   });
 
+  it('lets a chained run pick an environment other than its parent', async () => {
+    const go = await readyEnvironment();
+    const rust = await readyEnvironment('Rust toolchain');
+    const alice = await t.member('alice');
+    const parent = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ environmentId: go }))
+      .expect(201);
+    await settle(t.launchpad);
+    const token = t.driver.lastConfig().runToken;
+    await t.runner(token, 'put', '/outputs/report.md').send('# Report').expect(204);
+    await t
+      .runner(token, 'post', '/finish')
+      .send({ outcome: 'succeeded', finalMessage: 'done', memory: null, error: null })
+      .expect(200);
+    await settle(t.launchpad);
+
+    const child = await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ environmentId: rust, parentRunId: parent.body.id }))
+      .expect(201);
+    await settle(t.launchpad);
+    expect(child.body).toMatchObject({
+      parentRunId: parent.body.id,
+      environmentId: rust,
+      environmentName: 'Rust toolchain',
+    });
+    expect(t.driver.specs.at(-1)?.imageId).toBe(rust);
+  });
+
   it('boots the default image when none is picked', async () => {
     await readyEnvironment();
     const alice = await t.member('alice');
