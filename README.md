@@ -5,7 +5,7 @@ tool accounts once. You then hand scripts or agents a **session key**, which onl
 permission template allows and stops working when its TTL expires. The real credentials never
 leave the gateway.
 
-Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API), **Gemini image & video generation** (Gemini API), **Seedance video generation** (BytePlus ModelArk API) and **fal.ai** (queue API). Each tool is a provider
+Supported tools: **GitHub** (REST API and git), **monday.com** (GraphQL API), **Slack** (Web API), **Linear** (GraphQL API), **Gmail** (REST API), **Gemini image & video generation** (Gemini API), **Seedance video generation** (BytePlus ModelArk API), **fal.ai** (queue API) and **Google Maps** (Maps Platform web services). Each tool is a provider
 behind the same interface (`src/server/tools/types.ts`), so accounts, templates, session keys,
 members and the proxy work identically for all of them.
 
@@ -319,6 +319,32 @@ without the API key) for them. Past generations can be listed with `GET /<endpoi
 (e.g. `/fal-ai/flux/dev/requests?limit=20&expand=payloads`), which the gateway sends to fal's
 platform API (`https://api.fal.ai/v1/models/requests/by-endpoint`) for allowed endpoints only;
 `limit`, `cursor`, `start`, `end`, `status`, `request_id`, `expand` and `sort_by` are passed on.
+
+## Google Maps
+
+Agents can geocode, search places, get directions and travel times, elevations, time zones, map
+images and validate addresses with Google Maps Platform, as a tool (`google-maps`). Connect a Maps
+Platform API key under **Accounts → Connect account → Google Maps** (console.cloud.google.com →
+Google Maps Platform → Keys & Credentials, with the APIs agents should use enabled). Clients use
+`/proxy/google-maps` instead of `https://maps.googleapis.com` and send their session key as
+`x-goog-api-key` (or `Bearer`), never `?key=`: the gateway adds the real key. Places (New), Routes
+and Address Validation have their own hosts, reached through `/proxy/google-maps/places/…`,
+`…/routes/…` and `…/addressvalidation/…`. Grants take no resources (permissions only).
+
+| Permission           | Endpoints                                                                                                                                                                                                                                                               |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `geocoding:read`     | `GET /maps/api/geocode/json`                                                                                                                                                                                                                                            |
+| `places:read`        | `GET /maps/api/place/<textsearch\|nearbysearch\|findplacefromtext\|autocomplete\|queryautocomplete\|details>/json`, `GET /maps/api/place/photo`, `POST /places/v1/places:<searchText\|searchNearby\|autocomplete>`, `GET /places/v1/places/<id>[/photos/<photo>/media]` |
+| `routes:read`        | `GET /maps/api/directions/json`, `GET /maps/api/distancematrix/json`, `POST /routes/directions/v2:computeRoutes`, `POST /routes/distanceMatrix/v2:computeRouteMatrix`                                                                                                   |
+| `elevation:read`     | `GET /maps/api/elevation/json`                                                                                                                                                                                                                                          |
+| `timezone:read`      | `GET /maps/api/timezone/json`                                                                                                                                                                                                                                           |
+| `maps:images`        | `GET /maps/api/staticmap`, `GET /maps/api/streetview[/metadata]`                                                                                                                                                                                                        |
+| `addresses:validate` | `POST /addressvalidation/v1:validateAddress`                                                                                                                                                                                                                            |
+
+Classic services also answer in `/xml`. Only the documented query parameters of each service are
+passed on; custom static map marker icons are refused, since Google would fetch them from the
+internet on the agent's behalf. Photos redirect to Google's image CDN, which agents can't reach: the
+gateway follows those redirects (only to `googleusercontent.com`, without the key) for them.
 
 ## Agent launchpad
 

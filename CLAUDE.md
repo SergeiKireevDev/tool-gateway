@@ -25,6 +25,7 @@
   sends mail must check its recipients) and a test in `test/gmail.test.ts`. Gemini image/video
   endpoints need a rule in `src/server/tools/geminiMedia.ts` and a test in `test/geminiMedia.test.ts`;
   Seedance (ModelArk) ones in `src/server/tools/seedance.ts` and `test/seedance.test.ts`; fal.ai
-  ones in `src/server/tools/fal.ts` and `test/fal.test.ts`.
+  ones in `src/server/tools/fal.ts` and `test/fal.test.ts`; Google Maps ones in
+  `src/server/tools/googleMaps.ts` and `test/googleMaps.test.ts`.
 - Tools are interchangeable providers (`src/server/tools/types.ts`); keep tool specifics out of the
   gateway, proxy and UI (the UI reads names, hints and examples from `/api/admin/tools`).
