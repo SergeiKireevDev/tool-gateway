@@ -1,5 +1,5 @@
 import type { Database } from '../db/database.js';
-import { badRequest, notFound } from '../errors.js';
+import { badRequest, conflict, notFound } from '../errors.js';
 import { randomId } from '../store/crypto.js';
 import { MS_PER_DAY } from '../units.js';
 import { writeChunks } from './chunks.js';
@@ -10,7 +10,10 @@ const NAME_RE = /^[A-Za-z0-9._-]+$/;
 const MAX_ATTACHMENTS = 20;
 /** Attachments not launched with within this long are deleted. */
 const PENDING_DAYS = 1;
+/** Largest part of a file uploaded in parts: below the request size limits of common proxies. */
+const PART_MIB = 32;
 const ATTACHMENT_NOT_FOUND = 'Attachment not found';
+const UPLOAD_NOT_FOUND = 'Upload not found, or already completed';
 
 /** Limits on the files a member attaches to a launch (and on those not launched with yet). */
 export const ATTACHMENT_LIMITS = {
@@ -20,6 +23,8 @@ export const ATTACHMENT_LIMITS = {
   fileBytes: MAX_OUTPUT_FILE_MIB * MIB,
   /** All files of a launch, and all files not launched with yet, in bytes. */
   totalBytes: MAX_OUTPUT_TOTAL_MIB * MIB,
+  /** One part of a file uploaded in parts, in bytes. */
+  partBytes: PART_MIB * MIB,
 } as const;
 
 /** A file a member attached to a launch: the agent finds it in `/home/agent/in/<name>`. */
@@ -38,6 +43,11 @@ interface AttachmentRow {
   size: number;
   run_id: string | null;
   created_at: string;
+}
+
+/** An attachment not launched with yet; an upload in progress has the size received so far. */
+interface Unlaunched extends Attachment {
+  complete: boolean;
 }
 
 const COLUMNS = 'id, name, size, run_id, created_at';
@@ -62,20 +72,36 @@ export class Attachments {
     private readonly now: () => Date,
   ) {}
 
-  /** Stores a file a member uploads, streamed chunk by chunk, for a launch to come. */
+  /** Holds the uploads a part is being written to, so that parts of one file never interleave. */
+  private readonly writing = new Set<string>();
+
+  /** Stores a file a member uploads in one request, streamed chunk by chunk, for a launch to come. */
   async upload(
     memberId: string,
     name: string,
     content: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
   ): Promise<Attachment> {
+    const { id } = this.begin(memberId, name);
+    try {
+      await this.write(memberId, id, 0, content, ATTACHMENT_LIMITS.fileBytes);
+      return this.complete(memberId, id);
+    } catch (err) {
+      this.remove(id);
+      throw err;
+    }
+  }
+
+  /**
+   * Starts uploading a file in parts (for files larger than a proxy in front of the gateway lets
+   * through in one request): `append` its parts in order, then `complete` it.
+   */
+  begin(memberId: string, name: string): Attachment {
     if (!validAttachmentName(name)) {
       throw badRequest('Invalid file name: use letters, digits, dots, dashes and underscores');
     }
-    const pending = this.pending(memberId);
-    if (pending.length >= ATTACHMENT_LIMITS.files) {
+    if (this.unlaunched(memberId).length >= ATTACHMENT_LIMITS.files) {
       throw badRequest(`At most ${ATTACHMENT_LIMITS.files} files can wait for a launch`);
     }
-    const pendingBytes = pending.reduce((sum, a) => sum + a.size, 0);
     const id = randomId();
     const createdAt = this.now().toISOString();
     this.db.sql
@@ -83,33 +109,90 @@ export class Attachments {
         'INSERT INTO run_attachments (id, member_id, run_id, name, size, created_at) VALUES (?, ?, NULL, ?, NULL, ?)',
       )
       .run(id, memberId, name, createdAt);
+    return { id, name, size: 0, runId: null, createdAt };
+  }
+
+  /**
+   * Appends a part (at most `ATTACHMENT_LIMITS.partBytes`) to an upload in progress. `offset` is
+   * the size received so far: a part that failed can be sent again. Returns the size received.
+   */
+  async append(
+    memberId: string,
+    id: string,
+    offset: number,
+    content: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+  ): Promise<{ received: number }> {
+    return {
+      received: await this.write(memberId, id, offset, content, ATTACHMENT_LIMITS.partBytes),
+    };
+  }
+
+  /** Completes an upload in progress: the file can then be launched with. */
+  complete(memberId: string, id: string): Attachment {
+    const upload = this.inProgress(memberId, id);
+    this.db.sql.prepare('UPDATE run_attachments SET size = ? WHERE id = ?').run(upload.size, id);
+    return { id, name: upload.name, size: upload.size, runId: null, createdAt: upload.createdAt };
+  }
+
+  /** Writes a part of an upload at `offset`; a part that fails is removed whole. */
+  private async write(
+    memberId: string,
+    id: string,
+    offset: number,
+    content: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    maxBytes: number,
+  ): Promise<number> {
+    const upload = this.inProgress(memberId, id);
+    if (offset !== upload.size) {
+      throw conflict(`Expected the part at offset ${upload.size}`);
+    }
+    const otherBytes = this.unlaunched(memberId)
+      .filter((a) => a.id !== id)
+      .reduce((sum, a) => sum + a.size, 0);
+    const last = this.db.sql
+      .prepare('SELECT MAX(seq) AS seq FROM run_attachment_chunks WHERE attachment_id = ?')
+      .get(id) as { seq: number | null };
+    const firstSeq = (last.seq ?? -1) + 1;
+    const insert = this.db.sql.prepare(
+      'INSERT INTO run_attachment_chunks (attachment_id, seq, data) VALUES (?, ?, ?)',
+    );
+    this.writing.add(id);
     try {
-      const insert = this.db.sql.prepare(
-        'INSERT INTO run_attachment_chunks (attachment_id, seq, data) VALUES (?, ?, ?)',
-      );
       const size = await writeChunks(
         content,
         (seq, data) => {
-          insert.run(id, seq, data);
+          insert.run(id, firstSeq + seq, data);
         },
         (sofar) => {
-          if (sofar > ATTACHMENT_LIMITS.fileBytes) throw badRequest('File too large');
-          if (pendingBytes + sofar > ATTACHMENT_LIMITS.totalBytes) {
+          if (sofar > maxBytes) throw badRequest('Part too large');
+          if (offset + sofar > ATTACHMENT_LIMITS.fileBytes) throw badRequest('File too large');
+          if (otherBytes + offset + sofar > ATTACHMENT_LIMITS.totalBytes) {
             throw badRequest('The files waiting for a launch exceed the total limit');
           }
         },
       );
-      this.db.sql.prepare('UPDATE run_attachments SET size = ? WHERE id = ?').run(size, id);
-      return { id, name, size, runId: null, createdAt };
+      return offset + size;
     } catch (err) {
-      this.remove(id);
+      this.db.sql
+        .prepare('DELETE FROM run_attachment_chunks WHERE attachment_id = ? AND seq >= ?')
+        .run(id, firstSeq);
       throw err;
+    } finally {
+      this.writing.delete(id);
     }
   }
 
-  /** Deletes one of the member's attachments that no run was launched with yet. */
+  /** One of the member's uploads in progress, with nothing being written to it right now. */
+  private inProgress(memberId: string, id: string): Unlaunched {
+    const upload = this.unlaunched(memberId).find((a) => a.id === id && !a.complete);
+    if (!upload) throw notFound(UPLOAD_NOT_FOUND);
+    if (this.writing.has(id)) throw conflict('A part of this file is being uploaded');
+    return upload;
+  }
+
+  /** Deletes one of the member's attachments no run was launched with yet, or an upload in progress. */
   discard(memberId: string, id: string): void {
-    const found = this.pending(memberId).some((a) => a.id === id);
+    const found = this.unlaunched(memberId).some((a) => a.id === id);
     if (!found) throw notFound(ATTACHMENT_NOT_FOUND);
     this.remove(id);
   }
@@ -224,14 +307,23 @@ export class Attachments {
     );
   }
 
-  private pending(memberId: string): Attachment[] {
+  /** The member's attachments not launched with yet, uploads in progress included. */
+  private unlaunched(memberId: string): Unlaunched[] {
     const rows = this.db.sql
       .prepare(
-        `SELECT ${COLUMNS} FROM run_attachments
-         WHERE member_id = ? AND run_id IS NULL AND size IS NOT NULL ORDER BY created_at`,
+        `SELECT id, name, run_id, created_at, size IS NOT NULL AS complete,
+                COALESCE(size, (SELECT COALESCE(SUM(length(data)), 0) FROM run_attachment_chunks
+                                WHERE attachment_id = a.id)) AS size
+         FROM run_attachments a WHERE member_id = ? AND run_id IS NULL ORDER BY created_at`,
       )
-      .all(memberId) as unknown as AttachmentRow[];
-    return rows.map(toAttachment);
+      .all(memberId) as unknown as (AttachmentRow & { complete: number })[];
+    return rows.map((r) => ({ ...toAttachment(r), complete: r.complete === 1 }));
+  }
+
+  private pending(memberId: string): Attachment[] {
+    return this.unlaunched(memberId)
+      .filter((a) => a.complete)
+      .map(({ complete: _complete, ...a }) => a);
   }
 
   private remove(id: string): void {

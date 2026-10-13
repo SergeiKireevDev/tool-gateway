@@ -1205,6 +1205,7 @@ export function LaunchForm({
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState<number | null>(null);
   const relaunched = useRelaunchInputs(relaunch);
   const attaching = attachable(when, workflow);
 
@@ -1270,10 +1271,13 @@ export function LaunchForm({
     setBusy(true);
     setError(null);
     try {
-      await send(attaching ? await uploadAttachments(api, files) : []);
+      const attachmentIds = attaching ? await uploadAttachments(api, files, setUploading) : [];
+      setUploading(null);
+      await send(attachmentIds);
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      setUploading(null);
       setBusy(false);
     }
   };
@@ -1316,7 +1320,7 @@ export function LaunchForm({
       />
       <AccountFields ambiguous={ambiguous} picked={picked} setPicked={setPicked} />
       {!once && <WhenField when={when} setWhen={setWhen} />}
-      <AttachmentsField shown={attaching} files={files} onChange={setFiles} />
+      <AttachmentsField shown={attaching} files={files} onChange={setFiles} progress={uploading} />
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}

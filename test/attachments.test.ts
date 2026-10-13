@@ -200,6 +200,74 @@ describe('launch attachments', () => {
     expect(purged.body).toEqual([]);
   });
 
+  it('uploads a file in parts, larger than one request carries', async () => {
+    const MIB = 1024 * 1024;
+    const started = await t
+      .portal(alice.cookie, 'post', '/attachments')
+      .send({ name: 'big.bin' })
+      .expect(201);
+    const id = started.body.id as string;
+    const parts = `/attachments/${id}/parts`;
+    const first = Buffer.alloc(32 * MIB, 'a');
+    const second = Buffer.from('tail');
+    const put = (offset: number, part: Buffer) =>
+      t
+        .portal(alice.cookie, 'put', `${parts}?offset=${String(offset)}`)
+        .set('content-type', 'application/octet-stream')
+        .send(part);
+
+    // A part larger than 32 MiB is refused; so is one at another offset than the size received.
+    await put(0, Buffer.alloc(32 * MIB + 1)).expect(400);
+    expect((await put(0, first).expect(200)).body).toEqual({ received: first.length });
+    const res = await put(0, second).expect(409);
+    expect(res.body.message).toMatch(`offset ${String(first.length)}`);
+    await put(first.length, second).expect(200);
+
+    // Not launchable until complete.
+    await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send(launchBody({ attachmentIds: [id] }))
+      .expect(400);
+    const done = await t.portal(alice.cookie, 'post', `/attachments/${id}/complete`).expect(200);
+    expect(done.body).toMatchObject({ id, name: 'big.bin', size: first.length + second.length });
+    await put(first.length + second.length, second).expect(404);
+
+    await launch(alice.cookie, { attachmentIds: [id] });
+    const config = t.driver.lastConfig();
+    expect(config.inputs).toEqual([{ path: 'big.bin', size: first.length + second.length }]);
+    const file = await t
+      .runner(config.runToken, 'get', '/inputs/big.bin')
+      .buffer(true)
+      .parse((r, cb) => {
+        const got: Buffer[] = [];
+        r.on('data', (b: Buffer) => got.push(b));
+        r.on('end', () => {
+          cb(null, Buffer.concat(got));
+        });
+      })
+      .expect(200);
+    expect(Buffer.compare(file.body as Buffer, Buffer.concat([first, second]))).toBe(0);
+  });
+
+  it('keeps uploads in parts to their member, and lets them be dropped', async () => {
+    const bob = await t.member('bob');
+    const started = await t
+      .portal(alice.cookie, 'post', '/attachments')
+      .send({ name: 'notes.txt' })
+      .expect(201);
+    const id = started.body.id as string;
+    await t
+      .portal(bob.cookie, 'put', `/attachments/${id}/parts?offset=0`)
+      .set('content-type', 'application/octet-stream')
+      .send(Buffer.from('x'))
+      .expect(404);
+    await t.portal(bob.cookie, 'post', `/attachments/${id}/complete`).expect(404);
+    await t.portal(bob.cookie, 'delete', `/attachments/${id}`).expect(404);
+    await t.portal(alice.cookie, 'delete', `/attachments/${id}`).expect(204);
+    await t.portal(alice.cookie, 'post', `/attachments/${id}/complete`).expect(404);
+    await t.portal(alice.cookie, 'post', '/attachments').send({ name: '..' }).expect(400);
+  });
+
   it('gives runs launched without attachments no inputs', async () => {
     await launch(alice.cookie);
     expect(t.driver.lastConfig().inputs).toBeUndefined();
