@@ -39,6 +39,7 @@ const ENVIRONMENTS_PATH = '/environments';
 const ENVIRONMENT_PATH = '/environments/:eid';
 const SKILLS_PATH = '/skills';
 const SKILL_PATH = '/skills/:kid';
+const ATTACHMENT_ID = 'aid';
 
 const timeoutSeconds = z
   .number()
@@ -61,6 +62,11 @@ const settingsSchema = z
     message: 'The default timeout must not exceed the maximum',
     path: ['defaultTimeoutSeconds'],
   });
+
+const uploadSchema = z.object({ name: z.string().min(1).max(MAX_ID_LENGTH) });
+const partQuerySchema = z.object({
+  offset: z.coerce.number().int().min(0).max(ATTACHMENT_LIMITS.fileBytes),
+});
 
 const memberLaunchSchema = z.object({
   launchEnabled: z.boolean(),
@@ -366,10 +372,29 @@ function attachmentRoutes(
       return launchpad.attachments.upload(memberOf(res).id, param(req, 'name'), req);
     }),
   );
+  // Larger files are uploaded in parts, each small enough for a proxy in front of the gateway.
+  router.post(
+    '/attachments',
+    created((req, res) =>
+      launchpad.attachments.begin(memberOf(res).id, uploadSchema.parse(req.body).name),
+    ),
+  );
+  router.put(
+    '/attachments/:aid/parts',
+    h(async (req, res) => {
+      if (declaredOver(req, ATTACHMENT_LIMITS.partBytes)) throw badRequest('Part too large');
+      const { offset } = partQuerySchema.parse(req.query);
+      return launchpad.attachments.append(memberOf(res).id, param(req, ATTACHMENT_ID), offset, req);
+    }),
+  );
+  router.post(
+    '/attachments/:aid/complete',
+    h((req, res) => launchpad.attachments.complete(memberOf(res).id, param(req, ATTACHMENT_ID))),
+  );
   router.delete(
     '/attachments/:aid',
     h((req, res) => {
-      launchpad.attachments.discard(memberOf(res).id, param(req, 'aid'));
+      launchpad.attachments.discard(memberOf(res).id, param(req, ATTACHMENT_ID));
     }),
   );
 }

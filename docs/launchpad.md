@@ -142,8 +142,15 @@ finds them in `/home/agent/in` when it starts.
   launch then names them (`attachmentIds` in `POST /api/me/launchpad/runs`). Uploads are streamed
   into the database in 4 MiB chunks, like output files. Names are plain file names: letters,
   digits, dots, dashes and underscores (the form replaces other characters with `_`).
+- **Upload in parts.** A proxy or tunnel in front of the gateway often caps the size of a request
+  (Cloudflare at 100 MB) or its duration, so the form uploads every file in parts of 32 MiB:
+  `POST /api/me/launchpad/attachments` with `{"name": "<name>"}` starts an upload and returns its
+  `id`; `PUT /api/me/launchpad/attachments/<id>/parts?offset=<bytes>` appends a part (at most
+  32 MiB, raw body) at the size received so far (another offset is refused with 409, so a part
+  that failed is simply sent again); `POST /api/me/launchpad/attachments/<id>/complete` finishes
+  it. Only complete uploads can be launched with; unfinished ones are deleted after a day.
 - **Limits.** At most 20 files per launch, 1 GiB per file and 2 GiB in all. The same limits apply
-  to files uploaded but not launched with yet.
+  to files uploaded (or being uploaded) but not launched with yet.
 - **Checks.** An attachment is the member's own, and goes with one launch only. Two attachments
   of a launch can't have the same name. Schedules, triggers and workflows take no attachments.
 - **Input.** When the run starts, its attachments are added to its input files

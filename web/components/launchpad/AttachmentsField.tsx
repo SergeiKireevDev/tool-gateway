@@ -1,6 +1,7 @@
 'use client';
 
-import type { Api } from '@/lib/api';
+import { type Api, ApiError } from '@/lib/api';
+import { HTTP_SERVER_ERROR } from '@/lib/http';
 import { type Attachment, formatBytes } from '@/lib/launchpad';
 import { Button } from '../ui';
 
@@ -22,13 +23,76 @@ function withFiles(files: File[], picked: FileList | null): File[] {
   return [...files.filter((f) => !names.has(attachmentName(f))), ...added];
 }
 
-/** Uploads the files for a launch to come; returns their attachment ids. */
-export async function uploadAttachments(api: Api, files: readonly File[]): Promise<string[]> {
+const KIB = 1024;
+const MIB = KIB * KIB;
+/** Largest file the gateway accepts, 1 GiB (it enforces its own limits). */
+const MAX_FILE_BYTES = KIB * MIB;
+const PART_MIB = 32;
+/**
+ * Files are sent in parts of this size, so that a proxy in front of the gateway with a request
+ * size limit (e.g. 100 MB) lets them through; the gateway accepts parts of up to 32 MiB.
+ */
+const PART_BYTES = PART_MIB * MIB;
+const PERCENT = 100;
+/** Times a part is sent again after a network or server error. */
+const PART_RETRIES = 3;
+
+/** Whether sending a part again may help: a network error or a server error, not a refusal. */
+const retryable = (err: unknown): boolean =>
+  !(err instanceof ApiError) || err.status >= HTTP_SERVER_ERROR;
+
+/** Sends one part of a file, again on network or server errors. */
+async function sendPart(api: Api, path: string, offset: number, part: Blob): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await api('PUT', `${path}?offset=${offset}`, part);
+      return;
+    } catch (err) {
+      if (attempt >= PART_RETRIES || !retryable(err)) throw err;
+    }
+  }
+}
+
+/** Uploads a file in parts; `onSent` hears the bytes sent of each part. Returns its id. */
+async function uploadFile(api: Api, file: File, onSent: (bytes: number) => void): Promise<string> {
+  const upload = await api<Attachment>('POST', ATTACHMENTS_PATH, { name: attachmentName(file) });
+  const path = `${ATTACHMENTS_PATH}/${upload.id}`;
+  try {
+    for (let offset = 0; offset < file.size; offset += PART_BYTES) {
+      const part = file.slice(offset, offset + PART_BYTES);
+      await sendPart(api, `${path}/parts`, offset, part);
+      onSent(part.size);
+    }
+    await api<Attachment>('POST', `${path}/complete`);
+  } catch (err) {
+    await discardAttachments(api, [upload.id]);
+    throw err;
+  }
+  return upload.id;
+}
+
+/**
+ * Uploads the files for a launch to come; returns their attachment ids. `onProgress` hears the
+ * share of the bytes sent so far (0 to 1).
+ */
+export async function uploadAttachments(
+  api: Api,
+  files: readonly File[],
+  onProgress: (share: number) => void = () => undefined,
+): Promise<string[]> {
+  const tooLarge = files.find((f) => f.size > MAX_FILE_BYTES);
+  if (tooLarge) throw new Error(`${tooLarge.name} is larger than 1 GiB`);
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  let sent = 0;
   const ids: string[] = [];
   try {
     for (const file of files) {
-      const name = encodeURIComponent(attachmentName(file));
-      ids.push((await api<Attachment>('PUT', `${ATTACHMENTS_PATH}/${name}`, file)).id);
+      ids.push(
+        await uploadFile(api, file, (bytes) => {
+          sent += bytes;
+          onProgress(total === 0 ? 1 : sent / total);
+        }),
+      );
     }
   } catch (err) {
     await discardAttachments(api, ids);
@@ -49,10 +113,13 @@ export function AttachmentsField({
   shown,
   files,
   onChange,
+  progress = null,
 }: {
   shown: boolean;
   files: File[];
   onChange: (files: File[]) => void;
+  /** Share of the files uploaded (0 to 1) while they are, else null. */
+  progress?: number | null;
 }) {
   if (!shown) return null;
   return (
@@ -93,9 +160,14 @@ export function AttachmentsField({
         }}
       />
       <span className="mt-1 block text-xs text-slate-500">
-        Optional. Copied to /home/agent/in before the agent starts (up to 20 files). Tell it what to
-        do with them in the task.
+        Optional. Copied to /home/agent/in before the agent starts (up to 20 files, 1 GiB each, 2
+        GiB in all). Tell it what to do with them in the task.
       </span>
+      {progress !== null && (
+        <span className="mt-1 block text-xs font-medium text-slate-700" role="status">
+          Uploading… {Math.floor(progress * PERCENT)}%
+        </span>
+      )}
     </div>
   );
 }
