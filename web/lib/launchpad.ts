@@ -36,6 +36,8 @@ export interface Run {
   instructions: string | null;
   templateId: string;
   templateName: string;
+  /** The member's accounts the run used, when they have several for a tool. */
+  accountIds: string[];
   /** The guest environment the run's VM booted (null: the default one). */
   environmentId: string | null;
   environmentName: string | null;

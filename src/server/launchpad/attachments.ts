@@ -137,6 +137,43 @@ export class Attachments {
     return picked;
   }
 
+  /**
+   * The attachments of a run that a relaunch of it gets again: all but those an uploaded file of
+   * the same name replaces, within the per-launch limits with the uploaded ones.
+   */
+  forRelaunch(runId: string, uploaded: readonly Attachment[]): Attachment[] {
+    const names = new Set(uploaded.map((a) => a.name));
+    const kept = this.forRun(runId).filter((a) => !names.has(a.name));
+    const all = [...uploaded, ...kept];
+    if (all.length > ATTACHMENT_LIMITS.files) {
+      throw badRequest(`At most ${ATTACHMENT_LIMITS.files} files can be attached`);
+    }
+    if (all.reduce((sum, a) => sum + a.size, 0) > ATTACHMENT_LIMITS.totalBytes) {
+      throw badRequest('The attached files exceed the total limit');
+    }
+    return kept;
+  }
+
+  /** Gives a run copies of attachments checked by `forRelaunch` (the originals stay with theirs). */
+  copy(memberId: string, runId: string, attachments: readonly Attachment[]): void {
+    if (attachments.length === 0) return;
+    const insert = this.db.sql.prepare(
+      'INSERT INTO run_attachments (id, member_id, run_id, name, size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    const chunks = this.db.sql.prepare(
+      `INSERT INTO run_attachment_chunks (attachment_id, seq, data)
+       SELECT ?, seq, data FROM run_attachment_chunks WHERE attachment_id = ?`,
+    );
+    const createdAt = this.now().toISOString();
+    this.db.transaction(() => {
+      for (const a of attachments) {
+        const id = randomId();
+        insert.run(id, memberId, runId, a.name, a.size, createdAt);
+        chunks.run(id, a.id);
+      }
+    });
+  }
+
   /** Gives attachments checked by `forLaunch` to the run launched with them. */
   claim(runId: string, attachments: readonly Attachment[]): void {
     const claim = this.db.sql.prepare(

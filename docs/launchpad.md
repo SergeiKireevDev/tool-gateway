@@ -176,6 +176,25 @@ left output files, a member clicks **Chain an agent**: the launch form opens cha
   the parent node, the run, and the runs chained after it (`GET …/runs?parentRunId=<id>`); a click
   opens a node's run.
 
+## Edit and relaunch
+
+To retry a run, possibly with one thing changed, a member clicks **Edit and relaunch** on the page
+of one of their finished agent runs (not a workflow step). The launch form opens filled with the
+run's settings: its task, template, agent, model, environment, skills and accounts. They are
+checked against the templates as they are configured now: what the member can no longer use
+(a template withdrawn, a model no longer allowed, an environment or skill removed) is left out,
+and the form says so. The member edits what they need; the new agent runs once, now, as an
+ordinary launch.
+
+- **Webhook-triggered runs.** The form shows the trigger's instructions and the event (the task)
+  as two fields. The relaunch sends the instructions with `instructions` in
+  `POST /api/me/launchpad/runs`: they go in the system prompt as for a trigger's run. The new run
+  belongs to no trigger.
+- **Input files.** A chained run is relaunched chained after the same parent (`parentRunId`), and a
+  run with attachments gets copies of them (`attachmentsFrom: <runId>`, one of the member's own
+  runs); either can be unticked. Files attached to the relaunch are added, and replace a copied
+  file of the same name. The per-launch limits count both.
+
 ## Skill library
 
 Agents leave what they learned for the next ones. Their system prompt asks them to export, before

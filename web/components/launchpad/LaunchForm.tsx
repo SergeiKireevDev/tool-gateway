@@ -21,6 +21,15 @@ import {
 import type { Account } from '@/lib/types';
 import { Button, ErrorBanner, Field, Input, Select, Textarea } from '../ui';
 import { AttachmentsField, discardAttachments, uploadAttachments } from './AttachmentsField';
+import {
+  BLANK_DEFAULTS,
+  InstructionsField,
+  type LaunchDefaults,
+  type Relaunch,
+  type RelaunchInputs,
+  RelaunchNote,
+  relaunchDefaults,
+} from './RelaunchFields';
 import { SkillsField } from './SkillsField';
 
 type When = 'now' | Preset | 'webhook';
@@ -439,25 +448,35 @@ function TriggerFields({
   );
 }
 
-/** The task field: the agent's task, or what a trigger's agent does with each event. */
+type TaskKind = 'task' | 'trigger' | 'event';
+const TASK_LABELS: Record<TaskKind, string> = {
+  task: 'Task',
+  trigger: 'Instructions',
+  event: 'Webhook event',
+};
+const TASK_HINTS: Record<TaskKind, string> = {
+  task: 'What the agent should do. It works alone: be specific about the expected result.',
+  trigger:
+    'What the agent should do with each event. They go in its system prompt; the event payload is its task.',
+  event: 'The payload of the event that triggered the run: the agent’s task.',
+};
+
+/**
+ * The task field: the agent's task, what a trigger's agent does with each event, or the event a
+ * relaunched triggered run gets again.
+ */
 function TaskField({
-  trigger,
+  kind,
   prompt,
   setPrompt,
 }: {
-  trigger: boolean;
+  kind: TaskKind;
   prompt: string;
   setPrompt: (v: string) => void;
 }) {
+  const trigger = kind === 'trigger';
   return (
-    <Field
-      label={trigger ? 'Instructions' : 'Task'}
-      hint={
-        trigger
-          ? 'What the agent should do with each event. They go in its system prompt; the event payload is its task.'
-          : 'What the agent should do. It works alone: be specific about the expected result.'
-      }
-    >
+    <Field label={TASK_LABELS[kind]} hint={TASK_HINTS[kind]}>
       <Textarea
         required
         rows={6}
@@ -505,6 +524,10 @@ interface Draft {
   parentRunId: string;
   /** Files uploaded for the launch, copied to /home/agent/in. */
   attachmentIds: string[];
+  /** A relaunched triggered run's instructions ('' = none). */
+  instructions: string;
+  /** The relaunched run whose attached files the agent gets again ('' = none). */
+  attachmentsFrom: string;
 }
 
 const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
@@ -546,10 +569,14 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   };
   if (d.when === 'now') {
     const chain = d.parentRunId ? { parentRunId: d.parentRunId } : {};
-    const attached = d.attachmentIds.length > 0 ? { attachmentIds: d.attachmentIds } : {};
+    const attached = {
+      ...(d.attachmentIds.length > 0 ? { attachmentIds: d.attachmentIds } : {}),
+      ...(d.attachmentsFrom ? { attachmentsFrom: d.attachmentsFrom } : {}),
+    };
+    const instructions = d.instructions.trim() ? { instructions: d.instructions } : {};
     return {
       path: '/launchpad/runs',
-      body: { ...agent, ...chain, ...attached, prompt: d.prompt },
+      body: { ...agent, ...chain, ...attached, ...instructions, prompt: d.prompt },
     };
   }
   if (d.when === 'webhook') {
@@ -646,15 +673,17 @@ const plannerKey = (p: HarnessChoice): string => `${p.harness}:${p.provider}`;
  * API (no template: it gets no tool), and any template for its script. A custom LLM endpoint is
  * asked for its models when the agent or the workflow's script uses it.
  */
-function useAgentChoice(api: Api, templates: LaunchTemplate[]) {
+function useAgentChoice(api: Api, templates: LaunchTemplate[], defaults: LaunchDefaults) {
   const [selection, setSelection] = useState(
-    () => templates.find((t) => t.harnesses.length > 0)?.id ?? WORKFLOW,
+    () => defaults.templateId ?? templates.find((t) => t.harnesses.length > 0)?.id ?? WORKFLOW,
   );
   const workflow = selection === WORKFLOW;
   const [executorTemplateId, setExecutorTemplateId] = useState(() => firstId(templates));
   const templateId = workflow ? executorTemplateId : selection;
   const template = templates.find((t) => t.id === templateId);
-  const [harness, setHarness] = useState(template?.harnesses[0]?.harness ?? 'claude-code');
+  const [harness, setHarness] = useState(
+    defaults.harness ?? template?.harnesses[0]?.harness ?? 'claude-code',
+  );
   const planners = usePlanners(api, workflow);
   const [plannerChoice, setPlannerKey] = useState('');
   const planner = workflow
@@ -663,7 +692,7 @@ function useAgentChoice(api: Api, templates: LaunchTemplate[]) {
   const choice = workflow
     ? planner
     : (template?.harnesses.find((h) => h.harness === harness) ?? template?.harnesses[0]);
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(defaults.model);
   const executor = workflow ? (template?.workflow.executor ?? undefined) : undefined;
   const [executorModel, setExecutorModel] = useState('');
   // A planner's choice already holds the models its endpoints list.
@@ -830,11 +859,12 @@ const templateHint = (template: LaunchTemplate | undefined): string | undefined 
 function AgentFields({
   agent,
   templates,
-  chained,
+  once,
 }: {
   agent: AgentChoice;
   templates: LaunchTemplate[];
-  chained: boolean;
+  /** Chained and relaunched agents can't be a workflow. */
+  once: boolean;
 }) {
   const { workflow, setModel } = agent;
   return (
@@ -847,7 +877,7 @@ function AgentFields({
           <TemplateSelect
             templates={templates}
             value={agent.selection}
-            withWorkflow={!chained}
+            withWorkflow={!once}
             onChange={(value) => {
               agent.setSelection(value);
               setModel('');
@@ -973,8 +1003,9 @@ function useAccountPicks(
   accounts: Account[],
   template: LaunchTemplate | undefined,
   plannerTool: string | undefined,
+  initial: Record<string, string>,
 ) {
-  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<Record<string, string>>(initial);
   const ambiguous = [
     ...new Set([...(template?.tools ?? []), ...(plannerTool ? [plannerTool] : [])]),
   ]
@@ -1038,7 +1069,93 @@ function parentEnvironment(parent: Run | null, environments: EnvironmentChoice[]
   return id && environments.some((e) => e.id === id) ? id : '';
 }
 
-/** Launch an agent now, schedule it, or trigger it on webhook events. */
+/** The tools for which the member has several accounts: they pick one. */
+function AccountFields({
+  ambiguous,
+  picked,
+  setPicked,
+}: {
+  ambiguous: { tool: string; options: Account[] }[];
+  picked: Record<string, string>;
+  setPicked: (picked: Record<string, string>) => void;
+}) {
+  return ambiguous.map((x) => (
+    <Field
+      key={x.tool}
+      label={
+        x.options[0]?.kind === 'llm' ? `Model provider account (${x.tool})` : `${x.tool} account`
+      }
+    >
+      <Select
+        value={picked[x.tool] ?? x.options[0]?.id}
+        onChange={(e) => {
+          setPicked({ ...picked, [x.tool]: e.target.value });
+        }}
+      >
+        {x.options.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.label}
+          </option>
+        ))}
+      </Select>
+    </Field>
+  ));
+}
+
+/** The task, or a trigger's instructions, and a relaunched triggered run's instructions. */
+function useTask(defaults: LaunchDefaults) {
+  const [prompt, setPrompt] = useState(defaults.prompt);
+  const [instructions, setInstructions] = useState(defaults.instructions ?? '');
+  const event = defaults.instructions !== null;
+  return {
+    prompt,
+    setPrompt,
+    instructions,
+    setInstructions,
+    event,
+    /** The instructions sent: a relaunched triggered run's only. */
+    sent: event ? instructions : '',
+  };
+}
+
+/** What a relaunch keeps of its run's input files (all of them, unless the member unticks). */
+function useRelaunchInputs(relaunch: Relaunch | null) {
+  const [inputs, setInputs] = useState<RelaunchInputs>({
+    keepParent: true,
+    keepAttachments: true,
+  });
+  const parentRunId = relaunch?.run.parentRunId ?? null;
+  return {
+    inputs,
+    setInputs,
+    parentRunId: parentRunId !== null && inputs.keepParent ? parentRunId : '',
+    attachmentsFrom:
+      relaunch && inputs.keepAttachments && relaunch.attachments.length > 0 ? relaunch.run.id : '',
+  };
+}
+
+/** What the form starts from: a relaunched run's settings, or blank (a chained agent's environment). */
+function launchDefaults(
+  relaunch: Relaunch | null,
+  parent: Run | null,
+  options: LaunchOptions,
+  accounts: Account[],
+): LaunchDefaults {
+  if (relaunch) return relaunchDefaults(relaunch.run, options, accounts);
+  return { ...BLANK_DEFAULTS, environmentId: parentEnvironment(parent, options.environments) };
+}
+
+const taskKind = (event: boolean, trigger: boolean): TaskKind => {
+  if (event) return 'event';
+  return trigger ? 'trigger' : 'task';
+};
+
+function submitLabel(workflow: boolean, relaunching: boolean, when: When): string {
+  if (workflow) return 'Launch workflow';
+  return relaunching ? 'Relaunch agent' : SUBMIT_LABELS[when];
+}
+
+/** Launch an agent now, schedule it, or trigger it on webhook events; or relaunch a run. */
 export function LaunchForm({
   api,
   options,
@@ -1049,6 +1166,7 @@ export function LaunchForm({
   onTriggered,
   onWorkflow,
   parent = null,
+  relaunch = null,
 }: {
   api: Api;
   options: LaunchOptions;
@@ -1061,14 +1179,19 @@ export function LaunchForm({
   onWorkflow: (workflow: Workflow) => void;
   /** The run to chain the agent after: it starts from its output files, once, now. */
   parent?: Run | null;
+  /** The run to launch again, its settings filled in to edit: once, now. */
+  relaunch?: Relaunch | null;
 }) {
   const { templates } = options;
-  const [prompt, setPrompt] = useState('');
-  const agent = useAgentChoice(api, templates);
+  const [defaults] = useState(() => launchDefaults(relaunch, parent, options, accounts));
+  const task = useTask(defaults);
+  const { prompt } = task;
+  const agent = useAgentChoice(api, templates, defaults);
   const { workflow, templateId, template, harness, choice, model, executor, executorModel } = agent;
   const [chosenWhen, setWhen] = useState<When>('now');
-  // Workflows and chained agents run once, now.
-  const once = workflow || parent !== null;
+  // Workflows, chained and relaunched agents run once, now.
+  const single = parent !== null || relaunch !== null;
+  const once = workflow || single;
   const when: When = once ? 'now' : chosenWhen;
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState(1);
@@ -1077,13 +1200,12 @@ export function LaunchForm({
   const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
   const [eventTypes, setEventTypes] = useState('');
   const [filters, setFilters] = useState(NO_FILTERS);
-  const [environmentId, setEnvironmentId] = useState(() =>
-    parentEnvironment(parent, options.environments),
-  );
-  const [skills, setSkills] = useState<string[]>([]);
+  const [environmentId, setEnvironmentId] = useState(defaults.environmentId);
+  const [skills, setSkills] = useState<string[]>(defaults.skills);
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const relaunched = useRelaunchInputs(relaunch);
   const attaching = attachable(when, workflow);
 
   const plannerTool = workflow ? choice?.provider : undefined;
@@ -1091,6 +1213,7 @@ export function LaunchForm({
     accounts,
     template,
     plannerTool,
+    defaults.picked,
   );
 
   if (!templates.some((t) => t.harnesses.length > 0)) {
@@ -1123,8 +1246,10 @@ export function LaunchForm({
       webhookId,
       eventTypes,
       filters,
-      parentRunId: parent?.id ?? '',
+      parentRunId: parent?.id ?? relaunched.parentRunId,
       attachmentIds,
+      instructions: task.sent,
+      attachmentsFrom: relaunched.attachmentsFrom,
     });
     const sent = await api<Run | Schedule | Trigger | Workflow>(
       'POST',
@@ -1162,8 +1287,25 @@ export function LaunchForm({
       }}
     >
       {parent && <ChainNote parent={parent} />}
-      <TaskField trigger={!workflow && when === 'webhook'} prompt={prompt} setPrompt={setPrompt} />
-      <AgentFields agent={agent} templates={templates} chained={parent !== null} />
+      {relaunch && (
+        <RelaunchNote
+          relaunch={relaunch}
+          options={options}
+          inputs={relaunched.inputs}
+          setInputs={relaunched.setInputs}
+        />
+      )}
+      <InstructionsField
+        shown={task.event}
+        instructions={task.instructions}
+        setInstructions={task.setInstructions}
+      />
+      <TaskField
+        kind={taskKind(task.event, !workflow && when === 'webhook')}
+        prompt={prompt}
+        setPrompt={task.setPrompt}
+      />
+      <AgentFields agent={agent} templates={templates} once={single} />
       <AgentSetupFields
         shown={!workflow}
         options={options}
@@ -1172,29 +1314,7 @@ export function LaunchForm({
         skills={skills}
         setSkills={setSkills}
       />
-      {ambiguous.map((x) => (
-        <Field
-          key={x.tool}
-          label={
-            x.options[0]?.kind === 'llm'
-              ? `Model provider account (${x.tool})`
-              : `${x.tool} account`
-          }
-        >
-          <Select
-            value={picked[x.tool] ?? x.options[0]?.id}
-            onChange={(e) => {
-              setPicked({ ...picked, [x.tool]: e.target.value });
-            }}
-          >
-            {x.options.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.label}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      ))}
+      <AccountFields ambiguous={ambiguous} picked={picked} setPicked={setPicked} />
       {!once && <WhenField when={when} setWhen={setWhen} />}
       <AttachmentsField shown={attaching} files={files} onChange={setFiles} />
       {when === 'webhook' && (
@@ -1224,7 +1344,7 @@ export function LaunchForm({
       <ErrorBanner message={error} />
       <SubmitRow
         timeoutSeconds={options.defaultTimeoutSeconds}
-        label={workflow ? 'Launch workflow' : SUBMIT_LABELS[when]}
+        label={submitLabel(workflow, relaunch !== null, when)}
         disabled={
           busy ||
           // A workflow waits for its planning agents.

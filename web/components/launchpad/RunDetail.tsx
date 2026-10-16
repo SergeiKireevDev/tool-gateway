@@ -15,6 +15,7 @@ import {
   type RunEvent,
 } from '@/lib/launchpad';
 import { Button, Card, ErrorBanner, useNow } from '../ui';
+import { type Relaunch, relaunchable } from './RelaunchFields';
 import { runDuration, runOrigin, StatusBadge, TokenMeter } from './RunBits';
 import { RunChain } from './RunChain';
 import { RunLog } from './RunLog';
@@ -254,16 +255,22 @@ function RunPrompt({ run }: { run: Run }) {
   );
 }
 
-/** The token meter, and what can be done with the run: stop it, or chain an agent after it. */
+/**
+ * The token meter, and what can be done with the run: stop it, relaunch it with its settings
+ * edited, or chain an agent after it.
+ */
 function RunActions({
   run,
   stopping,
   onStop,
+  onRelaunch,
   onChain,
 }: {
   run: Run;
   stopping: boolean;
   onStop: () => void;
+  /** Set when the run can be relaunched (a member's agent run, not a workflow step). */
+  onRelaunch: (() => void) | undefined;
   /** Set when an agent can be chained after the run (it left output files). */
   onChain: ((run: Run) => void) | undefined;
 }) {
@@ -274,6 +281,16 @@ function RunActions({
       {active && (
         <Button variant="danger" size="sm" disabled={stopping} onClick={onStop}>
           Stop agent
+        </Button>
+      )}
+      {onRelaunch && !active && (
+        <Button
+          variant="secondary"
+          size="sm"
+          title="Launch a new agent with this run's settings, edited first"
+          onClick={onRelaunch}
+        >
+          Edit and relaunch
         </Button>
       )}
       {onChain && !active && (
@@ -292,6 +309,17 @@ function RunActions({
   );
 }
 
+/** Relaunches the run, its files attached again, if it can be. */
+function relaunchAction(
+  loaded: Loaded,
+  onRelaunch: ((relaunch: Relaunch) => void) | undefined,
+): (() => void) | undefined {
+  if (!onRelaunch || !relaunchable(loaded.run)) return undefined;
+  return () => {
+    onRelaunch({ run: loaded.run, attachments: loaded.attachments });
+  };
+}
+
 /** One run: status, live log, steps, every gateway call, and its result. */
 export function RunDetail({
   api,
@@ -300,6 +328,7 @@ export function RunDetail({
   showMember,
   onBack,
   onChain,
+  onRelaunch,
   onOpenRun,
 }: {
   api: Api;
@@ -310,6 +339,8 @@ export function RunDetail({
   onBack?: () => void;
   /** Launch an agent from this run's output files (members only). */
   onChain?: (run: Run) => void;
+  /** Launch the run again, its settings edited first (members only). */
+  onRelaunch?: (relaunch: Relaunch) => void;
   /** Open another run of its chain. */
   onOpenRun?: (runId: string) => void;
 }) {
@@ -369,6 +400,7 @@ export function RunDetail({
             run={run}
             stopping={stopping}
             onStop={() => void stop()}
+            onRelaunch={relaunchAction(loaded, onRelaunch)}
             onChain={loaded.outputs.length > 0 ? onChain : undefined}
           />
         </div>
