@@ -129,11 +129,13 @@ export interface LaunchOptions {
   parentRunId?: string;
   /** Files the member uploaded for this launch, copied to `/home/agent/in` (launches now). */
   attachmentIds?: string[];
+  /** A run of the member's whose attached files the run gets again (relaunches). */
+  attachmentsFrom?: string;
 }
 
 /**
- * Extra fields of a launch now: the run to chain it after, and the files the member uploaded for
- * it, if any.
+ * Extra fields of a launch now: the run to chain it after, the files the member uploaded for it,
+ * and when it relaunches a run, that run's trigger instructions and attached files, if any.
  */
 export const launchNowSchema = z.object({
   parentRunId: z.string().min(1).max(MAX_ID_LENGTH).optional(),
@@ -141,6 +143,10 @@ export const launchNowSchema = z.object({
     .array(z.string().min(1).max(MAX_ID_LENGTH))
     .max(ATTACHMENT_LIMITS.files)
     .optional(),
+  /** A webhook-triggered run's instructions, kept when it is relaunched (the prompt is the event). */
+  instructions: z.string().trim().min(1).max(MAX_PROMPT_LENGTH).optional(),
+  /** A run of the member's whose attached files the run gets again. */
+  attachmentsFrom: z.string().min(1).max(MAX_ID_LENGTH).optional(),
 });
 
 export type Actor = { kind: 'admin' } | { kind: 'member'; member: Member };
@@ -448,7 +454,14 @@ export class Launchpad {
     const plan = this.plan(member, input, opts.workflowStep);
     if (opts.parentRunId !== undefined) this.chainParent(member, opts.parentRunId);
     const attachments = this.attachments.forLaunch(member.id, opts.attachmentIds ?? []);
-    return this.launchPlan(member, plan, opts, attachments);
+    const copied =
+      opts.attachmentsFrom === undefined
+        ? []
+        : this.attachments.forRelaunch(
+            this.visibleRun({ kind: 'member', member }, opts.attachmentsFrom).id,
+            attachments,
+          );
+    return this.launchPlan(member, plan, opts, attachments, copied);
   }
 
   /**
@@ -464,12 +477,16 @@ export class Launchpad {
     return parent;
   }
 
-  /** Queues a run checked by `plan` or `planScript`, with the attachments `launch` checked. */
+  /**
+   * Queues a run checked by `plan` or `planScript`, with the attachments `launch` checked: those
+   * uploaded for it, and copies of those of the run it relaunches.
+   */
   launchPlan(
     member: Member,
     plan: LaunchPlan,
     opts: LaunchOptions = {},
     attachments: readonly Attachment[] = [],
+    copied: readonly Attachment[] = [],
   ): Run {
     const run = this.deps.runs.insert({
       id: randomId(),
@@ -497,8 +514,10 @@ export class Launchpad {
       createdAt: this.now().toISOString(),
     });
     this.attachments.claim(run.id, attachments);
+    this.attachments.copy(member.id, run.id, copied);
+    const files = attachments.length + copied.length;
     const extras = [
-      ...(attachments.length > 0 ? [`${attachments.length} attached file(s)`] : []),
+      ...(files > 0 ? [`${files} attached file(s)`] : []),
       ...(plan.skills.length > 0 ? [`${plan.skills.length} skill(s)`] : []),
     ];
     const extra = extras.length > 0 ? ` with ${extras.join(' and ')}` : '';

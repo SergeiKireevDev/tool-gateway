@@ -13,6 +13,7 @@ import type {
 import type { Account } from '@/lib/types';
 import { Button, EmptyState, ErrorBanner, Modal, SectionHeader, Select } from '../ui';
 import { LaunchForm } from './LaunchForm';
+import type { Relaunch } from './RelaunchFields';
 import { RunDetail } from './RunDetail';
 import { RunsTable, SchedulesTable, TriggersTable } from './RunLists';
 import { WorkflowView } from './WorkflowView';
@@ -56,6 +57,8 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const [launching, setLaunching] = useState(false);
   /** The run a new agent is being chained after, from its page. */
   const [chainFrom, setChainFrom] = useState<Run | null>(null);
+  /** The run being launched again, its settings edited, from its page. */
+  const [relaunchFrom, setRelaunchFrom] = useState<Relaunch | null>(null);
 
   const load = useCallback(() => {
     const query = new URLSearchParams();
@@ -102,22 +105,19 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const closeLaunch = (): void => {
     setLaunching(false);
     setChainFrom(null);
+    setRelaunchFrom(null);
   };
+  const modal = modalFor(chainFrom, relaunchFrom);
   const launchModal = options && (
-    <Modal
-      wide
-      open={launching || chainFrom !== null}
-      title={chainFrom ? 'Chain an agent' : 'New agent'}
-      onClose={closeLaunch}
-    >
+    <Modal wide open={launching || modal.from !== null} title={modal.title} onClose={closeLaunch}>
       <LaunchForm
-        // A fresh form for each parent.
-        key={chainFrom?.id ?? 'new'}
+        key={modal.key}
         api={api}
         options={options}
         accounts={accounts}
         webhooks={webhooks}
         parent={chainFrom}
+        relaunch={relaunchFrom}
         onLaunched={(run) => {
           closeLaunch();
           setSelected({ kind: 'run', id: run.id });
@@ -161,7 +161,9 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
           downloadBase={base}
           showMember={admin}
           onBack={back}
-          onChain={admin || !options?.enabled ? undefined : setChainFrom}
+          {...(admin || !options?.enabled
+            ? {}
+            : { onChain: setChainFrom, onRelaunch: setRelaunchFrom })}
           onOpenRun={(id) => {
             setSelected({ kind: 'run', id });
           }}
@@ -275,6 +277,20 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
       {launchModal}
     </section>
   );
+}
+
+/** The launch modal: a new agent, one chained after a run, or a run relaunched. */
+function modalFor(
+  chainFrom: Run | null,
+  relaunchFrom: Relaunch | null,
+): { title: string; key: string; from: Run | null } {
+  // A fresh form for each parent, and each run relaunched.
+  if (relaunchFrom) {
+    const { run } = relaunchFrom;
+    return { title: 'Edit and relaunch', key: `relaunch:${run.id}`, from: run };
+  }
+  if (chainFrom) return { title: 'Chain an agent', key: chainFrom.id, from: chainFrom };
+  return { title: 'New agent', key: 'new', from: null };
 }
 
 function WorkspaceHeader({

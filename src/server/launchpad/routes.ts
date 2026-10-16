@@ -433,10 +433,14 @@ export function memberLaunchRoutes(
   router.post(
     '/runs',
     created((req, res) => {
-      const { parentRunId, attachmentIds } = launchNowSchema.parse(req.body);
+      const { parentRunId, attachmentIds, instructions, attachmentsFrom } = launchNowSchema.parse(
+        req.body,
+      );
       const run = launchpad.launch(memberOf(res), req.body, {
         ...(parentRunId && { parentRunId }),
         ...(attachmentIds && { attachmentIds }),
+        ...(instructions && { instructions }),
+        ...(attachmentsFrom && { attachmentsFrom }),
       });
       return runView(launchpad, gateway, run);
     }),
