@@ -193,6 +193,78 @@ describe('webhook triggers', () => {
     expect(t.driver.specs).toHaveLength(1);
   });
 
+  it('lets its member edit it, checked like a new one', async () => {
+    const alice = await t.member('alice');
+    const bob = await t.member('bob');
+    const hook = await webhookOf(alice.cookie);
+    const other = await webhookOf(alice.cookie);
+    const created = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id))
+      .expect(201);
+    const id = created.body.id as string;
+    const path = `/triggers/${id}`;
+
+    const edited = await t
+      .portal(alice.cookie, 'put', path)
+      .send(
+        triggerBody(other.id, {
+          name: undefined,
+          eventTypes: ['Comment'],
+          filters: { contains: ['crash'] },
+          instructions: 'Answer the comment.',
+        }),
+      )
+      .expect(200);
+    expect(edited.body).toMatchObject({
+      id,
+      name: 'Triage new issues',
+      webhookId: other.id,
+      eventTypes: ['Comment'],
+      filters: { contains: ['crash'], statusChangedTo: [], assignedTo: [] },
+      instructions: 'Answer the comment.',
+      enabled: true,
+    });
+
+    await deliver(hook.path, { type: 'Comment', action: 'create', data: { body: 'crash' } });
+    await deliver(other.path, { type: 'Comment', action: 'create', data: { body: 'typo' } });
+    expect(t.driver.specs).toHaveLength(0);
+    await deliver(other.path, { type: 'Comment', action: 'create', data: { body: 'crash' } });
+    expect(t.driver.specs).toHaveLength(1);
+    expect(t.driver.lastConfig().systemPrompt).toContain('Answer the comment.');
+
+    await t
+      .portal(alice.cookie, 'put', path)
+      .send(triggerBody(hook.id, { templateId: t.ids.noLlmTemplate }))
+      .expect(400);
+    await t
+      .portal(alice.cookie, 'put', path)
+      .send(triggerBody(hook.id, { instructions: ' ' }))
+      .expect(400);
+    await t.portal(bob.cookie, 'put', path).send(triggerBody(hook.id)).expect(404);
+    const bobHook = await webhookOf(bob.cookie);
+    await t.portal(alice.cookie, 'put', path).send(triggerBody(bobHook.id)).expect(404);
+    await t.admin('put', `/launchpad${path}`).send(triggerBody(hook.id)).expect(404);
+    const unchanged = await t.portal(alice.cookie, 'get', path).expect(200);
+    expect(unchanged.body.instructions).toBe('Answer the comment.');
+  });
+
+  it('keeps a paused trigger paused when edited', async () => {
+    const alice = await t.member('alice');
+    const hook = await webhookOf(alice.cookie);
+    const created = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id))
+      .expect(201);
+    const path = `/triggers/${created.body.id as string}`;
+    await t.portal(alice.cookie, 'patch', path).send({ enabled: false }).expect(200);
+    const edited = await t
+      .portal(alice.cookie, 'put', path)
+      .send(triggerBody(hook.id, { name: 'Renamed' }))
+      .expect(200);
+    expect(edited.body).toMatchObject({ name: 'Renamed', enabled: false, stoppedReason: 'Paused' });
+  });
+
   it('lets the admin see and pause every trigger, but not resume it', async () => {
     const alice = await t.member('alice');
     const bob = await t.member('bob');

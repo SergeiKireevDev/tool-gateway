@@ -282,6 +282,7 @@ export interface Trigger {
   harness: Harness;
   model: string | null;
   templateId: string;
+  accountIds: string[];
   environmentId: string | null;
   skills: string[];
   enabled: boolean;

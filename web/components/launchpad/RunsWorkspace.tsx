@@ -60,6 +60,8 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const [chainFrom, setChainFrom] = useState<Run | null>(null);
   /** The run being launched again, its settings edited, from its page. */
   const [relaunchFrom, setRelaunchFrom] = useState<Relaunch | null>(null);
+  /** The trigger being edited. */
+  const [editing, setEditing] = useState<Trigger | null>(null);
 
   const query = new URLSearchParams();
   if (runsFilter) query.set(runsFilter.param, runsFilter.id);
@@ -110,10 +112,16 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
     setLaunching(false);
     setChainFrom(null);
     setRelaunchFrom(null);
+    setEditing(null);
   };
-  const modal = modalFor(chainFrom, relaunchFrom);
+  const modal = modalFor(chainFrom, relaunchFrom, editing);
   const launchModal = options && (
-    <Modal wide open={launching || modal.from !== null} title={modal.title} onClose={closeLaunch}>
+    <Modal
+      wide
+      open={launching || modal.from !== null || editing !== null}
+      title={modal.title}
+      onClose={closeLaunch}
+    >
       <LaunchForm
         key={modal.key}
         api={api}
@@ -122,6 +130,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         webhooks={webhooks}
         parent={chainFrom}
         relaunch={relaunchFrom}
+        editing={editing}
         onLaunched={(run) => {
           closeLaunch();
           setSelected({ kind: 'run', id: run.id });
@@ -200,40 +209,16 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         }}
       />
 
-      <div className="mb-3 flex items-center justify-between gap-4">
-        <h3 className="text-sm font-semibold text-slate-700">
-          {runsFilter ? `Runs of “${runsFilter.name}”` : 'Runs'}
-        </h3>
-        <div className="flex items-center gap-3">
-          {runsFilter && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setRunsFilter(null);
-              }}
-            >
-              Show all runs
-            </Button>
-          )}
-          {admin && (
-            <Select
-              value={memberFilter}
-              onChange={(e) => {
-                setMemberFilter(e.target.value);
-              }}
-              className="w-48"
-            >
-              <option value="">All members</option>
-              {members.map(([id, name]) => (
-                <option key={id} value={id}>
-                  {name}
-                </option>
-              ))}
-            </Select>
-          )}
-        </div>
-      </div>
+      <RunsHeading
+        admin={admin}
+        runsFilter={runsFilter}
+        members={members}
+        memberFilter={memberFilter}
+        onShowAll={() => {
+          setRunsFilter(null);
+        }}
+        onMemberFilter={setMemberFilter}
+      />
       {older.runs && (
         <RunsTable
           runs={older.runs}
@@ -268,6 +253,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         triggers={triggers}
         showMember={admin}
         canResume={!admin}
+        {...(admin ? {} : { onEdit: setEditing })}
         onToggle={(t, enabled) => {
           toggle(`/launchpad/triggers/${t.id}`, enabled);
         }}
@@ -284,11 +270,61 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   );
 }
 
-/** The launch modal: a new agent, one chained after a run, or a run relaunched. */
+/** The runs heading, with the filters on them. */
+function RunsHeading({
+  admin,
+  runsFilter,
+  members,
+  memberFilter,
+  onShowAll,
+  onMemberFilter,
+}: {
+  admin: boolean;
+  runsFilter: RunsFilter | null;
+  members: [string, string][];
+  memberFilter: string;
+  onShowAll: () => void;
+  onMemberFilter: (memberId: string) => void;
+}) {
+  return (
+    <div className="mb-3 flex items-center justify-between gap-4">
+      <h3 className="text-sm font-semibold text-slate-700">
+        {runsFilter ? `Runs of “${runsFilter.name}”` : 'Runs'}
+      </h3>
+      <div className="flex items-center gap-3">
+        {runsFilter && (
+          <Button size="sm" variant="ghost" onClick={onShowAll}>
+            Show all runs
+          </Button>
+        )}
+        {admin && (
+          <Select
+            value={memberFilter}
+            onChange={(e) => {
+              onMemberFilter(e.target.value);
+            }}
+            className="w-48"
+          >
+            <option value="">All members</option>
+            {members.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </Select>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The launch modal: a new agent, one chained after a run, a run relaunched, or a trigger edited. */
 function modalFor(
   chainFrom: Run | null,
   relaunchFrom: Relaunch | null,
+  editing: Trigger | null,
 ): { title: string; key: string; from: Run | null } {
+  if (editing) return { title: `Edit “${editing.name}”`, key: `trigger:${editing.id}`, from: null };
   // A fresh form for each parent, and each run relaunched.
   if (relaunchFrom) {
     const { run } = relaunchFrom;
