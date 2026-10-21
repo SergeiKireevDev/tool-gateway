@@ -356,3 +356,92 @@ describe('a workflow, end to end', () => {
     await t.portal(alice.cookie, 'post', `/workflows/${id}/cancel`).expect(409);
   });
 });
+
+describe('workflow attachments', () => {
+  const HOUR_MS = 3_600_000;
+
+  async function upload(cookie: string, name: string, content: string): Promise<string> {
+    const res = await t
+      .portal(cookie, 'put', `/attachments/${name}`)
+      .set('content-type', 'application/octet-stream')
+      .send(Buffer.from(content))
+      .expect(201);
+    return res.body.id as string;
+  }
+
+  const attachedNames = async (cookie: string, runId: string): Promise<string[]> => {
+    const res = await t.portal(cookie, 'get', `/runs/${runId}/attachments`).expect(200);
+    return (res.body as { name: string }[]).map((a) => a.name);
+  };
+
+  it('gives each step its own files: the planner learns only the names of the script’s', async () => {
+    const alice = await t.member('alice', [template]);
+    const spec = await upload(alice.cookie, 'spec.md', '# Spec');
+    const mails = await upload(alice.cookie, 'mails.csv', 'from,subject\na@b.c,Invoice 42');
+    const id = await start(alice.cookie, {
+      planAttachmentIds: [spec],
+      executeAttachmentIds: [mails],
+    });
+
+    const plan = t.driver.lastConfig();
+    expect(plan.inputs).toEqual([{ path: 'spec.md', size: 6 }]);
+    expect(plan.systemPrompt).toContain('## Input files');
+    expect(plan.systemPrompt).toContain('`/home/agent/in/spec.md`');
+    expect(plan.systemPrompt).toContain('`/home/agent/in/mails.csv` (29 bytes)');
+    await t.runner(plan.runToken, 'get', '/inputs/mails.csv').expect(404);
+    let wf = await t.portal(alice.cookie, 'get', `/workflows/${id}`).expect(200);
+    expect(await attachedNames(alice.cookie, wf.body.steps[0].run.id as string)).toEqual([
+      'spec.md',
+    ]);
+    // Held for the script: no longer waiting for a launch.
+    await t
+      .portal(alice.cookie, 'post', '/runs')
+      .send({ prompt: 'x', templateId: template, harness: 'claude-code', attachmentIds: [mails] })
+      .expect(400);
+    await t.portal(alice.cookie, 'delete', `/attachments/${mails}`).expect(404);
+
+    await finishLast('succeeded', { 'script.mjs': SCRIPT });
+    const exec = t.driver.lastConfig();
+    expect(exec).toMatchObject({ harness: 'script', inputs: [{ path: 'mails.csv', size: 29 }] });
+    const file = await t.runner(exec.runToken, 'get', '/inputs/mails.csv').expect(200);
+    expect(Buffer.from(file.body as Buffer).toString()).toBe('from,subject\na@b.c,Invoice 42');
+    wf = await t.portal(alice.cookie, 'get', `/workflows/${id}`).expect(200);
+    expect(await attachedNames(alice.cookie, wf.body.steps[1].run.id as string)).toEqual([
+      'mails.csv',
+    ]);
+  });
+
+  it('refuses a file attached to both steps, or not the member’s own', async () => {
+    const alice = await t.member('alice', [template]);
+    const bob = await t.member('bob', [template]);
+    const spec = await upload(alice.cookie, 'spec.md', '# Spec');
+    const both = await t
+      .portal(alice.cookie, 'post', '/workflows')
+      .send(workflowBody({ planAttachmentIds: [spec], executeAttachmentIds: [spec] }))
+      .expect(400);
+    expect(both.body.message).toContain('one step only');
+    await t
+      .portal(bob.cookie, 'post', '/workflows')
+      .send(workflowBody({ executeAttachmentIds: [spec] }))
+      .expect(400);
+    expect(t.driver.specs).toHaveLength(0);
+  });
+
+  it('deletes the script’s files when its step is never launched, after the retention', async () => {
+    const alice = await t.member('alice', [template]);
+    const mails = await upload(alice.cookie, 'mails.csv', 'a,b');
+    await start(alice.cookie, { executeAttachmentIds: [mails] });
+    await finishLast('failed');
+    const held = () => t.launchpad.attachments.held(t.launchpad.runs.workflows()[0]?.id ?? '');
+
+    // Kept past the day unlaunched files get, as long as the plan's output files are.
+    t.clock.now = new Date(t.clock.now.getTime() + 25 * HOUR_MS);
+    await t.launchpad.reap();
+    expect(held()).toHaveLength(1);
+
+    const days = t.launchpad.runs.settings().outputRetentionDays;
+    t.clock.now = new Date(t.clock.now.getTime() + days * 24 * HOUR_MS);
+    await t.launchpad.reap();
+    expect(held()).toEqual([]);
+  });
+});

@@ -105,7 +105,7 @@ function networkLine(domains: readonly string[]): string {
   return `- The only reachable service is the gateway, which brokers every third-party tool call. Besides, you can reach these domains over HTTPS (only) through the proxy already set in your environment (\`HTTPS_PROXY\`): ${listed}. \`*.\` covers subdomains. Everything else is blocked, so don't try other hosts.`;
 }
 
-const fileList = (files: readonly RunInput[]): string =>
+export const fileList = (files: readonly RunInput[]): string =>
   files
     .map((f) => `- \`${IN_DIR}/${f.path}\` (${f.size.toLocaleString('en-US')} bytes)`)
     .join('\n');

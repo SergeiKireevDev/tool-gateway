@@ -20,7 +20,12 @@ import {
 } from '@/lib/launchpad';
 import type { Account } from '@/lib/types';
 import { Button, ErrorBanner, Field, Input, Select, Textarea } from '../ui';
-import { AttachmentsField, discardAttachments, uploadAttachments } from './AttachmentsField';
+import {
+  AttachmentsField,
+  discardAttachments,
+  UploadProgress,
+  uploadAttachments,
+} from './AttachmentsField';
 import {
   BLANK_DEFAULTS,
   InstructionsField,
@@ -532,8 +537,10 @@ interface Draft {
   filters: FilterDraft;
   /** The run whose output files the agent starts from ('' = none). */
   parentRunId: string;
-  /** Files uploaded for the launch, copied to /home/agent/in. */
+  /** Files uploaded for the launch (a workflow's planning step), copied to /home/agent/in. */
   attachmentIds: string[];
+  /** Files uploaded for a workflow's script, copied to its /home/agent/in. */
+  executeAttachmentIds: string[];
   /** A relaunched triggered run's instructions ('' = none). */
   instructions: string;
   /** The relaunched run whose attached files the agent gets again ('' = none). */
@@ -542,12 +549,34 @@ interface Draft {
 
 const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
 
-/** Files are attached to agents launched now (not to workflows, schedules or triggers). */
-const attachable = (when: When, workflow: boolean): boolean => when === 'now' && !workflow;
+/** Files are attached to agents launched now and to workflows (not to schedules or triggers). */
+const attachable = (when: When): boolean => when === 'now';
 
 /** Whether the form holds what its request needs: a task, and for a trigger a webhook. */
 function ready(d: Pick<Draft, 'when' | 'prompt' | 'webhookId'>): boolean {
   return d.prompt.trim() !== '' && (d.when !== 'webhook' || d.webhookId !== '');
+}
+
+/** A workflow's request: its two steps, each with its attached files. */
+function workflowRequest(
+  d: Draft,
+  launch: Record<string, unknown>,
+): { path: string; body: Record<string, unknown> } {
+  const executor = d.executorModel ? { executorModel: d.executorModel } : {};
+  return {
+    path: '/launchpad/workflows',
+    body: {
+      ...launch,
+      ...executor,
+      plannerProvider: d.plannerProvider,
+      plannerAccountIds: d.plannerAccountIds,
+      ...(d.attachmentIds.length > 0 ? { planAttachmentIds: d.attachmentIds } : {}),
+      ...(d.executeAttachmentIds.length > 0
+        ? { executeAttachmentIds: d.executeAttachmentIds }
+        : {}),
+      prompt: d.prompt,
+    },
+  };
 }
 
 /** The request the form sends: a run now, a schedule, or a webhook trigger. */
@@ -558,19 +587,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
     accountIds: d.accountIds,
     ...(d.model ? { model: d.model } : {}),
   };
-  if (d.workflow) {
-    const executor = d.executorModel ? { executorModel: d.executorModel } : {};
-    return {
-      path: '/launchpad/workflows',
-      body: {
-        ...launch,
-        ...executor,
-        plannerProvider: d.plannerProvider,
-        plannerAccountIds: d.plannerAccountIds,
-        prompt: d.prompt,
-      },
-    };
-  }
+  if (d.workflow) return workflowRequest(d, launch);
   // Workflows boot the default environment, with no skills.
   const agent = {
     ...launch,
@@ -773,8 +790,16 @@ function StepFrame({
   );
 }
 
+/** The files attached to each step of a workflow, picked in the form. */
+interface StepFiles {
+  plan: File[];
+  setPlan: (files: File[]) => void;
+  execute: File[];
+  setExecute: (files: File[]) => void;
+}
+
 /** Step 1: the planning agent and its model, from any model API (no permission template). */
-function PlanStep({ agent }: { agent: AgentChoice }) {
+function PlanStep({ agent, files }: { agent: AgentChoice; files: StepFiles }) {
   const { planners } = agent.planners;
   let picker: ReactNode;
   if (agent.planners.error) {
@@ -815,12 +840,26 @@ function PlanStep({ agent }: { agent: AgentChoice }) {
           setModel={agent.setModel}
         />
       </div>
+      <AttachmentsField
+        shown
+        files={files.plan}
+        onChange={files.setPlan}
+        hint="Optional. For the planning agent only (e.g. a spec, or samples of the data): copied to its /home/agent/in. The script doesn't get them."
+      />
     </StepFrame>
   );
 }
 
 /** Step 2: the permissions the script runs with, and its custom LLM endpoint's model if any. */
-function ExecuteStep({ agent, templates }: { agent: AgentChoice; templates: LaunchTemplate[] }) {
+function ExecuteStep({
+  agent,
+  templates,
+  files,
+}: {
+  agent: AgentChoice;
+  templates: LaunchTemplate[];
+  files: StepFiles;
+}) {
   const { template, executor } = agent;
   return (
     <StepFrame
@@ -857,6 +896,12 @@ function ExecuteStep({ agent, templates }: { agent: AgentChoice; templates: Laun
           </p>
         )}
       </div>
+      <AttachmentsField
+        shown
+        files={files.execute}
+        onChange={files.setExecute}
+        hint="Optional. For the script: copied to its /home/agent/in before it starts. The planning agent learns their names and sizes, not their content."
+      />
     </StepFrame>
   );
 }
@@ -871,11 +916,14 @@ function AgentFields({
   agent,
   templates,
   once,
+  files,
 }: {
   agent: AgentChoice;
   templates: LaunchTemplate[];
   /** Chained and relaunched agents, and edited triggers, can't be a workflow. */
   once: boolean;
+  /** The files attached to a workflow's steps. */
+  files: StepFiles;
 }) {
   const { workflow, setModel } = agent;
   return (
@@ -907,8 +955,8 @@ function AgentFields({
       </div>
       {workflow ? (
         <>
-          <PlanStep agent={agent} />
-          <ExecuteStep agent={agent} templates={templates} />
+          <PlanStep agent={agent} files={files} />
+          <ExecuteStep agent={agent} templates={templates} files={files} />
         </>
       ) : (
         <ModelField
@@ -1230,9 +1278,43 @@ function NameField({
 }
 
 /**
- * Launch an agent now, schedule it, or trigger it on webhook events; relaunch a run, or edit a
- * trigger.
+ * Uploads the files attached to a launch (a workflow's planning step) and to a workflow's script,
+ * in one go for the progress; returns their attachment ids, told apart.
  */
+async function uploadStepFiles(
+  api: Api,
+  picked: { attaching: boolean; workflow: boolean; files: File[]; scriptFiles: File[] },
+  onProgress: (share: number) => void,
+): Promise<{ first: string[]; script: string[] }> {
+  if (!picked.attaching) return { first: [], script: [] };
+  const { files } = picked;
+  const script = picked.workflow ? picked.scriptFiles : [];
+  const ids = await uploadAttachments(api, [...files, ...script], onProgress);
+  return { first: ids.slice(0, files.length), script: ids.slice(files.length) };
+}
+
+/** The files attached to an agent launched now; a workflow's are in its steps (progress only). */
+function LaunchAttachments({
+  attaching,
+  workflow,
+  files,
+  setFiles,
+  uploading,
+}: {
+  attaching: boolean;
+  workflow: boolean;
+  files: File[];
+  setFiles: (files: File[]) => void;
+  uploading: number | null;
+}) {
+  if (!workflow) {
+    return (
+      <AttachmentsField shown={attaching} files={files} onChange={setFiles} progress={uploading} />
+    );
+  }
+  return uploading === null ? null : <UploadProgress progress={uploading} />;
+}
+
 export function LaunchForm({
   api,
   options,
@@ -1285,7 +1367,8 @@ export function LaunchForm({
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState<number | null>(null);
   const relaunched = useRelaunchInputs(relaunch);
-  const attaching = attachable(when, workflow);
+  const [scriptFiles, setScriptFiles] = useState<File[]>([]);
+  const attaching = attachable(when);
 
   const plannerTool = workflow ? choice?.provider : undefined;
   const { ambiguous, picked, setPicked, pickedFor } = useAccountPicks(
@@ -1304,7 +1387,7 @@ export function LaunchForm({
     );
   }
 
-  const send = async (attachmentIds: string[]): Promise<void> => {
+  const send = async (attachmentIds: string[], executeAttachmentIds: string[]): Promise<void> => {
     const request = requestFor({
       when,
       triggerId: trigger.triggerId,
@@ -1329,6 +1412,7 @@ export function LaunchForm({
       filters,
       parentRunId: parent?.id ?? relaunched.parentRunId,
       attachmentIds,
+      executeAttachmentIds,
       instructions: task.sent,
       attachmentsFrom: relaunched.attachmentsFrom,
     });
@@ -1338,7 +1422,7 @@ export function LaunchForm({
       request.body,
     ).catch(async (err: unknown) => {
       // Not launched with: they would only wait to be deleted.
-      await discardAttachments(api, attachmentIds);
+      await discardAttachments(api, [...attachmentIds, ...executeAttachmentIds]);
       throw err;
     });
     if (workflow) onWorkflow(sent as Workflow);
@@ -1351,9 +1435,13 @@ export function LaunchForm({
     setBusy(true);
     setError(null);
     try {
-      const attachmentIds = attaching ? await uploadAttachments(api, files, setUploading) : [];
+      const ids = await uploadStepFiles(
+        api,
+        { attaching, workflow, files, scriptFiles },
+        setUploading,
+      );
       setUploading(null);
-      await send(attachmentIds);
+      await send(ids.first, ids.script);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1390,7 +1478,12 @@ export function LaunchForm({
         prompt={prompt}
         setPrompt={task.setPrompt}
       />
-      <AgentFields agent={agent} templates={templates} once={fixed} />
+      <AgentFields
+        agent={agent}
+        templates={templates}
+        once={fixed}
+        files={{ plan: files, setPlan: setFiles, execute: scriptFiles, setExecute: setScriptFiles }}
+      />
       <AgentSetupFields
         shown={!workflow}
         options={options}
@@ -1401,7 +1494,13 @@ export function LaunchForm({
       />
       <AccountFields ambiguous={ambiguous} picked={picked} setPicked={setPicked} />
       {!(workflow || fixed) && <WhenField when={when} setWhen={setWhen} />}
-      <AttachmentsField shown={attaching} files={files} onChange={setFiles} progress={uploading} />
+      <LaunchAttachments
+        attaching={attaching}
+        workflow={workflow}
+        files={files}
+        setFiles={setFiles}
+        uploading={uploading}
+      />
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}

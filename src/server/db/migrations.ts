@@ -256,4 +256,7 @@ export const MIGRATIONS: readonly string[] = [
   `ALTER TABLE runs ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE schedules ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE triggers ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';`,
+  // 17: files attached to a workflow's script, held for it (workflow_id) until its step is launched
+  `ALTER TABLE run_attachments ADD COLUMN workflow_id TEXT;
+   CREATE INDEX run_attachments_workflow ON run_attachments (workflow_id);`,
 ];
