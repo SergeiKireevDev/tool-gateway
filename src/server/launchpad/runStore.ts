@@ -193,6 +193,11 @@ export interface RunFilter {
   harness?: RunHarness;
   /** Runs created before this ISO time (paging, newest first). */
   before?: string;
+  /**
+   * With `before`: the id of the last run of the previous page, so runs created at that same time
+   * with a smaller id come next instead of being skipped.
+   */
+  beforeId?: string;
   limit?: number;
 }
 
@@ -456,7 +461,10 @@ export class RunStore {
     add('workflow_id = ?', filter.workflowId);
     add('parent_run_id = ?', filter.parentRunId);
     add('harness = ?', filter.harness);
-    add('created_at < ?', filter.before);
+    if (filter.before !== undefined && filter.beforeId !== undefined) {
+      where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+      args.push(filter.before, filter.before, filter.beforeId);
+    } else add('created_at < ?', filter.before);
     const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, filter.limit ?? DEFAULT_LIST_LIMIT));
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const sql = `SELECT * FROM runs ${clause} ORDER BY created_at DESC, id DESC LIMIT ?`;

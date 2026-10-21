@@ -387,6 +387,12 @@ Run limits are set in the UI (**Launchpad**):
 - vCPUs and memory per VM;
 - how long output files are kept (30 days). Transcripts and gateway calls are kept.
 
+Runs are never deleted: every run, with its prompt, transcript, gateway calls and token usage,
+stays in the database for auditing, whatever its age and even after its schedule, trigger or
+member is deleted. The runs list shows the newest 50; **Show older runs** pages back through the
+rest (`GET …/runs?before=<createdAt>&beforeId=<id>`, the last run of the previous page, newest
+first).
+
 ## Development without KVM
 
 `LAUNCHPAD_VM_DRIVER=local-unsafe` runs the runner as a plain child process of the gateway, with

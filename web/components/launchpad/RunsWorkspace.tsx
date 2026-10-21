@@ -16,6 +16,7 @@ import { LaunchForm } from './LaunchForm';
 import type { Relaunch } from './RelaunchFields';
 import { RunDetail } from './RunDetail';
 import { RunsTable, SchedulesTable, TriggersTable } from './RunLists';
+import { useOlderRuns } from './useOlderRuns';
 import { WorkflowView } from './WorkflowView';
 
 const POLL_MS = 5000;
@@ -60,12 +61,15 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   /** The run being launched again, its settings edited, from its page. */
   const [relaunchFrom, setRelaunchFrom] = useState<Relaunch | null>(null);
 
+  const query = new URLSearchParams();
+  if (runsFilter) query.set(runsFilter.param, runsFilter.id);
+  if (memberFilter) query.set('memberId', memberFilter);
+  const runsQuery = query.toString();
+  const older = useOlderRuns(api, runsQuery, runs);
+
   const load = useCallback(() => {
-    const query = new URLSearchParams();
-    if (runsFilter) query.set(runsFilter.param, runsFilter.id);
-    if (memberFilter) query.set('memberId', memberFilter);
     return Promise.all([
-      api<Run[]>('GET', `/launchpad/runs?${query.toString()}`),
+      api<Run[]>('GET', `/launchpad/runs?${runsQuery}`),
       api<Schedule[]>('GET', '/launchpad/schedules'),
       api<Trigger[]>('GET', '/launchpad/triggers'),
       admin ? Promise.resolve(null) : api<LaunchOptions>('GET', '/launchpad'),
@@ -85,7 +89,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         else setError((err as Error).message);
       },
     );
-  }, [api, admin, runsFilter, memberFilter]);
+  }, [api, admin, runsQuery]);
 
   useEffect(() => {
     void load();
@@ -183,7 +187,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
     if (!confirm(`Delete ${what}? Its past runs are kept.`)) return;
     api('DELETE', path).then(load, fail);
   };
-  const members = [...new Map((runs ?? []).map((r) => [r.memberId, r.memberName])).entries()];
+  const members = [...new Map((older.runs ?? []).map((r) => [r.memberId, r.memberName])).entries()];
 
   return (
     <section>
@@ -230,9 +234,9 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
           )}
         </div>
       </div>
-      {runs && (
+      {older.runs && (
         <RunsTable
-          runs={runs}
+          runs={older.runs}
           showMember={admin}
           onSelect={(r) => {
             setSelected(
@@ -241,6 +245,7 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
           }}
         />
       )}
+      <OlderRunsFooter {...older} />
 
       <h3 className="mt-8 mb-3 text-sm font-semibold text-slate-700">Scheduled agents</h3>
       <SchedulesTable
@@ -291,6 +296,31 @@ function modalFor(
   }
   if (chainFrom) return { title: 'Chain an agent', key: chainFrom.id, from: chainFrom };
   return { title: 'New agent', key: 'new', from: null };
+}
+
+/** Pages back through older runs: every run is kept, however old. */
+function OlderRunsFooter({
+  hasMore,
+  loading,
+  error,
+  loadOlder,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  error: string | null;
+  loadOlder: () => void;
+}) {
+  if (!hasMore && !error) return null;
+  return (
+    <div className="mt-3 flex flex-col items-center gap-2">
+      <ErrorBanner message={error} />
+      {hasMore && (
+        <Button size="sm" variant="secondary" disabled={loading} onClick={loadOlder}>
+          {loading ? 'Loading…' : 'Show older runs'}
+        </Button>
+      )}
+    </div>
+  );
 }
 
 function WorkspaceHeader({

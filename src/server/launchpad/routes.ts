@@ -130,6 +130,8 @@ function runFilter(req: Request): RunFilter {
   }
   const before = queryString(req, 'before');
   if (before) filter.before = before;
+  const beforeId = queryString(req, 'beforeId');
+  if (beforeId) filter.beforeId = beforeId;
   const scheduleId = queryString(req, 'scheduleId');
   if (scheduleId) filter.scheduleId = scheduleId;
   const triggerId = queryString(req, 'triggerId');
