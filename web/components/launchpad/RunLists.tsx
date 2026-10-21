@@ -7,6 +7,7 @@ import {
   formatTokens,
   HARNESS_LABELS,
   type Run,
+  runHeadline,
   type Schedule,
   type Trigger,
 } from '@/lib/launchpad';
@@ -55,7 +56,7 @@ export function RunsTable({
                 <StatusBadge status={r.status} />
               </td>
               <td className="max-w-md px-4 py-3">
-                <div className="truncate text-slate-800">{excerpt(r.prompt)}</div>
+                <div className="truncate text-slate-800">{excerpt(runHeadline(r))}</div>
                 <div className="text-xs text-slate-500">
                   {r.templateName}
                   {runOrigin(r)}

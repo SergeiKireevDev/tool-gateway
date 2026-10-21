@@ -20,6 +20,7 @@ import {
   SectionHeader,
 } from '../ui';
 import { GuestEnvironmentsPanel } from './GuestEnvironmentsPanel';
+import { PlatformModelPanel } from './PlatformModelPanel';
 
 const HTTP_NOT_FOUND = 404;
 
@@ -231,7 +232,7 @@ function UsageByModel({ usage }: { usage: ModelUsage[] }) {
   );
 }
 
-/** Admin: launchpad limits, guest environments, per-member launch rights and model usage. */
+/** Admin: launchpad limits, the platform model, guest environments, per-member launch rights and model usage. */
 export function LaunchpadSettingsPanel({ api }: { api: Api }) {
   const [settings, setSettings] = useState<(LaunchSettings & { driver: string }) | null>(null);
   const [members, setMembers] = useState<MemberLaunch[]>([]);
@@ -287,6 +288,7 @@ export function LaunchpadSettingsPanel({ api }: { api: Api }) {
           onSaved={() => void load()}
         />
       )}
+      <PlatformModelPanel api={api} />
       <GuestEnvironmentsPanel api={api} />
       <div>
         <h3 className="mb-3 text-sm font-semibold text-slate-700">Members</h3>

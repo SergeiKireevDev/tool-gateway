@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
-import { formatTokens, HARNESS_LABELS, type Run } from '@/lib/launchpad';
+import { formatTokens, HARNESS_LABELS, type Run, runHeadline } from '@/lib/launchpad';
 import { useNow } from '../ui';
 import { runDuration, StatusBadge } from './RunBits';
 import { Arrow, NODE_FRAMES } from './WorkflowView';
@@ -49,7 +49,7 @@ function ChainNode({
   now: number;
   onOpen?: () => void;
 }) {
-  const prompt = run.instructions ?? run.prompt;
+  const prompt = runHeadline(run);
   return (
     <button
       type="button"

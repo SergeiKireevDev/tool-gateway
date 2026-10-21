@@ -4,9 +4,64 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import type { Skill, SkillSummary } from '@/lib/launchpad';
-import { Button, Card, CopyButton, EmptyState, ErrorBanner, Modal, SectionHeader } from '../ui';
+import {
+  Badge,
+  Button,
+  Card,
+  CopyButton,
+  EmptyState,
+  ErrorBanner,
+  Modal,
+  SectionHeader,
+} from '../ui';
 
 const BASE = '/launchpad/skills';
+
+/** The labels of these skills, most used first, with how many skills have each. */
+function labelCounts(skills: readonly SkillSummary[]): [string, number][] {
+  const counts = new Map<string, number>();
+  for (const skill of skills) {
+    for (const label of skill.labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+/** Shows every skill, or those with one label. */
+function LabelFilter({
+  skills,
+  label,
+  onPick,
+}: {
+  skills: readonly SkillSummary[];
+  label: string | null;
+  onPick: (label: string | null) => void;
+}) {
+  const counts = labelCounts(skills);
+  if (counts.length === 0) return null;
+  const chip = (value: string | null, text: string) => (
+    <button
+      key={value ?? ''}
+      type="button"
+      aria-pressed={label === value}
+      onClick={() => {
+        onPick(value);
+      }}
+      className={`rounded-full px-2.5 py-1 text-xs ring-1 ${
+        label === value
+          ? 'bg-indigo-600 text-white ring-indigo-600'
+          : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+      }`}
+    >
+      {text}
+    </button>
+  );
+  return (
+    <div className="mb-3 flex flex-wrap gap-2" aria-label="Labels">
+      {chip(null, `All (${String(skills.length)})`)}
+      {counts.map(([value, n]) => chip(value, `${value} (${String(n)})`))}
+    </div>
+  );
+}
 
 function SkillRow({
   skill,
@@ -29,6 +84,11 @@ function SkillRow({
         >
           {skill.name}
         </button>
+        {skill.labels.map((label) => (
+          <span key={label} className="ml-2">
+            <Badge>{label}</Badge>
+          </span>
+        ))}
         <p className="text-xs text-slate-500">
           {skill.description || 'No description'}
           {admin && ` · ${skill.memberName}`}
@@ -56,6 +116,7 @@ function SkillRow({
 export function SkillsPanel({ api, admin }: { api: Api; admin: boolean }) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [open, setOpen] = useState<Skill | null>(null);
+  const [label, setLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const failed = (err: unknown): void => {
     setError((err as Error).message);
@@ -84,7 +145,7 @@ export function SkillsPanel({ api, admin }: { api: Api; admin: boolean }) {
     <div>
       <SectionHeader
         title="Skill library"
-        description="What agents learned during their runs, exported as skills (SKILL.md). A later run exporting a skill of the same name updates it."
+        description="What agents learned during their runs, exported as skills (SKILL.md). A later run exporting a skill of the same name updates it. When the admin set up a platform model, it labels the skills by topic."
       />
       <ErrorBanner message={error} />
       {skills?.length === 0 && (
@@ -93,21 +154,26 @@ export function SkillsPanel({ api, admin }: { api: Api; admin: boolean }) {
         </EmptyState>
       )}
       {skills && skills.length > 0 && (
+        <LabelFilter skills={skills} label={label} onPick={setLabel} />
+      )}
+      {skills && skills.length > 0 && (
         <Card>
           <ul className="divide-y divide-slate-100">
-            {skills.map((skill) => (
-              <SkillRow
-                key={skill.id}
-                skill={skill}
-                admin={admin}
-                onOpen={() => {
-                  api<Skill>('GET', `${BASE}/${skill.id}`).then(setOpen, failed);
-                }}
-                onDelete={() => {
-                  remove(skill.id);
-                }}
-              />
-            ))}
+            {skills
+              .filter((skill) => label === null || skill.labels.includes(label))
+              .map((skill) => (
+                <SkillRow
+                  key={skill.id}
+                  skill={skill}
+                  admin={admin}
+                  onOpen={() => {
+                    api<Skill>('GET', `${BASE}/${skill.id}`).then(setOpen, failed);
+                  }}
+                  onDelete={() => {
+                    remove(skill.id);
+                  }}
+                />
+              ))}
           </ul>
         </Card>
       )}

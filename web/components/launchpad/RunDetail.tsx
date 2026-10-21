@@ -383,6 +383,9 @@ export function RunDetail({
                 {runOrigin(run)}
               </span>
             </div>
+            {run.title && (
+              <h3 className="mt-2 text-base font-semibold text-slate-900">{run.title}</h3>
+            )}
             <RunPrompt run={run} />
             {run.skills.length > 0 && (
               <p className="mt-2 text-xs text-slate-500">

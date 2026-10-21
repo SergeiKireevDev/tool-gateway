@@ -23,6 +23,8 @@ export interface Skill {
   /** From the `SKILL.md` frontmatter; empty when it has none. */
   description: string;
   content: string;
+  /** What the skill is about, from the platform model (empty when none is configured). */
+  labels: string[];
   /** The run that last exported it. */
   runId: string | null;
   createdAt: string;
@@ -39,6 +41,7 @@ interface SkillRow {
   name: string;
   description: string;
   content?: string;
+  labels: string;
   run_id: string | null;
   created_at: string;
   updated_at: string;
@@ -51,6 +54,7 @@ function toSummary(r: SkillRow): SkillSummary {
     memberName: r.member_name,
     name: r.name,
     description: r.description,
+    labels: JSON.parse(r.labels) as string[],
     runId: r.run_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -74,7 +78,8 @@ export class Skills {
 
   /** A member's skills (every member's for the admin), by name. */
   list(memberId?: string): SkillSummary[] {
-    const columns = 'id, member_id, member_name, name, description, run_id, created_at, updated_at';
+    const columns =
+      'id, member_id, member_name, name, description, labels, run_id, created_at, updated_at';
     const rows = (memberId === undefined
       ? this.db.sql.prepare(`SELECT ${columns} FROM skills ORDER BY name, member_name`).all()
       : this.db.sql
@@ -119,6 +124,21 @@ export class Skills {
     return rows.map((r) => ({ ...toSummary(r), content: r.content ?? '' }));
   }
 
+  /** The labels a member's skills have, most used first. */
+  memberLabels(memberId: string): string[] {
+    const counts = new Map<string, number>();
+    for (const skill of this.list(memberId)) {
+      for (const label of skill.labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([label]) => label);
+  }
+
+  setLabels(id: string, labels: readonly string[]): void {
+    this.db.sql
+      .prepare('UPDATE skills SET labels = ? WHERE id = ?')
+      .run(JSON.stringify(labels), id);
+  }
+
   delete(actor: Actor, id: string): Skill {
     const skill = this.visible(actor, id);
     this.db.sql.prepare('DELETE FROM skills WHERE id = ?').run(skill.id);
@@ -127,9 +147,9 @@ export class Skills {
 
   /**
    * Keeps the skills a run exported in its member's library, replacing theirs of the same name.
-   * Returns how many were kept; invalid ones are dropped (the runner already skips them).
+   * Returns the names of those kept; invalid ones are dropped (the runner already skips them).
    */
-  saveFromRun(run: Run, skills: readonly RunnerSkill[]): number {
+  saveFromRun(run: Run, skills: readonly RunnerSkill[]): string[] {
     const valid = skills
       .filter((s) => SKILL_NAME_RE.test(s.name) && s.content.trim() !== '')
       .slice(0, RUNNER_LIMITS.skills);
@@ -159,6 +179,6 @@ export class Skills {
         );
       }
     });
-    return valid.length;
+    return valid.map((s) => s.name);
   }
 }

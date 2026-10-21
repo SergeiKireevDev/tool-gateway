@@ -256,4 +256,12 @@ export const MIGRATIONS: readonly string[] = [
   `ALTER TABLE runs ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE schedules ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE triggers ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';`,
+  // 17: the platform model (the admin's LLM endpoint for the gateway's own decisions, sealed),
+  // the run titles and skill labels it writes
+  `CREATE TABLE platform_model (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     sealed TEXT NOT NULL
+   );
+   ALTER TABLE runs ADD COLUMN title TEXT;
+   ALTER TABLE skills ADD COLUMN labels TEXT NOT NULL DEFAULT '[]';`,
 ];

@@ -2,7 +2,7 @@ import express, { type Request, type Response, type Router } from 'express';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
-import { badRequest, notFound } from '../errors.js';
+import { badGateway, badRequest, notFound } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { bearerToken } from '../http/auth.js';
 import { created, h, param } from '../http/handlers.js';
@@ -523,6 +523,49 @@ export function memberLaunchRoutes(
   return router;
 }
 
+/**
+ * Admin: the platform model, the LLM endpoint that names runs and labels skills. Its token is
+ * never returned; `POST …/test` names a sample task with it.
+ */
+function platformModelRoutes(router: Router, launchpad: Launchpad, gateway: Gateway): void {
+  const path = '/platform-model';
+  router.get(
+    path,
+    h(() => ({ platformModel: launchpad.platformModel.view() })),
+  );
+  router.put(
+    path,
+    h((req) => {
+      const platformModel = launchpad.platformModel.save(req.body);
+      gateway.activity.add({ kind: 'admin', detail: 'Updated the platform model' });
+      return { platformModel };
+    }),
+  );
+  router.delete(
+    path,
+    h(() => {
+      launchpad.platformModel.clear();
+      gateway.activity.add({ kind: 'admin', detail: 'Removed the platform model' });
+      return { platformModel: null };
+    }),
+  );
+  router.post(
+    `${path}/test`,
+    h(async () => {
+      if (!launchpad.platformModel.config()) throw badRequest('No platform model is configured');
+      try {
+        const title = await launchpad.platformModel.title(PLATFORM_MODEL_SAMPLE, null);
+        return { title };
+      } catch (err) {
+        throw badGateway((err as Error).message);
+      }
+    }),
+  );
+}
+
+const PLATFORM_MODEL_SAMPLE =
+  'Look at the open issues labelled "bug" in our repository, find the ones about the login page crashing on Safari, and post a short summary of them in #triage.';
+
 /** Admin: every run, settings and per-member launch rights (mounted under `/api/admin/launchpad`). */
 export function adminLaunchRoutes(
   launchpad: Launchpad,
@@ -586,6 +629,7 @@ export function adminLaunchRoutes(
       return settings;
     }),
   );
+  platformModelRoutes(router, launchpad, gateway);
   router.get(
     '/members',
     h(() =>

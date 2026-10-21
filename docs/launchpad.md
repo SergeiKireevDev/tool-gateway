@@ -274,6 +274,31 @@ step is an ordinary run (its own key, VM, time limit and token budget), listed w
 opening one shows the workflow as a graph of its steps, whose nodes and edges show how far it got.
 Workflows run once, now: they can't be scheduled or triggered yet.
 
+## Platform model
+
+The admin can give the gateway an LLM endpoint of its own, typically a local model, for the small
+decisions it makes itself (**Launchpad → Platform model**, or
+`GET|PUT|DELETE /api/admin/launchpad/platform-model` with `url`, `api` (`openai` or `anthropic`),
+`model` and an optional bearer `token`). It speaks the same chat APIs as
+[custom LLM endpoints](#custom-llm-endpoints): `POST <url>/v1/chat/completions` or
+`POST <url>/v1/messages`.
+
+- **Run titles.** Each new run gets a short title of its task (`title` on runs), shown in the runs
+  list and on the run's page. A webhook-triggered run is named from its trigger's instructions and
+  the event, so the list shows what happened (`Issue ENG-12 moved to Todo: …`) rather than a JSON
+  payload. A workflow's script step is not named (its plan step is).
+- **Skill labels.** The skills a run exports get up to 3 labels (`labels` on skills), and the
+  model is shown the labels its member's library already uses, so related skills share them. The
+  **Skills** page groups skills by label.
+- **Best effort.** Calls are made in the background, after the run is queued or the skills are
+  saved: nothing waits for them. When one fails, the run's activity says so, and the run stays
+  untitled (it is listed by its task) or the skill unlabelled. Without a platform model, nothing
+  is sent anywhere.
+- **What it sees.** The run's task and a trigger's instructions (as stored, credentials
+  redacted), and the skills' content, at most 8,000 characters of each. It is the admin's
+  endpoint: members and agents never reach it, and its token is sealed in the database and
+  never returned (`hasToken`). **Try it** (`POST …/platform-model/test`) names a sample task.
+
 ## Guarantees and where they come from
 
 | Guarantee                                                         | Mechanism                                                                                                                                |
