@@ -147,6 +147,12 @@ export interface OAuthSignIn {
   refresh(refreshToken: string): Promise<OAuthTokens>;
 }
 
+/** An access token minted from a long-lived pasted credential (see `ToolProvider.accessToken`). */
+export interface AccessToken {
+  token: string;
+  expiresInSeconds: number;
+}
+
 export interface ToolExample {
   method: 'GET' | 'POST';
   path: string;
@@ -205,6 +211,12 @@ export interface ToolProvider {
   ): AuthzDecision | Promise<AuthzDecision>;
   /** Headers sent upstream: auth is injected here, everything else is an explicit allowlist. */
   upstreamHeaders(secret: string, incoming: Headers): Headers;
+  /**
+   * Pasted credentials the tool exchanges for short-lived access tokens itself (e.g. a refresh
+   * token with its OAuth client): the token to use instead of the secret, or null when the secret
+   * is used as is. The gateway keeps the token in memory until shortly before it expires.
+   */
+  accessToken?(secret: string): Promise<AccessToken | null>;
   deviceFlow?: DeviceFlow;
   /** "Sign in with …" through OAuth (tokens are refreshed by the gateway). */
   oauthSignIn?: OAuthSignIn;

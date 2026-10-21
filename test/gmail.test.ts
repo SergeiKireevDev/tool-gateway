@@ -176,7 +176,7 @@ describe('Gmail through the gateway', () => {
     admin = await h.gateway.rotateAdminToken();
   });
 
-  async function session(accountId: string, grant: Grant): Promise<string> {
+  async function session(accountId: string, grant: Grant, ttlSeconds?: number): Promise<string> {
     const tpl = await request(app)
       .post('/api/admin/templates')
       .set(...auth(admin))
@@ -190,7 +190,7 @@ describe('Gmail through the gateway', () => {
     const s = await request(app)
       .post('/api/admin/sessions')
       .set(...auth(admin))
-      .send({ templateId: tpl.body.id, accountId })
+      .send({ templateId: tpl.body.id, accountId, ttlSeconds })
       .expect(201);
     return s.body.key as string;
   }
@@ -208,6 +208,69 @@ describe('Gmail through the gateway', () => {
       .set(...auth(admin))
       .send({ tool: 'gmail', label: 'Bad', secret: 'ya29.bad' })
       .expect(422);
+  });
+
+  it('mints access tokens from a pasted refresh token and its OAuth client', async () => {
+    const secret = JSON.stringify({
+      type: 'authorized_user',
+      client_id: 'own-client',
+      client_secret: 'own-secret',
+      refresh_token: 'good-pasted',
+    });
+    const acc = await request(app)
+      .post('/api/admin/accounts')
+      .set(...auth(admin))
+      .send({ tool: 'gmail', label: 'Inbox', secret })
+      .expect(201);
+    expect(acc.body).toMatchObject({ signedIn: false, identity: { login: 'ada@example.com' } });
+    expect(JSON.stringify(acc.body)).not.toContain('own-secret');
+    const tokenCalls = () =>
+      h.upstreamCalls.filter((c) => c.url === 'https://oauth2.googleapis.com/token');
+    expect(Object.fromEntries(new URLSearchParams(tokenCalls()[0]?.init.body as string))).toEqual({
+      client_id: 'own-client',
+      client_secret: 'own-secret',
+      grant_type: 'refresh_token',
+      refresh_token: 'good-pasted',
+    });
+
+    const key = await session(
+      acc.body.id as string,
+      { permissions: ['mail:read'], resources: [] },
+      3600,
+    );
+    h.upstreamCalls.length = 0;
+    const list = () =>
+      request(app)
+        .get(`/proxy/gmail${ME}/messages`)
+        .set(...auth(key))
+        .expect(200);
+    await list();
+    await list();
+    expect(tokenCalls()).toHaveLength(1);
+    const sent = h.upstreamCalls.at(-1);
+    expect(new Headers(sent?.init.headers).get('authorization')).toBe('Bearer ya29.refreshed');
+
+    // A new token once the previous one is about to expire
+    h.clock.now = new Date(h.clock.now.getTime() + 56 * 60 * 1000);
+    await list();
+    expect(tokenCalls()).toHaveLength(2);
+  });
+
+  it('refuses pasted credentials it cannot mint tokens from', async () => {
+    const connect = (secret: string) =>
+      request(app)
+        .post('/api/admin/accounts')
+        .set(...auth(admin))
+        .send({ tool: 'gmail', label: 'Inbox', secret })
+        .expect(422);
+    const revoked = { client_id: 'c', client_secret: 's', refresh_token: 'revoked' };
+    expect((await connect(JSON.stringify(revoked))).body.message).toContain('invalid_grant');
+    expect((await connect('{"client_id": "c"')).body.message).toContain('Paste JSON');
+    expect((await connect('{"client_id": "c"}')).body.message).toContain('must hold');
+    const serviceAccount = JSON.stringify({ type: 'service_account', private_key: 'k' });
+    expect((await connect(serviceAccount)).body.message).toContain(
+      '"service_account" credentials are not supported',
+    );
   });
 
   it('signs in with Google, refreshes the token, and proxies checked sends', async () => {

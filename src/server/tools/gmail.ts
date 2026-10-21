@@ -1,6 +1,7 @@
 import { isRecord } from './json.js';
 import { matchPath } from './pathMatch.js';
 import type {
+  AccessToken,
   AuthzDecision,
   Grant,
   OAuthSignIn,
@@ -32,12 +33,27 @@ const LOOPBACK_REDIRECT_URI = 'http://127.0.0.1:8765/';
 /** Read, organize, draft and send; not permanent deletion or settings. */
 const SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 
-export interface GmailOAuthClient {
+interface OAuthClientCredentials {
   clientId: string;
   clientSecret: string;
+}
+
+export interface GmailOAuthClient extends OAuthClientCredentials {
   /** A redirect URI on the gateway (Web application client); the loopback one when absent. */
   redirectUri?: string;
 }
+
+/**
+ * A refresh token pasted with the OAuth client it was issued to, as Google's "authorized_user"
+ * JSON (`{"client_id", "client_secret", "refresh_token"}`): the gateway mints access tokens from it.
+ * Gmail has no API keys: they only identify a Cloud project and never reach a mailbox.
+ */
+interface PastedRefreshToken extends OAuthClientCredentials {
+  refreshToken: string;
+}
+
+const AUTHORIZED_USER = 'authorized_user';
+const REFRESH_TOKEN_FIELDS = '"client_id", "client_secret" and "refresh_token"';
 
 const PERM = {
   MAIL_READ: 'mail:read',
@@ -290,24 +306,79 @@ async function profile(fetchImpl: typeof fetch, secret: string): Promise<Record<
   return identity;
 }
 
+/** Calls Google's token endpoint with an OAuth client; returns its JSON answer. */
+async function requestToken(
+  fetchImpl: typeof fetch,
+  client: OAuthClientCredentials,
+  body: Record<string, string>,
+): Promise<unknown> {
+  const res = await fetchImpl(TOKEN_URL, {
+    method: 'POST',
+    headers: { [CONTENT_TYPE]: 'application/x-www-form-urlencoded', accept: JSON_TYPE },
+    body: new URLSearchParams({
+      client_id: client.clientId,
+      client_secret: client.clientSecret,
+      ...body,
+    }).toString(),
+  });
+  const json: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error =
+      isRecord(json) && typeof json.error === 'string' ? json.error : `HTTP ${res.status}`;
+    throw new Error(`Google sign-in failed (${error})`);
+  }
+  return json;
+}
+
+/** The pasted refresh token, or null for a pasted access token. */
+function pastedRefreshToken(secret: string): PastedRefreshToken | null {
+  if (!secret.trimStart().startsWith('{')) return null;
+  let json: unknown;
+  try {
+    json = JSON.parse(secret);
+  } catch {
+    throw new Error(`Paste JSON with ${REFRESH_TOKEN_FIELDS}, or an access token`);
+  }
+  if (isRecord(json) && json.type !== undefined && json.type !== AUTHORIZED_USER) {
+    throw new Error(
+      `${JSON.stringify(json.type)} credentials are not supported: paste an "${AUTHORIZED_USER}" refresh token`,
+    );
+  }
+  if (
+    !isRecord(json) ||
+    typeof json.client_id !== 'string' ||
+    typeof json.client_secret !== 'string' ||
+    typeof json.refresh_token !== 'string'
+  ) {
+    throw new Error(`The JSON must hold ${REFRESH_TOKEN_FIELDS}`);
+  }
+  return {
+    clientId: json.client_id,
+    clientSecret: json.client_secret,
+    refreshToken: json.refresh_token,
+  };
+}
+
+async function mintAccessToken(
+  fetchImpl: typeof fetch,
+  pasted: PastedRefreshToken,
+): Promise<AccessToken> {
+  const json = await requestToken(fetchImpl, pasted, {
+    grant_type: 'refresh_token',
+    refresh_token: pasted.refreshToken,
+  });
+  if (!isRecord(json) || typeof json.access_token !== 'string') {
+    throw new Error('Unexpected answer from Google sign-in');
+  }
+  return {
+    token: json.access_token,
+    expiresInSeconds: typeof json.expires_in === 'number' ? json.expires_in : 0,
+  };
+}
+
 function googleSignIn(fetchImpl: typeof fetch, client: GmailOAuthClient): OAuthSignIn {
   const token = async (body: Record<string, string>, refreshToken?: string) => {
-    const res = await fetchImpl(TOKEN_URL, {
-      method: 'POST',
-      headers: { [CONTENT_TYPE]: 'application/x-www-form-urlencoded', accept: JSON_TYPE },
-      body: new URLSearchParams({
-        client_id: client.clientId,
-        client_secret: client.clientSecret,
-        ...body,
-      }).toString(),
-    });
-    const json: unknown = await res.json().catch(() => null);
-    if (!res.ok) {
-      const error =
-        isRecord(json) && typeof json.error === 'string' ? json.error : `HTTP ${res.status}`;
-      throw new Error(`Google sign-in failed (${error})`);
-    }
-    const tokens = tokensOf(json, refreshToken);
+    const tokens = tokensOf(await requestToken(fetchImpl, client, body), refreshToken);
     return { ...tokens, identity: await profile(fetchImpl, tokens.access) };
   };
   const redirectUri = client.redirectUri ?? LOOPBACK_REDIRECT_URI;
@@ -350,8 +421,8 @@ export function createGmailProvider(
     id: 'gmail',
     name: 'Gmail',
     credentialHelp:
-      'Prefer "Sign in with Google" (available once Google sign-in or GMAIL_CLIENT_ID is configured): the gateway then refreshes the token itself. A pasted OAuth access token (ya29.…) works too, but Google expires it within an hour.',
-    credentialPlaceholder: 'ya29.…',
+      'Prefer "Sign in with Google" (available once Google sign-in or GMAIL_CLIENT_ID is configured). Otherwise paste a refresh token with its OAuth client as JSON ({"client_id": "…", "client_secret": "…", "refresh_token": "…"}, with the gmail.modify scope): the gateway then mints access tokens itself. A pasted access token (ya29.…) works too, but Google expires it within an hour. Gmail does not accept API keys.',
+    credentialPlaceholder: '{"client_id": …, "client_secret": …, "refresh_token": …} or ya29.…',
     resourceHelp:
       'Who mail may be sent to: one address (ada@example.com) or domain (*@example.com) per line. Leave empty to allow any recipient. Reading, labels and drafts are not limited by it.',
     permissions: PERMISSIONS,
@@ -368,7 +439,15 @@ export function createGmailProvider(
         : `Invalid recipient "${pattern}" (an address, or *@domain)`;
     },
 
-    verifyCredential: (secret) => profile(fetchImpl, secret),
+    async verifyCredential(secret) {
+      const pasted = pastedRefreshToken(secret);
+      return profile(fetchImpl, pasted ? (await mintAccessToken(fetchImpl, pasted)).token : secret);
+    },
+
+    async accessToken(secret) {
+      const pasted = pastedRefreshToken(secret);
+      return pasted ? mintAccessToken(fetchImpl, pasted) : null;
+    },
 
     authorize(request, grant): AuthzDecision {
       try {

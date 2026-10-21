@@ -121,8 +121,27 @@ mailboxes as test users).
 
 Alternatively, set `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` to a dedicated OAuth client of type
 **Desktop app**. Google then redirects to a `127.0.0.1` page instead, whose address is pasted back
-into the dialog. Without any OAuth client, an access token (`ya29.…`) can be pasted, but Google
-expires it within an hour.
+into the dialog.
+
+Without "Sign in with Google", paste a **refresh token with the OAuth client it was issued to**, as
+Google's `authorized_user` JSON:
+
+```json
+{ "client_id": "….apps.googleusercontent.com", "client_secret": "…", "refresh_token": "1//…" }
+```
+
+The gateway mints (and caches) short-lived access tokens from it itself, so the account keeps
+working. One way to get one: create an OAuth client of type **Desktop app** (or Web application,
+with `https://developers.google.com/oauthplayground` as redirect URI), then in the
+[OAuth 2.0 Playground](https://developers.google.com/oauthplayground) tick **Use your own OAuth
+credentials**, authorize `https://www.googleapis.com/auth/gmail.modify` and exchange the code for
+tokens. While the client's app is in testing mode, Google expires its refresh tokens after 7 days.
+A bare access token (`ya29.…`) can be pasted too, but Google expires it within an hour.
+
+Gmail does not accept **API keys**: a Google API key only identifies a Cloud project, for public
+data APIs (such as Google Maps), and can never read or send a user's mail. Every Gmail
+call needs an OAuth access token for the mailbox. Service account keys only reach mailboxes of a
+Google Workspace domain through domain-wide delegation, and are not supported.
 
 ## Concepts
 

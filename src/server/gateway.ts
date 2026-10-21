@@ -292,6 +292,15 @@ export interface RunToolScope {
   endpointApis: readonly LlmEndpointApi[];
 }
 
+interface MintedAccessToken {
+  /** The pasted credential the token was minted from (a rotated one mints a new token). */
+  secret: string;
+  /** The access token, or null when the secret is used as is. */
+  token: Promise<string | null>;
+  /** When to mint a new one (ms since epoch), once the token is known. */
+  expiresAt: number | null;
+}
+
 interface BoundGrant {
   grant: ToolGrant;
   /** Null for grants that carry their own endpoint. */
@@ -309,6 +318,8 @@ export class Gateway {
   private readonly usage = new Map<string, { lastUsedAt: string; count: number }>();
   private readonly deviceFlows = new Map<string, PendingDeviceFlow>();
   private readonly refreshing = new Map<string, Promise<Account>>();
+  /** Access tokens minted from pasted long-lived credentials, by account (memory only). */
+  private readonly accessTokens = new Map<string, MintedAccessToken>();
   /** "Sign in with …" flows (OAuth) in progress. */
   readonly signIns: OAuthSignIns;
   /** Google accounts that sign in as admin; they can't also be member emails. */
@@ -701,7 +712,7 @@ export class Gateway {
    */
   async freshAccount(account: Account, force = false): Promise<Account> {
     const { oauth } = account;
-    if (!oauth) return account;
+    if (!oauth) return this.withAccessToken(account);
     if (!force && Date.parse(oauth.expiresAt) > this.now().getTime()) return account;
     const pending = this.refreshing.get(account.id);
     if (pending) return pending;
@@ -710,6 +721,47 @@ export class Gateway {
     });
     this.refreshing.set(account.id, refresh);
     return refresh;
+  }
+
+  /**
+   * For tools that exchange a pasted credential for access tokens: the account with a current
+   * access token as its secret (minted once at a time per account, kept until shortly before it
+   * expires, never stored).
+   */
+  private async withAccessToken(account: Account): Promise<Account> {
+    // Endpoint grants' stand-in accounts are not of a registered tool.
+    const tool = this.tools.get(account.tool);
+    if (!tool?.accessToken) return account;
+    let entry = this.accessTokens.get(account.id);
+    const reusable =
+      entry?.secret === account.secret &&
+      (entry.expiresAt === null || entry.expiresAt > this.now().getTime());
+    if (!entry || !reusable) {
+      const minted: MintedAccessToken = {
+        secret: account.secret,
+        expiresAt: null,
+        token: tool.accessToken(account.secret).then(
+          (result) => {
+            minted.expiresAt = result
+              ? this.now().getTime() +
+                result.expiresInSeconds * MS_PER_SECOND -
+                TOKEN_REFRESH_MARGIN_MS
+              : Number.POSITIVE_INFINITY;
+            return result?.token ?? null;
+          },
+          (err: unknown) => {
+            if (this.accessTokens.get(account.id) === minted) this.accessTokens.delete(account.id);
+            throw badGateway(
+              `Could not get an access token for "${account.label}": ${(err as Error).message}. Check its credential.`,
+            );
+          },
+        ),
+      };
+      this.accessTokens.set(account.id, minted);
+      entry = minted;
+    }
+    const token = await entry.token;
+    return token === null ? account : { ...account, secret: token };
   }
 
   /** When to refresh an access token: a few minutes before it really expires. */
@@ -743,6 +795,7 @@ export class Gateway {
   /** Members remove their own accounts; the admin can remove any account. */
   async deleteAccount(id: string, actor: Actor = ADMIN): Promise<void> {
     const acc = this.accountFor(actor, id, 'oversee');
+    this.accessTokens.delete(id);
     const revoked = await this.store.update((s) => {
       s.accounts = s.accounts.filter((a) => a.id !== id);
       for (const m of s.members) m.accountIds = m.accountIds.filter((x) => x !== id);
