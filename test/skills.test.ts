@@ -287,6 +287,39 @@ describe('skills an agent starts with', () => {
     await settle(t.launchpad);
     expect(t.driver.lastConfig().skills).toEqual(['repo-ci']);
   });
+
+  it('changes the skills of an edited trigger', async () => {
+    const alice = await memberWithSkills();
+    const hook = await t
+      .hooks(alice.cookie, 'post', '')
+      .send({ name: 'issues', source: 'generic', auth: 'url' })
+      .expect(201);
+    const body = {
+      instructions: 'Label the issue',
+      templateId: t.ids.template,
+      harness: 'claude-code',
+      webhookId: hook.body.webhook.id as string,
+    };
+    const trigger = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send({ ...body, skills: ['github-issues'] })
+      .expect(201);
+    const path = `/triggers/${trigger.body.id as string}`;
+    const edited = await t
+      .portal(alice.cookie, 'put', path)
+      .send({ ...body, skills: ['repo-ci'] })
+      .expect(200);
+    expect(edited.body.skills).toEqual(['repo-ci']);
+    await request(t.app)
+      .post(new URL(hook.body.url as string).pathname)
+      .send({ type: 'Issue' })
+      .expect(200);
+    await settle(t.launchpad);
+    expect(t.driver.lastConfig().skills).toEqual(['repo-ci']);
+
+    const cleared = await t.portal(alice.cookie, 'put', path).send(body).expect(200);
+    expect(cleared.body.skills).toEqual([]);
+  });
 });
 
 describe('skill descriptions', () => {

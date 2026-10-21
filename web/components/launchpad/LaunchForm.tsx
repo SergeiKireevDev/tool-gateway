@@ -29,6 +29,7 @@ import {
   type RelaunchInputs,
   RelaunchNote,
   relaunchDefaults,
+  triggerDefaults,
 } from './RelaunchFields';
 import { SkillsField } from './SkillsField';
 
@@ -363,6 +364,12 @@ const toFilters = (f: FilterDraft): TriggerFilters => ({
   assignedTo: splitList(f.assignedTo),
 });
 
+const toDraft = (f: TriggerFilters): FilterDraft => ({
+  contains: f.contains.join(', '),
+  statusChangedTo: f.statusChangedTo.join(', '),
+  assignedTo: f.assignedTo.join(', '),
+});
+
 /** Optional conditions on the event, checked before an agent is launched. */
 function FilterFields({
   filters,
@@ -498,6 +505,9 @@ function TaskField({
 /** What the form holds when it is sent. */
 interface Draft {
   when: When;
+  /** The trigger being edited, if any: then the form saves it instead of creating one. */
+  triggerId: string | null;
+  name: string;
   /** A workflow: plan with the agent, then run its script on `executorModel`. */
   workflow: boolean;
   executorModel: string;
@@ -581,9 +591,10 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
   }
   if (d.when === 'webhook') {
     return {
-      path: '/launchpad/triggers',
+      path: d.triggerId ? `/launchpad/triggers/${d.triggerId}` : '/launchpad/triggers',
       body: {
         ...agent,
+        ...(d.name.trim() ? { name: d.name.trim() } : {}),
         instructions: d.prompt,
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
@@ -863,7 +874,7 @@ function AgentFields({
 }: {
   agent: AgentChoice;
   templates: LaunchTemplate[];
-  /** Chained and relaunched agents can't be a workflow. */
+  /** Chained and relaunched agents, and edited triggers, can't be a workflow. */
   once: boolean;
 }) {
   const { workflow, setModel } = agent;
@@ -1134,14 +1145,17 @@ function useRelaunchInputs(relaunch: Relaunch | null) {
   };
 }
 
-/** What the form starts from: a relaunched run's settings, or blank (a chained agent's environment). */
+/**
+ * What the form starts from: a relaunched run's or an edited trigger's settings, or blank (a chained agent's environment). */
 function launchDefaults(
   relaunch: Relaunch | null,
   parent: Run | null,
+  editing: Trigger | null,
   options: LaunchOptions,
   accounts: Account[],
 ): LaunchDefaults {
   if (relaunch) return relaunchDefaults(relaunch.run, options, accounts);
+  if (editing) return triggerDefaults(editing, options, accounts);
   return { ...BLANK_DEFAULTS, environmentId: parentEnvironment(parent, options.environments) };
 }
 
@@ -1150,12 +1164,75 @@ const taskKind = (event: boolean, trigger: boolean): TaskKind => {
   return trigger ? 'trigger' : 'task';
 };
 
-function submitLabel(workflow: boolean, relaunching: boolean, when: When): string {
+function submitLabel(workflow: boolean, relaunching: boolean, editing: boolean, when: When) {
   if (workflow) return 'Launch workflow';
+  if (editing) return 'Save trigger';
   return relaunching ? 'Relaunch agent' : SUBMIT_LABELS[when];
 }
 
-/** Launch an agent now, schedule it, or trigger it on webhook events; or relaunch a run. */
+/**
+ * Workflows, chained and relaunched agents run once, now (`single`). An edited trigger stays one.
+ * Neither can be a workflow, nor run at another time (`fixed`).
+ */
+function formMode(parent: Run | null, relaunch: Relaunch | null, editing: Trigger | null) {
+  const single = parent !== null || relaunch !== null;
+  return { single, fixed: single || editing !== null };
+}
+
+/** What an edited trigger listens to, or a new trigger's defaults. */
+function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
+  const [name, setName] = useState(editing?.name ?? '');
+  const [webhookId, setWebhookId] = useState(() =>
+    editing && webhooks.some((w) => w.id === editing.webhookId)
+      ? editing.webhookId
+      : firstId(webhooks),
+  );
+  const [eventTypes, setEventTypes] = useState(editing?.eventTypes.join(', ') ?? '');
+  const [filters, setFilters] = useState(editing ? toDraft(editing.filters) : NO_FILTERS);
+  return {
+    editing: editing !== null,
+    /** Saved with `PUT`, instead of created. */
+    triggerId: editing?.id ?? null,
+    method: editing ? 'PUT' : 'POST',
+    initialWhen: (editing ? 'webhook' : 'now') as When,
+    name,
+    setName,
+    webhookId,
+    setWebhookId,
+    eventTypes,
+    setEventTypes,
+    filters,
+    setFilters,
+  };
+}
+
+/** The trigger's name, when editing one. */
+function NameField({
+  shown,
+  name,
+  setName,
+}: {
+  shown: boolean;
+  name: string;
+  setName: (v: string) => void;
+}) {
+  if (!shown) return null;
+  return (
+    <Field label="Name" hint="Empty: keep the current name.">
+      <Input
+        value={name}
+        onChange={(e) => {
+          setName(e.target.value);
+        }}
+      />
+    </Field>
+  );
+}
+
+/**
+ * Launch an agent now, schedule it, or trigger it on webhook events; relaunch a run, or edit a
+ * trigger.
+ */
 export function LaunchForm({
   api,
   options,
@@ -1167,6 +1244,7 @@ export function LaunchForm({
   onWorkflow,
   parent = null,
   relaunch = null,
+  editing = null,
 }: {
   api: Api;
   options: LaunchOptions;
@@ -1181,25 +1259,25 @@ export function LaunchForm({
   parent?: Run | null;
   /** The run to launch again, its settings filled in to edit: once, now. */
   relaunch?: Relaunch | null;
+  /** The trigger to edit, its settings filled in: saved instead of creating a new one. */
+  editing?: Trigger | null;
 }) {
   const { templates } = options;
-  const [defaults] = useState(() => launchDefaults(relaunch, parent, options, accounts));
+  const [defaults] = useState(() => launchDefaults(relaunch, parent, editing, options, accounts));
   const task = useTask(defaults);
   const { prompt } = task;
   const agent = useAgentChoice(api, templates, defaults);
   const { workflow, templateId, template, harness, choice, model, executor, executorModel } = agent;
-  const [chosenWhen, setWhen] = useState<When>('now');
-  // Workflows, chained and relaunched agents run once, now.
-  const single = parent !== null || relaunch !== null;
+  const trigger = useTriggerFields(editing, webhooks);
+  const { webhookId, eventTypes, filters } = trigger;
+  const [chosenWhen, setWhen] = useState<When>(trigger.initialWhen);
+  const { single, fixed } = formMode(parent, relaunch, editing);
   const once = workflow || single;
   const when: When = once ? 'now' : chosenWhen;
   const [time, setTime] = useState('09:00');
   const [weekday, setWeekday] = useState(1);
   const [day, setDay] = useState(1);
   const [timezone, setTimezone] = useState(browserTimeZone);
-  const [webhookId, setWebhookId] = useState(() => firstId(webhooks));
-  const [eventTypes, setEventTypes] = useState('');
-  const [filters, setFilters] = useState(NO_FILTERS);
   const [environmentId, setEnvironmentId] = useState(defaults.environmentId);
   const [skills, setSkills] = useState<string[]>(defaults.skills);
   const [files, setFiles] = useState<File[]>([]);
@@ -1229,6 +1307,8 @@ export function LaunchForm({
   const send = async (attachmentIds: string[]): Promise<void> => {
     const request = requestFor({
       when,
+      triggerId: trigger.triggerId,
+      name: trigger.name,
       workflow,
       executorModel: executorModel.trim(),
       plannerProvider: plannerTool ?? '',
@@ -1253,7 +1333,7 @@ export function LaunchForm({
       attachmentsFrom: relaunched.attachmentsFrom,
     });
     const sent = await api<Run | Schedule | Trigger | Workflow>(
-      'POST',
+      trigger.method,
       request.path,
       request.body,
     ).catch(async (err: unknown) => {
@@ -1299,6 +1379,7 @@ export function LaunchForm({
           setInputs={relaunched.setInputs}
         />
       )}
+      <NameField shown={trigger.editing} name={trigger.name} setName={trigger.setName} />
       <InstructionsField
         shown={task.event}
         instructions={task.instructions}
@@ -1309,7 +1390,7 @@ export function LaunchForm({
         prompt={prompt}
         setPrompt={task.setPrompt}
       />
-      <AgentFields agent={agent} templates={templates} once={single} />
+      <AgentFields agent={agent} templates={templates} once={fixed} />
       <AgentSetupFields
         shown={!workflow}
         options={options}
@@ -1319,17 +1400,17 @@ export function LaunchForm({
         setSkills={setSkills}
       />
       <AccountFields ambiguous={ambiguous} picked={picked} setPicked={setPicked} />
-      {!once && <WhenField when={when} setWhen={setWhen} />}
+      {!(workflow || fixed) && <WhenField when={when} setWhen={setWhen} />}
       <AttachmentsField shown={attaching} files={files} onChange={setFiles} progress={uploading} />
       {when === 'webhook' && (
         <TriggerFields
           webhooks={webhooks}
           webhookId={webhookId}
-          setWebhookId={setWebhookId}
+          setWebhookId={trigger.setWebhookId}
           eventTypes={eventTypes}
-          setEventTypes={setEventTypes}
+          setEventTypes={trigger.setEventTypes}
           filters={filters}
-          setFilters={setFilters}
+          setFilters={trigger.setFilters}
         />
       )}
       {isPreset(when) && (
@@ -1348,7 +1429,7 @@ export function LaunchForm({
       <ErrorBanner message={error} />
       <SubmitRow
         timeoutSeconds={options.defaultTimeoutSeconds}
-        label={submitLabel(workflow, relaunch !== null, when)}
+        label={submitLabel(workflow, relaunch !== null, trigger.editing, when)}
         disabled={
           busy ||
           // A workflow waits for its planning agents.

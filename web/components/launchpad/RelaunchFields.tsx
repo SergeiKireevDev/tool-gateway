@@ -6,6 +6,8 @@ import {
   type Harness,
   type LaunchOptions,
   type Run,
+  type RunHarness,
+  type Trigger,
 } from '@/lib/launchpad';
 import type { Account } from '@/lib/types';
 import { Field, Textarea } from '../ui';
@@ -45,41 +47,77 @@ export const BLANK_DEFAULTS: LaunchDefaults = {
   picked: {},
 };
 
+/** What a run or a trigger was launched with, to fill in the form again. */
+interface AgentSettings {
+  templateId: string;
+  harness: RunHarness;
+  model: string | null;
+  environmentId: string | null;
+  skills: string[];
+  accountIds: string[];
+}
+
 /**
- * A relaunched run's settings, as far as the member can still launch with them: its template,
+ * A run's or a trigger's settings, as far as the member can still launch with them: its template,
  * agent and model if the template (as configured now) still gives them, its environment and skills
  * if they are still offered, and the accounts it used.
  */
+function settingsDefaults(
+  settings: AgentSettings,
+  options: LaunchOptions,
+  accounts: Account[],
+): Omit<LaunchDefaults, 'prompt' | 'instructions'> {
+  const template = options.templates.find(
+    (t) => t.id === settings.templateId && t.harnesses.length > 0,
+  );
+  const choice = template?.harnesses.find((h) => h.harness === settings.harness);
+  // A custom endpoint serves models the template doesn't list: the gateway checks them.
+  const modelKept =
+    choice !== undefined &&
+    settings.model !== null &&
+    (choice.provider === 'custom' || choice.models.includes(settings.model));
+  const skills = new Set(options.skills.map((s) => s.name));
+  const picked: Record<string, string> = {};
+  for (const id of settings.accountIds) {
+    const account = accounts.find((a) => a.id === id);
+    if (account) picked[account.tool] = id;
+  }
+  return {
+    templateId: template?.id ?? null,
+    harness: choice ? (choice.harness as Harness) : null,
+    model: modelKept ? (settings.model ?? '') : '',
+    environmentId:
+      settings.environmentId && options.environments.some((e) => e.id === settings.environmentId)
+        ? settings.environmentId
+        : '',
+    skills: settings.skills.filter((s) => skills.has(s)),
+    picked,
+  };
+}
+
+/** A relaunched run's settings that still apply, its task and its instructions. */
 export function relaunchDefaults(
   run: Run,
   options: LaunchOptions,
   accounts: Account[],
 ): LaunchDefaults {
-  const template = options.templates.find((t) => t.id === run.templateId && t.harnesses.length > 0);
-  const choice = template?.harnesses.find((h) => h.harness === run.harness);
-  // A custom endpoint serves models the template doesn't list: the gateway checks them.
-  const modelKept =
-    choice !== undefined &&
-    run.model !== null &&
-    (choice.provider === 'custom' || choice.models.includes(run.model));
-  const skills = new Set(options.skills.map((s) => s.name));
-  const picked: Record<string, string> = {};
-  for (const id of run.accountIds) {
-    const account = accounts.find((a) => a.id === id);
-    if (account) picked[account.tool] = id;
-  }
   return {
     prompt: run.prompt,
     instructions: run.instructions,
-    templateId: template?.id ?? null,
-    harness: choice ? (choice.harness as Harness) : null,
-    model: modelKept ? (run.model ?? '') : '',
-    environmentId:
-      run.environmentId && options.environments.some((e) => e.id === run.environmentId)
-        ? run.environmentId
-        : '',
-    skills: run.skills.filter((s) => skills.has(s)),
-    picked,
+    ...settingsDefaults(run, options, accounts),
+  };
+}
+
+/** An edited trigger's settings that still apply: its instructions are the form's task. */
+export function triggerDefaults(
+  trigger: Trigger,
+  options: LaunchOptions,
+  accounts: Account[],
+): LaunchDefaults {
+  return {
+    prompt: trigger.instructions,
+    instructions: null,
+    ...settingsDefaults(trigger, options, accounts),
   };
 }
 
