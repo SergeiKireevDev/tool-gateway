@@ -257,7 +257,30 @@ export class Attachments {
     });
   }
 
-  /** Gives attachments checked by `forLaunch` to the run launched with them. */
+  /**
+   * Holds attachments checked by `forLaunch` for a workflow's later step (its script): they no
+   * longer wait for a launch, and `held` gives them to that step's run when it is launched.
+   */
+  hold(workflowId: string, attachments: readonly Attachment[]): void {
+    const hold = this.db.sql.prepare(
+      'UPDATE run_attachments SET workflow_id = ? WHERE id = ? AND run_id IS NULL AND workflow_id IS NULL',
+    );
+    this.db.transaction(() => {
+      for (const a of attachments) hold.run(workflowId, a.id);
+    });
+  }
+
+  /** The attachments held for a workflow's step not launched yet, by name. */
+  held(workflowId: string): Attachment[] {
+    const rows = this.db.sql
+      .prepare(
+        `SELECT ${COLUMNS} FROM run_attachments WHERE workflow_id = ? AND run_id IS NULL ORDER BY name`,
+      )
+      .all(workflowId) as unknown as AttachmentRow[];
+    return rows.map(toAttachment);
+  }
+
+  /** Gives attachments checked by `forLaunch` (or held by `hold`) to the run launched with them. */
   claim(runId: string, attachments: readonly Attachment[]): void {
     const claim = this.db.sql.prepare(
       'UPDATE run_attachments SET run_id = ? WHERE id = ? AND run_id IS NULL',
@@ -290,7 +313,8 @@ export class Attachments {
 
   /**
    * Deletes attachments no run was launched with after a day (or whose upload never completed),
-   * and those of runs that finished longer ago than output files are kept.
+   * and those of runs that finished longer ago than output files are kept. Those held for a
+   * workflow's step that was never launched go when its planning step's output files would.
    */
   purge(retentionDays: number): number {
     const now = this.now().getTime();
@@ -300,10 +324,12 @@ export class Attachments {
       this.db.sql
         .prepare(
           `DELETE FROM run_attachments
-           WHERE (run_id IS NULL AND created_at <= ?)
-              OR run_id IN (SELECT id FROM runs WHERE finished_at <= ?)`,
+           WHERE (run_id IS NULL AND workflow_id IS NULL AND created_at <= ?)
+              OR run_id IN (SELECT id FROM runs WHERE finished_at <= ?)
+              OR (run_id IS NULL AND workflow_id IN (
+                    SELECT workflow_id FROM runs WHERE workflow_step = 'plan' AND finished_at <= ?))`,
         )
-        .run(pendingBefore, finishedBefore).changes,
+        .run(pendingBefore, finishedBefore, finishedBefore).changes,
     );
   }
 
@@ -314,7 +340,8 @@ export class Attachments {
         `SELECT id, name, run_id, created_at, size IS NOT NULL AS complete,
                 COALESCE(size, (SELECT COALESCE(SUM(length(data)), 0) FROM run_attachment_chunks
                                 WHERE attachment_id = a.id)) AS size
-         FROM run_attachments a WHERE member_id = ? AND run_id IS NULL ORDER BY created_at`,
+         FROM run_attachments a
+         WHERE member_id = ? AND run_id IS NULL AND workflow_id IS NULL ORDER BY created_at`,
       )
       .all(memberId) as unknown as (AttachmentRow & { complete: number })[];
     return rows.map((r) => ({ ...toAttachment(r), complete: r.complete === 1 }));

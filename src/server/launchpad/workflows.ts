@@ -1,9 +1,15 @@
 import { z } from 'zod';
-import { conflict, notFound } from '../errors.js';
+import { badRequest, conflict, notFound } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { randomId } from '../store/crypto.js';
 import type { Member } from '../store/types.js';
-import { type Actor, type Launchpad, launchSchema, MAX_PROMPT_LENGTH } from './launchpad.js';
+import {
+  type Actor,
+  type Launchpad,
+  launchNowSchema,
+  launchSchema,
+  MAX_PROMPT_LENGTH,
+} from './launchpad.js';
 import {
   CUSTOM_PROVIDER,
   LLM_PROVIDERS,
@@ -21,13 +27,14 @@ import {
   type WorkflowStep,
 } from './runStore.js';
 import { OUT_DIR } from './systemPrompt.js';
+import type { Attachment } from './attachments.js';
 
 /**
  * A workflow launch: the task, the planning agent (`harness`, `plannerProvider`, `model`) and
  * the template the script runs with (`templateId`, `accountIds`, `executorModel`). The planner
  * gets no tool, so no permission template is picked for it: any model API the member's templates
  * give the agent will do. The script's template can be any template. Both steps boot the default
- * guest image.
+ * guest image. Each step can have files attached (uploaded beforehand, like a launch's).
  */
 export const workflowSchema = launchSchema.omit({ environmentId: true, skills: true }).extend({
   /** The model of the template's custom LLM endpoint the script uses, if it gives one. */
@@ -36,6 +43,10 @@ export const workflowSchema = launchSchema.omit({ environmentId: true, skills: t
   plannerProvider: z.enum(LLM_PROVIDERS).optional(),
   /** The planner's model provider account, when the member has several. */
   plannerAccountIds: launchSchema.shape.accountIds,
+  /** Files for the planning agent, copied to its `/home/agent/in`. */
+  planAttachmentIds: launchNowSchema.shape.attachmentIds,
+  /** Files for the script, copied to its `/home/agent/in` (the planner only learns their names). */
+  executeAttachmentIds: launchNowSchema.shape.attachmentIds,
 });
 
 export interface WorkflowStepView {
@@ -87,6 +98,7 @@ export class Workflows {
       { templateId: req.templateId, accountIds: req.accountIds, model: req.executorModel },
       req.prompt,
     );
+    const { plan: planFiles, execute: executeFiles } = this.attachments(member, req);
     const workflow = this.launchpad.runs.insertWorkflow({
       id: randomId(),
       memberId: member.id,
@@ -103,8 +115,30 @@ export class Workflows {
       executorModel: executor.model,
       createdAt: this.now().toISOString(),
     });
-    this.launchpad.launchPlan(member, planner, { workflowId: workflow.id, workflowStep: 'plan' });
+    this.launchpad.attachments.hold(workflow.id, executeFiles);
+    this.launchpad.launchPlan(
+      member,
+      planner,
+      { workflowId: workflow.id, workflowStep: 'plan' },
+      planFiles,
+    );
     return this.view(workflow);
+  }
+
+  /** The files attached to each step, checked like a launch's: a file goes with one step only. */
+  private attachments(
+    member: Member,
+    req: z.infer<typeof workflowSchema>,
+  ): { plan: Attachment[]; execute: Attachment[] } {
+    const planIds = req.planAttachmentIds ?? [];
+    const executeIds = req.executeAttachmentIds ?? [];
+    if (planIds.some((id) => executeIds.includes(id))) {
+      throw badRequest('A file can be attached to one step only');
+    }
+    return {
+      plan: this.launchpad.attachments.forLaunch(member.id, planIds),
+      execute: this.launchpad.attachments.forLaunch(member.id, executeIds),
+    };
   }
 
   /** Launches the script once its planner succeeded; called for every finished run. */
@@ -144,10 +178,12 @@ export class Workflows {
       },
       script,
     );
-    this.launchpad.launchPlan(member, checked, {
-      workflowId: workflow.id,
-      workflowStep: 'execute',
-    });
+    this.launchpad.launchPlan(
+      member,
+      checked,
+      { workflowId: workflow.id, workflowStep: 'execute' },
+      this.launchpad.attachments.held(workflow.id),
+    );
   }
 
   list(memberId?: string): WorkflowView[] {

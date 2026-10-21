@@ -157,7 +157,8 @@ finds them in `/home/agent/in` when it starts.
 - **Limits.** At most 20 files per launch, 1 GiB per file and 2 GiB in all. The same limits apply
   to files uploaded (or being uploaded) but not launched with yet.
 - **Checks.** An attachment is the member's own, and goes with one launch only. Two attachments
-  of a launch can't have the same name. Schedules, triggers and workflows take no attachments.
+  of a launch can't have the same name. Schedules and triggers take no attachments; workflows
+  take them per step (see below).
 - **Input.** When the run starts, its attachments are added to its input files
   (`GET /runner/inputs/<name>`), and its system prompt lists them. A chained run gets both its
   attachments and its parent's output files; an attachment replaces a parent file of the same name.
@@ -266,6 +267,17 @@ checked like launches when the workflow is created.
    endpoint's model). Without one, the script has no LLM (`executorModel` is null): the planner is
    told to decide everything in code. Each line it prints is logged, and everything it printed is
    its final message.
+
+**Attachments.** Each step can have files attached, uploaded beforehand like a launch's
+(**Attachments** in each step of the form): `planAttachmentIds` for the planning agent,
+`executeAttachmentIds` for the script. Each list is checked like a launch's (the member's own, not
+launched with yet, within the per-launch limits), and a file goes with one step only. The planner's
+files are its input files (`/home/agent/in`, listed in its system prompt). The script's are held
+for the workflow until its step is launched, then given to that run and copied to its
+`/home/agent/in` before `node script.mjs` starts. The planner never gets their content (they may
+hold third-party data, which only the script handles): its system prompt lists their names and
+sizes, for the script to read them. Files held for a script that never runs are deleted when the
+planning step's output files would be.
 
 A workflow's status follows its steps: it fails when the plan fails or writes no script, and
 succeeds when the script exits with code 0. Stopping a workflow

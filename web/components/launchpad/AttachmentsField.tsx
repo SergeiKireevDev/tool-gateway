@@ -108,18 +108,34 @@ export async function discardAttachments(api: Api, ids: readonly string[]): Prom
   );
 }
 
+const LIMITS = 'Up to 20 files, 1 GiB each, 2 GiB in all.';
+const DEFAULT_HINT =
+  'Optional. Copied to /home/agent/in before the agent starts (up to 20 files, 1 GiB each, 2 GiB in all). Tell it what to do with them in the task.';
+
+/** The share of the files uploaded so far. */
+export function UploadProgress({ progress }: { progress: number }) {
+  return (
+    <span className="mt-1 block text-xs font-medium text-slate-700" role="status">
+      Uploading… {Math.floor(progress * PERCENT)}%
+    </span>
+  );
+}
+
 /** Files the member attaches to the launch: the agent finds them in /home/agent/in. */
 export function AttachmentsField({
   shown,
   files,
   onChange,
   progress = null,
+  hint,
 }: {
   shown: boolean;
   files: File[];
   onChange: (files: File[]) => void;
   /** Share of the files uploaded (0 to 1) while they are, else null. */
   progress?: number | null;
+  /** What the files are for (the limits are added); an agent's attachments by default. */
+  hint?: string;
 }) {
   if (!shown) return null;
   return (
@@ -160,14 +176,9 @@ export function AttachmentsField({
         }}
       />
       <span className="mt-1 block text-xs text-slate-500">
-        Optional. Copied to /home/agent/in before the agent starts (up to 20 files, 1 GiB each, 2
-        GiB in all). Tell it what to do with them in the task.
+        {hint === undefined ? DEFAULT_HINT : `${hint} ${LIMITS}`}
       </span>
-      {progress !== null && (
-        <span className="mt-1 block text-xs font-medium text-slate-700" role="status">
-          Uploading… {Math.floor(progress * PERCENT)}%
-        </span>
-      )}
+      {progress !== null && <UploadProgress progress={progress} />}
     </div>
   );
 }

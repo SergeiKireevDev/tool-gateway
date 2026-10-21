@@ -698,6 +698,10 @@ export class Launchpad {
       llm: api && workflow.executorModel ? { api, model: workflow.executorModel } : null,
       egressDomains,
       deadline,
+      attachments: inputs?.attached ?? [],
+      scriptInputs: this.attachments
+        .held(workflow.id)
+        .map(({ name, size }) => ({ path: name, size })),
     });
   }
 
