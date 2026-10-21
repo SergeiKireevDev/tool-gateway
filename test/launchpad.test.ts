@@ -458,6 +458,29 @@ describe('isolation and control', () => {
     await t.admin('post', `/launchpad/runs/${id}/cancel`).expect(409);
   });
 
+  it('pages back through every past run, even ones launched at the same time', async () => {
+    const alice = await t.member('alice');
+    const byIdDesc = (ids: string[]): string[] => [...ids].sort().reverse();
+    const earlier = byIdDesc([await launch(alice.cookie), await launch(alice.cookie)]);
+    minutes(60);
+    const later = byIdDesc([await launch(alice.cookie), await launch(alice.cookie)]);
+    const expected = [...later, ...earlier];
+
+    type Page = { id: string; createdAt: string }[];
+    const seen: string[] = [];
+    let query = 'limit=1';
+    for (;;) {
+      const page = (await t.portal(alice.cookie, 'get', `/runs?${query}`).expect(200)).body as Page;
+      const last = page.at(-1);
+      if (!last) break;
+      seen.push(...page.map((r) => r.id));
+      query = `limit=1&before=${encodeURIComponent(last.createdAt)}&beforeId=${last.id}`;
+    }
+    expect(seen).toEqual(expected);
+    const all = await t.admin('get', '/launchpad/runs').expect(200);
+    expect((all.body as Page).map((r) => r.id)).toEqual(expected);
+  });
+
   it('queues runs beyond the per-member limit and starts them as others finish', async () => {
     const alice = await t.member('alice');
     const ids = [
