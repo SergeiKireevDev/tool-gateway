@@ -47,6 +47,8 @@ export interface Run {
   prompt: string;
   /** A trigger's instructions, added to the system prompt (the prompt is then the event). */
   instructions: string | null;
+  /** A short title the platform model gave the task, if one is configured (null until then). */
+  title: string | null;
   templateId: string;
   templateName: string;
   accountIds: string[];
@@ -248,6 +250,7 @@ interface RunRow {
   model: string | null;
   prompt: string;
   instructions: string | null;
+  title: string | null;
   template_id: string;
   template_name: string;
   account_ids: string;
@@ -300,6 +303,7 @@ function toRun(r: RunRow): Run {
     model: r.model,
     prompt: r.prompt,
     instructions: r.instructions,
+    title: r.title,
     templateId: r.template_id,
     templateName: r.template_name,
     accountIds: JSON.parse(r.account_ids) as string[],
@@ -332,6 +336,7 @@ const COLUMNS: Readonly<Partial<Record<string, string>>> = {
   statusReason: 'status_reason',
   memoryOut: 'memory_out',
   finalMessage: 'final_message',
+  title: 'title',
   startedAt: 'started_at',
   deadline: 'deadline',
   finishedAt: 'finished_at',
@@ -345,6 +350,7 @@ export type RunPatch = { runTokenHash?: string } & Partial<
     | 'statusReason'
     | 'memoryOut'
     | 'finalMessage'
+    | 'title'
     | 'startedAt'
     | 'deadline'
     | 'finishedAt'

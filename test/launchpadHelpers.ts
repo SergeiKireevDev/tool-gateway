@@ -101,7 +101,10 @@ export interface LaunchHarness extends Harness {
   runner(token: string, method: 'get' | 'post' | 'put', path: string): request.Test;
 }
 
-export async function createLaunchHarness(): Promise<LaunchHarness> {
+/** Where tests point the platform model; `platformFetch` answers its calls. */
+export const PLATFORM_LLM_URL = 'https://platform-llm.test';
+
+export async function createLaunchHarness(platformFetch?: typeof fetch): Promise<LaunchHarness> {
   const h = await createHarness();
   const driver = new FakeVmDriver();
   const launchpad = new Launchpad({
@@ -111,7 +114,12 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     crypto: h.crypto,
     vmGatewayUrl: 'http://172.30.0.1:7420',
     now: () => h.clock.now,
-    fetchImpl: h.fetch,
+    fetchImpl: (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      return platformFetch && url.startsWith(PLATFORM_LLM_URL)
+        ? platformFetch(input, init)
+        : h.fetch(input, init);
+    },
   });
   const scheduler = new Scheduler(h.db, h.gateway, launchpad, () => h.clock.now);
   launchpad.onFinished((run) => {
@@ -225,5 +233,6 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
 /** Lets queued work (pump, cleanup) settle. */
 export async function settle(launchpad: Launchpad): Promise<void> {
   await launchpad.pump();
+  await launchpad.idle();
   await new Promise((resolve) => setImmediate(resolve));
 }

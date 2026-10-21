@@ -34,6 +34,8 @@ export interface Run {
   prompt: string;
   /** A webhook trigger's instructions (the prompt is then the event). */
   instructions: string | null;
+  /** A short title of the task from the platform model, when the admin configured one. */
+  title: string | null;
   templateId: string;
   templateName: string;
   /** The member's accounts the run used, when they have several for a tool. */
@@ -213,6 +215,8 @@ export interface SkillSummary {
   memberName: string;
   name: string;
   description: string;
+  /** What it is about, from the platform model (empty when none is configured). */
+  labels: string[];
   /** The run that last exported it. */
   runId: string | null;
   createdAt: string;
@@ -307,6 +311,19 @@ export interface LaunchSettings {
   vcpus: number;
   memMib: number;
   outputRetentionDays: number;
+}
+
+/** The admin's LLM endpoint that names runs and labels skills (its token is never returned). */
+export interface PlatformModel {
+  url: string;
+  api: 'openai' | 'anthropic';
+  model: string;
+  hasToken: boolean;
+}
+
+/** What a run is listed as: its title, else the start of its task (a trigger's: its instructions). */
+export function runHeadline(run: Pick<Run, 'title' | 'prompt' | 'instructions'>): string {
+  return run.title ?? run.instructions ?? run.prompt;
 }
 
 export interface MemberLaunch {

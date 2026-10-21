@@ -11,6 +11,7 @@ import {
 import type { Gateway, RunToolScope } from '../gateway.js';
 import type { CryptoBox } from '../store/crypto.js';
 import { randomId, randomToken } from '../store/crypto.js';
+import { redact } from '../db/redact.js';
 import type { Member, SessionIssuer, Template, ToolGrant } from '../store/types.js';
 import { modelAllowed } from '../tools/llm/common.js';
 import { listEndpointModels } from '../tools/llm/custom.js';
@@ -49,6 +50,7 @@ import {
 import { ATTACHMENT_LIMITS, type Attachment, Attachments } from './attachments.js';
 import { writeChunks } from './chunks.js';
 import { Environments } from './environments.js';
+import { PlatformModel } from './platformModel.js';
 import { type Skill, Skills } from './skills.js';
 import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
@@ -176,7 +178,7 @@ export interface LaunchpadDeps {
   /** Gateway base URL as seen from inside the VMs. */
   vmGatewayUrl: string;
   now?: () => Date;
-  /** Reaches custom LLM endpoints, to list their models. */
+  /** Reaches custom LLM endpoints, to list their models, and the platform model. */
   fetchImpl?: typeof fetch;
 }
 
@@ -250,12 +252,22 @@ export class Launchpad {
   readonly skills: Skills;
   /** Files members attach to their launches. */
   readonly attachments: Attachments;
+  /** The admin's LLM endpoint that names runs and labels skills, if configured. */
+  readonly platformModel: PlatformModel;
+  /** Platform model calls in progress. */
+  private readonly background = new Set<Promise<void>>();
 
   constructor(private readonly deps: LaunchpadDeps) {
     this.now = deps.now ?? (() => new Date());
     this.environments = new Environments(deps.runs.db, deps.driver, this.now);
     this.skills = new Skills(deps.runs.db, this.now);
     this.attachments = new Attachments(deps.runs.db, this.now);
+    this.platformModel = new PlatformModel(deps.runs.db, deps.crypto, deps.fetchImpl);
+  }
+
+  /** Resolves once the platform model calls in progress (titles, labels) are done. */
+  async idle(): Promise<void> {
+    await Promise.all([...this.background]);
   }
 
   /** Called after a run reached a final state (the scheduler keeps memory from it). */
@@ -522,8 +534,49 @@ export class Launchpad {
     ];
     const extra = extras.length > 0 ? ` with ${extras.join(' and ')}` : '';
     this.log(run, `${launchedBy(member, opts)} a ${plan.harness} agent${extra}`);
+    // A script is code the planner wrote: its workflow's plan step carries the title.
+    if (plan.harness !== SCRIPT_HARNESS) this.nameRun(run);
     void this.pump();
     return this.deps.runs.require(run.id);
+  }
+
+  // ---------------------------------------------------------------- platform model
+
+  /**
+   * Runs work on the platform model without holding up the caller. When it fails, the run's
+   * activity says so; nothing else depends on it.
+   */
+  private inBackground(run: Run, what: string, work: () => Promise<void>): void {
+    const task = work()
+      .catch((err: unknown) => {
+        this.log(run, `The platform model could not ${what}: ${(err as Error).message}`);
+      })
+      .finally(() => {
+        this.background.delete(task);
+      });
+    this.background.add(task);
+  }
+
+  /** Gives a new run a short title (its task as given; a trigger's event is a JSON payload). */
+  private nameRun(run: Run): void {
+    if (!this.platformModel.config()) return;
+    this.inBackground(run, 'name the run', async () => {
+      const title = await this.platformModel.title(run.prompt, run.instructions);
+      if (title !== null) this.deps.runs.update(run.id, { title: redact(title) });
+    });
+  }
+
+  /** Labels the skills a run exported, reusing the labels of its member's library. */
+  private labelSkills(run: Run, names: readonly string[]): void {
+    if (names.length === 0 || !this.platformModel.config()) return;
+    this.inBackground(run, 'label the skills', async () => {
+      // One at a time, so that each sees the labels given to the previous ones.
+      for (const skill of this.skills.byNames(run.memberId, names)) {
+        const known = this.skills.memberLabels(run.memberId);
+        const labels = await this.platformModel.labels(skill.content, known);
+        this.skills.setLabels(skill.id, labels.map(redact));
+      }
+    });
   }
 
   private pickModel(template: Template, choice: HarnessChoice, requested?: string): string | null {
@@ -845,8 +898,11 @@ export class Launchpad {
 
   async reportFinish(run: Run, body: RunnerFinishBody): Promise<Run> {
     // Kept whatever the outcome: what a failed run learned helps the next one.
-    const skills = isActive(run.status) ? this.skills.saveFromRun(run, body.skills ?? []) : 0;
-    if (skills > 0) this.log(run, `Exported ${skills} skill(s) to the skill library`);
+    const skills = isActive(run.status) ? this.skills.saveFromRun(run, body.skills ?? []) : [];
+    if (skills.length > 0) {
+      this.log(run, `Exported ${String(skills.length)} skill(s) to the skill library`);
+      this.labelSkills(run, skills);
+    }
     await this.finish(run.id, body.outcome, {
       finalMessage:
         body.finalMessage === null ? null : clip(body.finalMessage, RUNNER_LIMITS.finalMessage),
