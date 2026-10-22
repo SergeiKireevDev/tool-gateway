@@ -16,6 +16,7 @@ import { LaunchForm } from './LaunchForm';
 import type { Relaunch } from './RelaunchFields';
 import { RunDetail } from './RunDetail';
 import { RunsTable, SchedulesTable, TriggersTable } from './RunLists';
+import { ConversationsModal } from './TriggerConversations';
 import { useOlderRuns } from './useOlderRuns';
 import { WorkflowView } from './WorkflowView';
 
@@ -56,6 +57,8 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
   const [runsFilter, setRunsFilter] = useState<RunsFilter | null>(null);
   const [memberFilter, setMemberFilter] = useState('');
   const [launching, setLaunching] = useState(false);
+  /** The conversation trigger whose conversations are open. */
+  const [conversationsOf, setConversationsOf] = useState<Trigger | null>(null);
   /** The run a new agent is being chained after, from its page. */
   const [chainFrom, setChainFrom] = useState<Run | null>(null);
   /** The run being launched again, its settings edited, from its page. */
@@ -262,6 +265,14 @@ export function RunsWorkspace({ api, base, admin, accounts }: Props) {
         }}
         onShowRuns={(t) => {
           setRunsFilter({ param: 'triggerId', id: t.id, name: t.name });
+        }}
+        onShowConversations={setConversationsOf}
+      />
+      <ConversationsModal
+        api={api}
+        trigger={conversationsOf}
+        onClose={() => {
+          setConversationsOf(null);
         }}
       />
 

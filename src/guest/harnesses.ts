@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {
+  MAX_RECEIVE_TOOL_WAIT_SECONDS,
   type RunEvent,
   type RunHarness,
   type RunnerConfig,
@@ -54,6 +55,9 @@ export interface HarnessAdapter {
 }
 
 const SUMMARY_CHARS = 300;
+/** MCP tool calls may take this long: a conversation's receive tool waits for events. */
+const TOOL_TIMEOUT_MARGIN_SECONDS = 60;
+const TOOL_TIMEOUT_SECONDS = MAX_RECEIVE_TOOL_WAIT_SECONDS + TOOL_TIMEOUT_MARGIN_SECONDS;
 const MCP_SERVER = 'gateway';
 
 const summarize = (value: unknown): string => {
@@ -315,6 +319,8 @@ export const codex: HarnessAdapter = {
         ...override('model_providers.gateway.wire_api', toml('responses')),
         ...override(`mcp_servers.${MCP_SERVER}.command`, toml(ctx.nodeBin)),
         ...override(`mcp_servers.${MCP_SERVER}.args`, JSON.stringify([mcpScript(ctx)])),
+        // Codex gives up on a tool call after 60 s: waiting for a conversation's events takes longer.
+        ...override(`mcp_servers.${MCP_SERVER}.tool_timeout_sec`, String(TOOL_TIMEOUT_SECONDS)),
         ...override(
           `mcp_servers.${MCP_SERVER}.env`,
           `{ GATEWAY_URL = ${toml(config.gatewayUrl)}, GATEWAY_SESSION_KEY = ${toml(config.sessionKey)} }`,

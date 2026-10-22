@@ -259,4 +259,30 @@ export const MIGRATIONS: readonly string[] = [
   // 17: files attached to a workflow's script, held for it (workflow_id) until its step is launched
   `ALTER TABLE run_attachments ADD COLUMN workflow_id TEXT;
    CREATE INDEX run_attachments_workflow ON run_attachments (workflow_id);`,
+  // 18: conversation triggers: deliveries with the same key (an expression on the payload) are
+  // messages of one long-lived conversation, served by one agent at a time and revived later
+  `ALTER TABLE triggers ADD COLUMN conversation_key TEXT;
+   CREATE TABLE conversations (
+     id TEXT PRIMARY KEY,
+     trigger_id TEXT NOT NULL REFERENCES triggers (id) ON DELETE CASCADE,
+     member_id TEXT NOT NULL,
+     key TEXT NOT NULL,
+     memory TEXT,
+     run_id TEXT,
+     runs INTEGER NOT NULL,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (trigger_id, key)
+   );
+   CREATE INDEX conversations_run ON conversations (run_id);
+   CREATE TABLE conversation_messages (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     conversation_id TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+     at TEXT NOT NULL,
+     direction TEXT NOT NULL,
+     event_id INTEGER,
+     run_id TEXT,
+     text TEXT NOT NULL
+   );
+   CREATE INDEX conversation_messages_conversation ON conversation_messages (conversation_id, id);`,
 ];

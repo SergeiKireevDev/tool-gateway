@@ -22,7 +22,7 @@ import type { Triggers } from '../launchpad/triggers.js';
 import type { Workflows } from '../launchpad/workflows.js';
 import type { Webhooks } from '../webhooks.js';
 import { webhookReceiver, webhookRoutes } from './webhookRoutes.js';
-import { adminLaunchRoutes, runnerRoutes } from '../launchpad/routes.js';
+import { adminLaunchRoutes, conversationSessionRoutes, runnerRoutes } from '../launchpad/routes.js';
 
 export interface AppOptions {
   /** Used for upstream calls; injectable for tests. */
@@ -49,7 +49,7 @@ export function createApp(
   app.disable('x-powered-by');
   app.set('trust proxy', false);
 
-  mountSessionKeyRoutes(app, gateway, config, options.fetch);
+  mountSessionKeyRoutes(app, gateway, config, options.fetch, options.triggers);
   if (options.launchpad) app.use('/runner', runnerRoutes(options.launchpad));
   if (options.webhooks) app.use('/hooks', webhookReceiver(options.webhooks));
 
@@ -245,13 +245,13 @@ export function createApp(
 export function createVmApp(
   gateway: Gateway,
   config: GatewayConfig,
-  options: Pick<AppOptions, 'fetch' | 'launchpad'> = {},
+  options: Pick<AppOptions, 'fetch' | 'launchpad' | 'triggers'> = {},
 ): express.Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', false);
   app.use(ownOriginOnly(config.publicUrl));
-  mountSessionKeyRoutes(app, gateway, config, options.fetch);
+  mountSessionKeyRoutes(app, gateway, config, options.fetch, options.triggers);
   if (options.launchpad) app.use('/runner', runnerRoutes(options.launchpad));
   app.use((_req, _res, next) => {
     next(notFound('Not found'));
@@ -285,14 +285,19 @@ function ownOriginOnly(publicUrl: string): express.RequestHandler {
   };
 }
 
-/** Routes authenticated by a session key: the tool proxy and key introspection. */
+/**
+ * Routes authenticated by a session key: the tool proxy, key introspection and, for runs of
+ * conversation triggers, their conversation.
+ */
 function mountSessionKeyRoutes(
   app: express.Express,
   gateway: Gateway,
   config: GatewayConfig,
   fetchImpl: typeof fetch | undefined,
+  triggers: Triggers | null | undefined,
 ): void {
   app.all(['/proxy/:tool', '/proxy/:tool/*rest'], proxyHandler(gateway, config, fetchImpl));
+  if (triggers) app.use('/api/session/conversation', conversationSessionRoutes(gateway, triggers));
 
   app.get(
     '/api/session',

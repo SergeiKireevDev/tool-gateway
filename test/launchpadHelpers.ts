@@ -141,7 +141,7 @@ export async function createLaunchHarness(): Promise<LaunchHarness> {
     triggers,
     workflows,
   });
-  const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad });
+  const vmApp = createVmApp(h.gateway, h.config, { fetch: h.fetch, launchpad, triggers });
   const adminToken = await h.gateway.rotateAdminToken();
   const admin = (method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string) =>
     request(app)[method](`/api/admin${path}`).set('authorization', `Bearer ${adminToken}`);

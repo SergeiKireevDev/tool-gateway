@@ -278,6 +278,8 @@ export interface Trigger {
   webhookName: string | null;
   eventTypes: string[];
   filters: TriggerFilters;
+  /** The jq-like expression keying its conversations, or null (one run per delivery). */
+  conversationKey: string | null;
   instructions: string;
   harness: Harness;
   model: string | null;
@@ -289,6 +291,30 @@ export interface Trigger {
   stoppedReason: string | null;
   lastRunId: string | null;
   lastFiredAt: string | null;
+}
+
+/** A long-lived conversation of a conversation trigger: the deliveries with one key. */
+export interface Conversation {
+  id: string;
+  triggerId: string;
+  key: string;
+  memory: string | null;
+  runId: string | null;
+  runs: number;
+  pending: number;
+  messages: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A message of a conversation: a webhook event (`in`) or what one of its agents said (`out`). */
+export interface ConversationMessage {
+  id: number;
+  at: string;
+  direction: 'in' | 'out';
+  eventId: number | null;
+  runId: string | null;
+  text: string;
 }
 
 /** A webhook a trigger can listen to (see `GET /webhooks`). */

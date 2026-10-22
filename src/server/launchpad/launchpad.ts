@@ -50,7 +50,12 @@ import { ATTACHMENT_LIMITS, type Attachment, Attachments } from './attachments.j
 import { writeChunks } from './chunks.js';
 import { Environments } from './environments.js';
 import { type Skill, Skills } from './skills.js';
-import { buildSystemPrompt, gatewayToolName, type PromptGrant } from './systemPrompt.js';
+import {
+  buildSystemPrompt,
+  gatewayToolName,
+  type PromptConversation,
+  type PromptGrant,
+} from './systemPrompt.js';
 import type { VmDriver } from './vmDriver.js';
 import { buildPlannerPrompt } from './workflowPrompt.js';
 
@@ -244,6 +249,7 @@ export class Launchpad {
   private pumping: Promise<void> = Promise.resolve();
   private timer: NodeJS.Timeout | null = null;
   private readonly finishedListeners: ((run: Run) => void)[] = [];
+  private conversationOf: (run: Run) => PromptConversation | null = () => null;
   /** The guest environments the admin added, which runs can boot. */
   readonly environments: Environments;
   /** The skill library: what agents learned during their runs, kept per member. */
@@ -261,6 +267,11 @@ export class Launchpad {
   /** Called after a run reached a final state (the scheduler keeps memory from it). */
   onFinished(listener: (run: Run) => void): void {
     this.finishedListeners.push(listener);
+  }
+
+  /** Tells the runs of conversation triggers about their conversation, when they start. */
+  useConversations(conversationOf: (run: Run) => PromptConversation | null): void {
+    this.conversationOf = conversationOf;
   }
 
   get runs(): RunStore {
@@ -689,6 +700,7 @@ export class Launchpad {
             : { parentRunId: run.parentRunId, files: inputs?.chained ?? [] },
         attachments: inputs?.attached ?? [],
         skills: given.skills.map(({ name, description }) => ({ name, description })),
+        conversation: this.conversationOf(run),
       });
     }
     const workflow = this.deps.runs.requireWorkflow(run.workflowId ?? '');

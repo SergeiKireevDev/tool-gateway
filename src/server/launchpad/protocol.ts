@@ -171,6 +171,17 @@ export interface RunnerSkill {
   content: string;
 }
 
+/**
+ * The agent's tools of a conversation trigger's run, served by the runner's MCP server (or pi
+ * extension) when `GET /api/session/conversation` knows the run's conversation.
+ */
+export const CONVERSATION_TOOLS = {
+  receive: 'gateway_conversation_receive',
+  reply: 'gateway_conversation_reply',
+} as const;
+/** Longest wait the receive tool takes (harness tool timeouts must allow it). */
+export const MAX_RECEIVE_TOOL_WAIT_SECONDS = 300;
+
 /** Skill names: what Claude Code accepts as a skill directory name. */
 export const SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
