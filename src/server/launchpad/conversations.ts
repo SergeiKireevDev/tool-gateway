@@ -7,7 +7,7 @@ import { clip } from './runStore.js';
 
 /**
  * Conversations: the long-lived, keyed exchanges of a conversation trigger. Every delivery whose
- * payload gives the same key (the trigger's `conversationKey` expression) is a message of the same
+ * payload gives the same key (its channel's `conversationKey` expression) is a message of the same
  * conversation. Messages reach the conversation's running agent, which asks for them
  * (`receive`); when none is running, the next run revives the conversation with its history and
  * the `MEMORY.md` its last run left.

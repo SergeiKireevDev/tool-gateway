@@ -8,6 +8,7 @@ import { bearerToken } from '../http/auth.js';
 import { created, h, param } from '../http/handlers.js';
 import type { Member } from '../store/types.js';
 import { SECONDS_PER_HOUR, SECONDS_PER_MINUTE } from '../units.js';
+import type { Channels, ConversationChannel } from './channels.js';
 import type { GuestEnvironment } from './environments.js';
 import { ATTACHMENT_LIMITS } from './attachments.js';
 import { type Actor, type Launchpad, launchNowSchema } from './launchpad.js';
@@ -38,6 +39,8 @@ const CONVERSATIONS_PATH = `${TRIGGER_PATH}/conversations`;
 const CONVERSATION_PATH = `${CONVERSATIONS_PATH}/:cid`;
 const WORKFLOWS_PATH = '/workflows';
 const WORKFLOW_PATH = '/workflows/:wid';
+const CHANNELS_PATH = '/channels';
+const CHANNEL_PATH = '/channels/:chid';
 const ENVIRONMENTS_PATH = '/environments';
 const ENVIRONMENT_PATH = '/environments/:eid';
 const SKILLS_PATH = '/skills';
@@ -498,6 +501,7 @@ export function memberLaunchRoutes(
         driver: launchpad.driverName,
         defaultTimeoutSeconds: settings.defaultTimeoutSeconds,
         environments: launchpad.environments.choices(),
+        channels: triggers?.channels.choices() ?? [],
         skills: launchpad.skills
           .list(member.id)
           .map(({ name, description }) => ({ name, description })),
@@ -627,6 +631,7 @@ export function adminLaunchRoutes(
       h(() => triggers.list().map((x) => triggers.view(x))),
     );
     triggerRoutes(router, triggers, actorOf);
+    channelRoutes(router, triggers.channels, gateway);
   }
 
   router.get(
@@ -690,6 +695,46 @@ export function adminLaunchRoutes(
   );
   environmentRoutes(router, launchpad, gateway);
   return router;
+}
+
+/**
+ * Admin: the conversation channels members' triggers can pick (a conversation's agent hears
+ * whoever posts to the webhook's source, so only the admin defines them).
+ */
+function channelRoutes(router: Router, channels: Channels, gateway: Gateway): void {
+  const logged = (channel: ConversationChannel, what: string): ConversationChannel => {
+    gateway.activity.add({
+      kind: 'admin',
+      detail: `${what} conversation channel "${channel.name}"`,
+    });
+    return channel;
+  };
+  router.get(
+    CHANNELS_PATH,
+    h(() => channels.list()),
+  );
+  router.post(
+    CHANNELS_PATH,
+    created((req) => logged(channels.create(req.body), 'Added')),
+  );
+  router.put(
+    CHANNEL_PATH,
+    h((req) => logged(channels.update(param(req, 'chid'), req.body), 'Updated')),
+  );
+  router.patch(
+    CHANNEL_PATH,
+    h((req) => {
+      const { enabled } = enabledSchema.parse(req.body);
+      const channel = channels.setEnabled(param(req, 'chid'), enabled);
+      return logged(channel, enabled ? 'Enabled' : 'Disabled');
+    }),
+  );
+  router.delete(
+    CHANNEL_PATH,
+    h((req) => {
+      logged(channels.delete(param(req, 'chid')), 'Deleted');
+    }),
+  );
 }
 
 /** Admin: the guest environments members can launch agents in (built from Dockerfiles). */

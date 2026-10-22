@@ -177,6 +177,8 @@ export interface LaunchOptions {
   defaultTimeoutSeconds: number;
   /** Guest environments the admin added that agents can run in (besides the default one). */
   environments: EnvironmentChoice[];
+  /** Conversation channels the admin defined, that triggers can pick. */
+  channels: ChannelChoice[];
   /** The member's skill library, to pick the skills an agent starts with. */
   skills: SkillChoice[];
   templates: LaunchTemplate[];
@@ -191,6 +193,21 @@ export interface EnvironmentChoice {
   id: string;
   name: string;
   description: string;
+}
+
+/** A conversation channel a trigger can pick: its key expression keys the conversations. */
+export interface ChannelChoice {
+  id: string;
+  name: string;
+  description: string;
+  conversationKey: string;
+}
+
+/** A conversation channel as the admin manages it. */
+export interface ConversationChannel extends ChannelChoice {
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type EnvironmentStatus = 'building' | 'ready' | 'failed';
@@ -278,7 +295,10 @@ export interface Trigger {
   webhookName: string | null;
   eventTypes: string[];
   filters: TriggerFilters;
-  /** The jq-like expression keying its conversations, or null (one run per delivery). */
+  /** The conversation channel it picked, or null (one run per delivery). */
+  channelId: string | null;
+  /** Its channel's name and key expression (null without one, or once deleted). */
+  channelName: string | null;
   conversationKey: string | null;
   instructions: string;
   harness: Harness;

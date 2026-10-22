@@ -116,8 +116,15 @@ export function TriggerConversations({ api, trigger }: { api: Api; trigger: Trig
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-600">
-        Keyed by <code className="font-mono">{trigger.conversationKey}</code>. Each conversation
-        keeps its messages and the memory its last run left.
+        {trigger.conversationKey === null ? (
+          'Its conversation channel was deleted.'
+        ) : (
+          <>
+            Channel {trigger.channelName}, keyed by{' '}
+            <code className="font-mono">{trigger.conversationKey}</code>.
+          </>
+        )}{' '}
+        Each conversation keeps its messages and the memory its last run left.
       </p>
       {error && <ErrorBanner message={error} />}
       {conversations?.length === 0 && <EmptyState title="No conversation yet" />}

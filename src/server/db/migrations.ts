@@ -285,4 +285,25 @@ export const MIGRATIONS: readonly string[] = [
      text TEXT NOT NULL
    );
    CREATE INDEX conversation_messages_conversation ON conversation_messages (conversation_id, id);`,
+  // 19: conversation channels: the admin defines the conversation keys, members' triggers pick one.
+  // Keys members already set become disabled channels, for the admin to review.
+  `CREATE TABLE conversation_channels (
+     id TEXT PRIMARY KEY,
+     name TEXT NOT NULL,
+     description TEXT NOT NULL,
+     conversation_key TEXT NOT NULL,
+     enabled INTEGER NOT NULL,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   ALTER TABLE triggers ADD COLUMN channel_id TEXT;
+   INSERT INTO conversation_channels
+     SELECT lower(hex(randomblob(16))), 'Key ' || substr(conversation_key, 1, 90),
+       'Set by a member before channels; check it before enabling it.', conversation_key, 0,
+       MIN(created_at), MIN(created_at)
+     FROM triggers WHERE conversation_key IS NOT NULL GROUP BY conversation_key;
+   UPDATE triggers SET channel_id = (
+     SELECT c.id FROM conversation_channels c WHERE c.conversation_key = triggers.conversation_key)
+   WHERE conversation_key IS NOT NULL;
+   ALTER TABLE triggers DROP COLUMN conversation_key;`,
 ];
