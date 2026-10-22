@@ -149,7 +149,8 @@ its history and memory.
 - **Channels are the admin's.** A conversation's agent hears whoever can post to the webhook's
   source, and lives on across runs, so members don't write conversation keys: the admin defines
   **conversation channels** (**Launchpad → Conversation channels**, or
-  `POST /api/admin/launchpad/channels` with `name`, `description` and `conversationKey`; `PUT`,
+  `POST /api/admin/launchpad/channels` with `name`, `description`, `conversationKey` and
+  `eventTypes`; `PUT`,
   `PATCH {enabled}` and `DELETE …/channels/<id>`). Members see the enabled ones in
   `GET /api/me/launchpad` (`channels`) and pick one for a trigger (**Conversation channel** in the
   launch form, `channelId`; none: one agent per delivery). A trigger body with a
@@ -172,6 +173,14 @@ its history and memory.
   applies to the next deliveries of every trigger on it. Keys that members set before channels
   existed became disabled channels named `Key …`, for the admin to review.
 
+- **The types of notification.** A channel's `eventTypes` (like a trigger's: `Comment` also
+  matches `Comment.create`; empty: every event) are the notifications it carries, e.g.
+  `["Comment.create"]` for a Linear issue's comments but not its updates. A delivery of another
+  type is no message of a trigger on the channel: it opens no conversation and starts no run,
+  whatever the trigger's own event types (which can only narrow the channel's). Members see them
+  with the channel (`eventTypes` in `channels`, `channelEventTypes` on the trigger); editing them
+  applies to the next deliveries.
+
 - **The key.** The channel's jq-like expression on the (redacted) payload, checked when the
   channel is saved. The key is the expression's non-null values: a single string as is, anything else as JSON
   (`[.repository.full_name, .issue.number]` gives `["o/r",42]`). A delivery whose payload gives
@@ -190,7 +199,8 @@ its history and memory.
   No variables, definitions, regular expressions or recursion: an expression is at most 500
   characters and yields at most 1000 values, so it can't hang the gateway.
 
-- **Messages.** Each delivery that passes the trigger's event types and filters is an `in`
+- **Messages.** Each delivery that passes the channel's event types, and the trigger's event
+  types and filters, is an `in`
   message of its conversation (opened on its first one). When no agent serves the conversation,
   a run starts with the waiting messages as its task (as many as fit in a prompt; the others wait
   for it to ask). Otherwise the message waits for the running (or queued) agent.

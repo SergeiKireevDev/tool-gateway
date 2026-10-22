@@ -1,9 +1,7 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-  MAX_ACTIVE_RUNS_PER_TRIGGER,
-  matchesEventTypes,
-} from '../src/server/launchpad/triggers.js';
+import { matchesEventTypes } from '../src/server/launchpad/triggerFilters.js';
+import { MAX_ACTIVE_RUNS_PER_TRIGGER } from '../src/server/launchpad/triggers.js';
 import { createLaunchHarness, type LaunchHarness, settle } from './launchpadHelpers.js';
 
 let t: LaunchHarness;

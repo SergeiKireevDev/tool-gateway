@@ -20,6 +20,9 @@ import { Channels } from './channels.js';
 import { parseQuery } from './payloadQuery.js';
 import type { PromptConversation } from './systemPrompt.js';
 import {
+  eventTypesSchema,
+  MAX_EVENT_TYPE_LENGTH,
+  matchesEventTypes,
   matchesFilters,
   parseFilters,
   type TriggerFilters,
@@ -27,8 +30,6 @@ import {
 } from './triggerFilters.js';
 
 const MAX_NAME_LENGTH = 100;
-const MAX_EVENT_TYPES = 20;
-const MAX_EVENT_TYPE_LENGTH = 100;
 /** Runs a trigger may have queued or running at once; deliveries beyond that are skipped. */
 export const MAX_ACTIVE_RUNS_PER_TRIGGER = 3;
 /** Room for the event's header line in the run's prompt; the payload gets the rest. */
@@ -50,10 +51,7 @@ export const triggerSchema = launchSchema.omit({ prompt: true }).extend({
   name: z.string().trim().min(1).max(MAX_NAME_LENGTH).optional(),
   webhookId: z.string().min(1),
   /** Event types that launch the agent (`issues` also matches `issues.opened`); empty = all. */
-  eventTypes: z
-    .array(z.string().trim().min(1).max(MAX_EVENT_TYPE_LENGTH))
-    .max(MAX_EVENT_TYPES)
-    .default([]),
+  eventTypes: eventTypesSchema,
   /** Deterministic conditions on the payload, checked before launching (see `triggerFilters`). */
   filters: triggerFiltersSchema,
   /**
@@ -107,12 +105,13 @@ export interface Trigger {
 
 /**
  * A trigger as the API returns it: with its webhook's name (null once deleted), and its
- * conversation channel's name and key expression (null without one, or once deleted).
+ * conversation channel's name, key expression and event types (null without one, or once deleted).
  */
 export type TriggerView = Trigger & {
   webhookName: string | null;
   channelName: string | null;
   conversationKey: string | null;
+  channelEventTypes: string[] | null;
 };
 
 interface TriggerRow {
@@ -170,13 +169,6 @@ function toTrigger(r: TriggerRow): Trigger {
 /** A trigger's name when none is given: the first line of its instructions. */
 const defaultName = (instructions: string): string =>
   clip(instructions.split('\n')[0] ?? 'Webhook agent', MAX_NAME_LENGTH);
-
-/** Whether an event type is one a trigger listens to: equal, or a sub-type (`issues.opened`). */
-export function matchesEventTypes(patterns: readonly string[], eventType: string | null): boolean {
-  if (patterns.length === 0) return true;
-  if (eventType === null) return false;
-  return patterns.some((p) => eventType === p || eventType.startsWith(`${p}.`));
-}
 
 /** The run's prompt: which event arrived, and its payload (redacted, size-capped). */
 export function eventPrompt(delivery: AcceptedDelivery, at: Date): string {
@@ -245,7 +237,7 @@ export class Triggers {
         member.name,
         req.name ?? defaultName(req.instructions),
         req.webhookId,
-        JSON.stringify([...new Set(req.eventTypes)]),
+        JSON.stringify(req.eventTypes),
         JSON.stringify(req.filters),
         req.channelId ?? null,
         redact(req.instructions),
@@ -281,7 +273,7 @@ export class Triggers {
     this.update(id, {
       name: req.name ?? trigger.name,
       webhook_id: req.webhookId,
-      event_types: JSON.stringify([...new Set(req.eventTypes)]),
+      event_types: JSON.stringify(req.eventTypes),
       filters: JSON.stringify(req.filters),
       channel_id: req.channelId ?? null,
       instructions: redact(req.instructions),
@@ -339,6 +331,7 @@ export class Triggers {
       webhookName: webhook?.name ?? null,
       channelName: channel?.name ?? null,
       conversationKey: channel?.conversationKey ?? null,
+      channelEventTypes: channel?.eventTypes ?? null,
     };
   }
 
@@ -455,8 +448,11 @@ export class Triggers {
     if (delivery.webhook.ownerMemberId !== member.id) return;
     if (trigger.channelId !== null) {
       const channel = this.channels.get(trigger.channelId);
-      if (channel?.enabled) this.converse(trigger, member, delivery, channel.conversationKey);
-      else this.stop(trigger, CHANNEL_GONE);
+      if (!channel?.enabled) this.stop(trigger, CHANNEL_GONE);
+      // The channel carries only the event types the admin chose for it.
+      else if (matchesEventTypes(channel.eventTypes, delivery.eventType)) {
+        this.converse(trigger, member, delivery, channel.conversationKey);
+      }
       return;
     }
     if (this.launchpad.runs.countActiveForTrigger(trigger.id) >= MAX_ACTIVE_RUNS_PER_TRIGGER) {

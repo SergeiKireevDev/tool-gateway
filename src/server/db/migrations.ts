@@ -306,4 +306,6 @@ export const MIGRATIONS: readonly string[] = [
      SELECT c.id FROM conversation_channels c WHERE c.conversation_key = triggers.conversation_key)
    WHERE conversation_key IS NOT NULL;
    ALTER TABLE triggers DROP COLUMN conversation_key;`,
+  // 20: the types of notification a conversation channel carries (empty: all).
+  `ALTER TABLE conversation_channels ADD COLUMN event_types TEXT NOT NULL DEFAULT '[]';`,
 ];

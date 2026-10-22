@@ -5,6 +5,7 @@ import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
   type ChannelChoice,
+  describeChannelEvents,
   type EnvironmentChoice,
   HARNESS_LABELS,
   type HarnessChoice,
@@ -13,6 +14,7 @@ import {
   type Preset,
   type Run,
   type Schedule,
+  splitList,
   type Trigger,
   type TriggerFilters,
   type WebhookOption,
@@ -324,14 +326,6 @@ function ModelField({
   );
 }
 
-/** "issues.opened, Issue" → ["issues.opened", "Issue"] */
-function splitList(value: string): string[] {
-  return value
-    .split(',')
-    .map((v) => v.trim())
-    .filter(Boolean);
-}
-
 /** A trigger's deterministic filters, as typed: comma-separated lists. */
 type FilterDraft = Record<keyof TriggerFilters, string>;
 const NO_FILTERS: FilterDraft = { contains: '', statusChangedTo: '', assignedTo: '' };
@@ -425,9 +419,10 @@ function ChannelField({
         picked ? (
           <>
             {picked.description && `${picked.description} · `}Keyed by{' '}
-            <code className="font-mono">{picked.conversationKey}</code>. Events with the same key go
-            to one long-lived conversation: its running agent receives them, and a later event
-            revives it with its history and memory.
+            <code className="font-mono">{picked.conversationKey}</code>, carries{' '}
+            {describeChannelEvents(picked.eventTypes)}. Events with the same key go to one
+            long-lived conversation: its running agent receives them, and a later event revives it
+            with its history and memory.
           </>
         ) : (
           NO_CHANNEL_HINT

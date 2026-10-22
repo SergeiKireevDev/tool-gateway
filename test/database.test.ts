@@ -21,7 +21,8 @@ describe('database', () => {
   it('turns the conversation keys members set into disabled channels', () => {
     const file = path.join(mkdtempSync(path.join(tmpdir(), 'gw-db-')), 'gateway.db');
     const old = new DatabaseSync(file);
-    const before = MIGRATIONS.length - 1;
+    // Up to the migration that added the channels.
+    const before = MIGRATIONS.findIndex((m) => m.includes('CREATE TABLE conversation_channels'));
     for (const migration of MIGRATIONS.slice(0, before)) old.exec(migration);
     old.exec(`PRAGMA user_version = ${before}`);
     const insert = old.prepare(
@@ -38,10 +39,10 @@ describe('database', () => {
 
     const db = Database.open(file);
     const channels = db.sql
-      .prepare('SELECT id, conversation_key, enabled FROM conversation_channels')
-      .all() as { id: string; conversation_key: string; enabled: number }[];
+      .prepare('SELECT id, conversation_key, event_types, enabled FROM conversation_channels')
+      .all() as { id: string; conversation_key: string; event_types: string; enabled: number }[];
     expect(channels).toEqual([
-      { id: expect.any(String), conversation_key: '.data.issueId', enabled: 0 },
+      { id: expect.any(String), conversation_key: '.data.issueId', event_types: '[]', enabled: 0 },
     ]);
     const triggers = db.sql.prepare('SELECT id, channel_id FROM triggers ORDER BY id').all();
     expect(triggers).toEqual([

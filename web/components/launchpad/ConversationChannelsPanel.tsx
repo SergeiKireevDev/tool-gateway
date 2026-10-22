@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type Api, ApiError } from '@/lib/api';
 import { HTTP_NOT_FOUND } from '@/lib/http';
-import type { ConversationChannel } from '@/lib/launchpad';
+import { type ConversationChannel, describeChannelEvents, splitList } from '@/lib/launchpad';
 import { Button, Card, EmptyState, ErrorBanner, Field, Input, Modal } from '../ui';
 
 const BASE = '/launchpad/channels';
@@ -14,9 +14,11 @@ interface Draft {
   name: string;
   description: string;
   conversationKey: string;
+  /** Comma-separated, as typed. */
+  eventTypes: string;
 }
 
-const EMPTY: Draft = { name: '', description: '', conversationKey: '' };
+const EMPTY: Draft = { name: '', description: '', conversationKey: '', eventTypes: '' };
 
 /** Adds a channel, or edits one (its conversations stay under the keys they had). */
 function ChannelForm({
@@ -28,7 +30,9 @@ function ChannelForm({
   editing: ConversationChannel | null;
   onSaved: () => void;
 }) {
-  const [draft, setDraft] = useState<Draft>(editing ?? EMPTY);
+  const [draft, setDraft] = useState<Draft>(
+    editing ? { ...editing, eventTypes: editing.eventTypes.join(', ') } : EMPTY,
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const save = (): void => {
@@ -37,6 +41,7 @@ function ChannelForm({
       name: draft.name,
       description: draft.description,
       conversationKey: draft.conversationKey,
+      eventTypes: splitList(draft.eventTypes),
     };
     const sent = editing ? api('PUT', `${BASE}/${editing.id}`, body) : api('POST', BASE, body);
     sent.then(onSaved, (err: unknown) => {
@@ -86,6 +91,18 @@ function ChannelForm({
           }}
         />
       </Field>
+      <Field
+        label="Event types"
+        hint="The types of notification the channel carries, comma-separated. Comment also matches Comment.create. Empty: every event. Members' triggers can narrow them further."
+      >
+        <Input
+          value={draft.eventTypes}
+          placeholder="Comment.create, Issue.update"
+          onChange={(e) => {
+            setDraft({ ...draft, eventTypes: e.target.value });
+          }}
+        />
+      </Field>
       <ErrorBanner message={error} />
       <div className="flex justify-end">
         <Button type="submit" disabled={busy}>
@@ -112,7 +129,8 @@ function ChannelRow({
         <div className="font-medium">{channel.name}</div>
         <p className="text-xs text-slate-500">
           {channel.description && `${channel.description} · `}keyed by{' '}
-          <code className="font-mono">{channel.conversationKey}</code>
+          <code className="font-mono">{channel.conversationKey}</code>, carries{' '}
+          {describeChannelEvents(channel.eventTypes)}
         </p>
       </div>
       <div className="flex items-center gap-2">

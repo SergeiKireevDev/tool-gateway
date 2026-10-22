@@ -16,6 +16,22 @@ import { isRecord } from '../tools/json.js';
 
 const MAX_VALUES = 20;
 const MAX_VALUE_LENGTH = 200;
+const MAX_EVENT_TYPES = 20;
+export const MAX_EVENT_TYPE_LENGTH = 100;
+
+/** Event types listened to (`issues` also matches `issues.opened`); empty = all. */
+export const eventTypesSchema = z
+  .array(z.string().trim().min(1).max(MAX_EVENT_TYPE_LENGTH))
+  .max(MAX_EVENT_TYPES)
+  .default([])
+  .transform((list) => [...new Set(list)]);
+
+/** Whether an event type is one listened to: equal, or a sub-type (`issues.opened`). */
+export function matchesEventTypes(patterns: readonly string[], eventType: string | null): boolean {
+  if (patterns.length === 0) return true;
+  if (eventType === null) return false;
+  return patterns.some((p) => eventType === p || eventType.startsWith(`${p}.`));
+}
 
 const values = z
   .array(z.string().trim().min(1).max(MAX_VALUE_LENGTH))
