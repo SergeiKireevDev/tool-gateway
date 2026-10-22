@@ -1,7 +1,12 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { ActivityLog } from '../src/server/activity.js';
 import { Database, IN_MEMORY } from '../src/server/db/database.js';
+import { MIGRATIONS } from '../src/server/db/migrations.js';
 import { redact, redactDeep } from '../src/server/db/redact.js';
 import { createApp, createVmApp } from '../src/server/http/app.js';
 import { createHarness } from './helpers.js';
@@ -11,6 +16,40 @@ describe('database', () => {
     const db = Database.open(IN_MEMORY);
     const row = db.sql.prepare('PRAGMA user_version').get() as { user_version: number };
     expect(row.user_version).toBeGreaterThan(0);
+  });
+
+  it('turns the conversation keys members set into disabled channels', () => {
+    const file = path.join(mkdtempSync(path.join(tmpdir(), 'gw-db-')), 'gateway.db');
+    const old = new DatabaseSync(file);
+    const before = MIGRATIONS.length - 1;
+    for (const migration of MIGRATIONS.slice(0, before)) old.exec(migration);
+    old.exec(`PRAGMA user_version = ${before}`);
+    const insert = old.prepare(
+      `INSERT INTO triggers (id, member_id, member_name, name, webhook_id, event_types,
+         instructions, harness, template_id, account_ids, key_generation, enabled, created_at,
+         updated_at, conversation_key)
+       VALUES (?, 'm', 'Alice', 'T', 'w', '[]', 'Do it', 'claude-code', 't', '[]', 1, 1, ?, ?, ?)`,
+    );
+    const ts = '2026-10-22T00:00:00.000Z';
+    insert.run('a', ts, ts, '.data.issueId');
+    insert.run('b', ts, ts, '.data.issueId');
+    insert.run('c', ts, ts, null);
+    old.close();
+
+    const db = Database.open(file);
+    const channels = db.sql
+      .prepare('SELECT id, conversation_key, enabled FROM conversation_channels')
+      .all() as { id: string; conversation_key: string; enabled: number }[];
+    expect(channels).toEqual([
+      { id: expect.any(String), conversation_key: '.data.issueId', enabled: 0 },
+    ]);
+    const triggers = db.sql.prepare('SELECT id, channel_id FROM triggers ORDER BY id').all();
+    expect(triggers).toEqual([
+      { id: 'a', channel_id: channels[0]?.id },
+      { id: 'b', channel_id: channels[0]?.id },
+      { id: 'c', channel_id: null },
+    ]);
+    db.close();
   });
 
   it('rolls back failed transactions', () => {

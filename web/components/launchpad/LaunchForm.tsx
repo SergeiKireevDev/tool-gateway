@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
+  type ChannelChoice,
   type EnvironmentChoice,
   HARNESS_LABELS,
   type HarnessChoice,
@@ -400,27 +401,52 @@ function FilterFields({
   );
 }
 
-/** Makes the trigger a conversation trigger: deliveries with the same key share one agent. */
-function ConversationKeyField({
-  conversationKey,
-  setConversationKey,
+const NO_CHANNEL_HINT = 'None: one agent per event.';
+
+/**
+ * Makes the trigger a conversation trigger: one of the channels the admin defined. Events with
+ * the same key share one long-lived agent. Hidden when the admin defined none.
+ */
+function ChannelField({
+  channels,
+  channelId,
+  setChannelId,
 }: {
-  conversationKey: string;
-  setConversationKey: (v: string) => void;
+  channels: ChannelChoice[];
+  channelId: string;
+  setChannelId: (v: string) => void;
 }) {
+  if (channels.length === 0) return null;
+  const picked = channels.find((c) => c.id === channelId);
   return (
     <Field
-      label="Conversation key"
-      hint="Optional, a jq-like expression on the payload, e.g. .data.issueId or [.repository.full_name, .issue.number]. Events with the same key go to one long-lived conversation: its running agent receives them, and a later event revives it with its history and memory. Empty: one agent per event."
+      label="Conversation channel"
+      hint={
+        picked ? (
+          <>
+            {picked.description && `${picked.description} · `}Keyed by{' '}
+            <code className="font-mono">{picked.conversationKey}</code>. Events with the same key go
+            to one long-lived conversation: its running agent receives them, and a later event
+            revives it with its history and memory.
+          </>
+        ) : (
+          NO_CHANNEL_HINT
+        )
+      }
     >
-      <Input
-        value={conversationKey}
+      <Select
+        value={picked ? channelId : ''}
         onChange={(e) => {
-          setConversationKey(e.target.value);
+          setChannelId(e.target.value);
         }}
-        placeholder=".data.issueId // .data.id"
-        className="font-mono"
-      />
+      >
+        <option value="">None</option>
+        {channels.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </Select>
     </Field>
   );
 }
@@ -434,8 +460,9 @@ function TriggerFields({
   setEventTypes,
   filters,
   setFilters,
-  conversationKey,
-  setConversationKey,
+  channels,
+  channelId,
+  setChannelId,
 }: {
   webhooks: WebhookOption[];
   webhookId: string;
@@ -444,8 +471,9 @@ function TriggerFields({
   setEventTypes: (v: string) => void;
   filters: FilterDraft;
   setFilters: (v: FilterDraft) => void;
-  conversationKey: string;
-  setConversationKey: (v: string) => void;
+  channels: ChannelChoice[];
+  channelId: string;
+  setChannelId: (v: string) => void;
 }) {
   if (webhooks.length === 0) {
     return (
@@ -485,10 +513,7 @@ function TriggerFields({
         </Field>
       </div>
       <FilterFields filters={filters} setFilters={setFilters} />
-      <ConversationKeyField
-        conversationKey={conversationKey}
-        setConversationKey={setConversationKey}
-      />
+      <ChannelField channels={channels} channelId={channelId} setChannelId={setChannelId} />
     </div>
   );
 }
@@ -568,8 +593,8 @@ interface Draft {
   webhookId: string;
   eventTypes: string;
   filters: FilterDraft;
-  /** A trigger's conversation key expression ('' = none). */
-  conversationKey: string;
+  /** A trigger's conversation channel ('' = none). */
+  channelId: string;
   /** The run whose output files the agent starts from ('' = none). */
   parentRunId: string;
   /** Files uploaded for the launch (a workflow's planning step), copied to /home/agent/in. */
@@ -651,7 +676,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
         filters: toFilters(d.filters),
-        conversationKey: d.conversationKey.trim(),
+        channelId: d.channelId,
       },
     };
   }
@@ -1273,7 +1298,7 @@ function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
   );
   const [eventTypes, setEventTypes] = useState(editing?.eventTypes.join(', ') ?? '');
   const [filters, setFilters] = useState(editing ? toDraft(editing.filters) : NO_FILTERS);
-  const [conversationKey, setConversationKey] = useState(editing?.conversationKey ?? '');
+  const [channelId, setChannelId] = useState(editing?.channelId ?? '');
   return {
     editing: editing !== null,
     /** Saved with `PUT`, instead of created. */
@@ -1288,8 +1313,8 @@ function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
     setEventTypes,
     filters,
     setFilters,
-    conversationKey,
-    setConversationKey,
+    channelId,
+    setChannelId,
   };
 }
 
@@ -1449,7 +1474,7 @@ export function LaunchForm({
       webhookId,
       eventTypes,
       filters,
-      conversationKey: trigger.conversationKey,
+      channelId: trigger.channelId,
       parentRunId: parent?.id ?? relaunched.parentRunId,
       attachmentIds,
       executeAttachmentIds,
@@ -1550,8 +1575,9 @@ export function LaunchForm({
           setEventTypes={trigger.setEventTypes}
           filters={filters}
           setFilters={trigger.setFilters}
-          conversationKey={trigger.conversationKey}
-          setConversationKey={trigger.setConversationKey}
+          channels={options.channels}
+          channelId={trigger.channelId}
+          setChannelId={trigger.setChannelId}
         />
       )}
       {isPreset(when) && (

@@ -18,10 +18,23 @@ async function webhookOf(cookie: string): Promise<{ id: string; path: string }> 
   return { id: res.body.webhook.id as string, path: new URL(res.body.url as string).pathname };
 }
 
+const KEY = '.data.issueId // .data.id';
+
+/** A conversation channel the admin adds (enabled). */
+async function channel(conversationKey = KEY): Promise<string> {
+  const res = await t
+    .admin('post', '/launchpad/channels')
+    .send({ name: 'Linear issues', description: 'One per issue', conversationKey })
+    .expect(201);
+  return res.body.id as string;
+}
+
+let channelId = '';
+
 const triggerBody = (webhookId: string, extra: object = {}) => ({
   name: 'Issue threads',
   webhookId,
-  conversationKey: '.data.issueId // .data.id',
+  channelId,
   instructions: 'Answer every comment on the issue.',
   templateId: t.ids.template,
   harness: 'claude-code',
@@ -62,30 +75,88 @@ async function conversationTrigger(): Promise<{
   hook: { id: string; path: string };
   triggerId: string;
 }> {
+  channelId = await channel();
   const alice = await t.member('alice');
   const hook = await webhookOf(alice.cookie);
   const created = await t
     .portal(alice.cookie, 'post', '/triggers')
     .send(triggerBody(hook.id))
     .expect(201);
-  expect(created.body.conversationKey).toBe('.data.issueId // .data.id');
+  expect(created.body).toMatchObject({
+    channelId,
+    channelName: 'Linear issues',
+    conversationKey: KEY,
+  });
   return { cookie: alice.cookie, hook, triggerId: created.body.id as string };
 }
 
 describe('conversation triggers', () => {
-  it('checks the conversation key expression', async () => {
-    const alice = await t.member('alice');
-    const hook = await webhookOf(alice.cookie);
+  it('lets only the admin define conversation channels, and checks their key', async () => {
     const bad = await t
-      .portal(alice.cookie, 'post', '/triggers')
-      .send(triggerBody(hook.id, { conversationKey: '.data[' }))
+      .admin('post', '/launchpad/channels')
+      .send({ name: 'Broken', conversationKey: '.data[' })
       .expect(400);
     expect(JSON.stringify(bad.body)).toContain('Conversation key');
+    channelId = await channel();
+    const alice = await t.member('alice');
+    const hook = await webhookOf(alice.cookie);
+
+    // Members pick a channel; they can't write their own key, nor manage channels.
+    const own = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id, { channelId: '', conversationKey: '.data.id' }))
+      .expect(400);
+    expect(JSON.stringify(own.body)).toContain('set by the admin');
+    await t.portal(alice.cookie, 'post', '/channels').send({ name: 'x' }).expect(404);
+    const info = await t.portal(alice.cookie, 'get', '').expect(200);
+    expect(info.body.channels).toEqual([
+      { id: channelId, name: 'Linear issues', description: 'One per issue', conversationKey: KEY },
+    ]);
     const plain = await t
       .portal(alice.cookie, 'post', '/triggers')
-      .send(triggerBody(hook.id, { conversationKey: '' }))
+      .send(triggerBody(hook.id, { channelId: '' }))
       .expect(201);
-    expect(plain.body.conversationKey).toBeNull();
+    expect(plain.body).toMatchObject({ channelId: null, conversationKey: null });
+
+    // A disabled channel can't be picked, and the triggers on it stop at their next delivery.
+    const created = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id))
+      .expect(201);
+    await t.admin('patch', `/launchpad/channels/${channelId}`).send({ enabled: false }).expect(200);
+    expect((await t.portal(alice.cookie, 'get', '').expect(200)).body.channels).toEqual([]);
+    await t.portal(alice.cookie, 'post', '/triggers').send(triggerBody(hook.id)).expect(400);
+    await deliver(hook.path, comment('ISS-1', 'Hello'));
+    const stopped = await t
+      .portal(alice.cookie, 'get', `/triggers/${created.body.id as string}`)
+      .expect(200);
+    expect(stopped.body).toMatchObject({
+      enabled: false,
+      stoppedReason: expect.stringContaining('channel'),
+    });
+    await t
+      .portal(alice.cookie, 'patch', `/triggers/${created.body.id as string}`)
+      .send({ enabled: true })
+      .expect(400);
+
+    // Enabled again (with an edited key), the trigger resumes on it.
+    await t
+      .admin('put', `/launchpad/channels/${channelId}`)
+      .send({ name: 'Linear issues', conversationKey: '.data.issueId' })
+      .expect(200);
+    await t.admin('patch', `/launchpad/channels/${channelId}`).send({ enabled: true }).expect(200);
+    const resumed = await t
+      .portal(alice.cookie, 'patch', `/triggers/${created.body.id as string}`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(resumed.body).toMatchObject({ enabled: true, conversationKey: '.data.issueId' });
+    const list = await t.admin('get', '/launchpad/channels').expect(200);
+    expect(list.body).toEqual([expect.objectContaining({ id: channelId, enabled: true })]);
+    await t.admin('delete', `/launchpad/channels/${channelId}`).expect(204);
+    const gone = await t
+      .portal(alice.cookie, 'get', `/triggers/${created.body.id as string}`)
+      .expect(200);
+    expect(gone.body).toMatchObject({ channelName: null, conversationKey: null });
   });
 
   it('gives the events of a conversation to its running agent', async () => {
@@ -219,7 +290,7 @@ describe('conversation triggers', () => {
     const hook = await webhookOf(alice.cookie);
     await t
       .portal(alice.cookie, 'post', '/triggers')
-      .send(triggerBody(hook.id, { conversationKey: undefined }))
+      .send(triggerBody(hook.id, { channelId: undefined }))
       .expect(201);
     await deliver(hook.path, comment('ISS-1', 'First question'));
     const { sessionKey, systemPrompt } = t.driver.lastConfig();

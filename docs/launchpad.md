@@ -139,28 +139,41 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
 
 ### Conversations
 
-A trigger with a `conversationKey` is a conversation trigger: instead of one independent agent
+A trigger on a conversation channel is a conversation trigger: instead of one independent agent
 per delivery, the deliveries whose payload gives the same key are the messages of one long-lived
 conversation (a Linear issue's comments, a GitHub pull request's reviews, a chat thread…). One
 agent at a time serves a conversation; it receives the conversation's new events while it runs,
 and when it has finished, the next event revives the conversation in a new run that starts from
 its history and memory.
 
-```json
-{
-  "name": "Answer issue comments",
-  "webhookId": "<webhook id>",
-  "eventTypes": ["Comment.create"],
-  "conversationKey": ".data.issueId // .data.issue.id",
-  "instructions": "Answer each new comment on the issue, in the issue.",
-  "templateId": "<template id>",
-  "harness": "claude-code"
-}
-```
+- **Channels are the admin's.** A conversation's agent hears whoever can post to the webhook's
+  source, and lives on across runs, so members don't write conversation keys: the admin defines
+  **conversation channels** (**Launchpad → Conversation channels**, or
+  `POST /api/admin/launchpad/channels` with `name`, `description` and `conversationKey`; `PUT`,
+  `PATCH {enabled}` and `DELETE …/channels/<id>`). Members see the enabled ones in
+  `GET /api/me/launchpad` (`channels`) and pick one for a trigger (**Conversation channel** in the
+  launch form, `channelId`; none: one agent per delivery). A trigger body with a
+  `conversationKey` of its own is refused.
 
-- **The key.** A jq-like expression on the (redacted) payload, checked when the trigger is saved
-  (**Conversation key** in the launch form; empty: one agent per delivery). The key is the
-  expression's non-null values: a single string as is, anything else as JSON
+  ```json
+  {
+    "name": "Answer issue comments",
+    "webhookId": "<webhook id>",
+    "eventTypes": ["Comment.create"],
+    "channelId": "<channel id>",
+    "instructions": "Answer each new comment on the issue, in the issue.",
+    "templateId": "<template id>",
+    "harness": "claude-code"
+  }
+  ```
+
+  A disabled or deleted channel can't be picked, and a trigger on it stops at its next delivery
+  (its member resumes it once the admin enables the channel again). Editing a channel's key
+  applies to the next deliveries of every trigger on it. Keys that members set before channels
+  existed became disabled channels named `Key …`, for the admin to review.
+
+- **The key.** The channel's jq-like expression on the (redacted) payload, checked when the
+  channel is saved. The key is the expression's non-null values: a single string as is, anything else as JSON
   (`[.repository.full_name, .issue.number]` gives `["o/r",42]`). A delivery whose payload gives
   no key (null, an error, or more than 200 characters) launches nothing and is logged in Activity.
   The language is a subset of jq:
@@ -210,7 +223,8 @@ its history and memory.
   (`?after=<message id>&limit=`), for its member and the admin. `DELETE …/conversations/<cid>`
   forgets one (history and memory): the next delivery with its key starts a new conversation; a
   run still serving it loses its conversation tools. Conversations live as long as their trigger;
-  editing the key leaves the existing conversations under their old keys.
+  changing the trigger's channel, or the channel's key, leaves the existing conversations under
+  their old keys.
 
 ## Attachments
 

@@ -16,7 +16,8 @@ import {
   conversationKeyOf,
   Conversations,
 } from './conversations.js';
-import { MAX_QUERY_LENGTH, parseQuery, QueryError } from './payloadQuery.js';
+import { Channels } from './channels.js';
+import { parseQuery } from './payloadQuery.js';
 import type { PromptConversation } from './systemPrompt.js';
 import {
   matchesFilters,
@@ -42,22 +43,8 @@ const HISTORY_CHARS = 20_000;
 export const MAX_RECEIVE_WAIT_SECONDS = 50;
 const MESSAGE_SEPARATOR = '\n\n---\n\n';
 
-/** A conversation key expression: empty means none; anything else must parse. */
-const conversationKeySchema = z
-  .string()
-  .trim()
-  .max(MAX_QUERY_LENGTH)
-  .optional()
-  .transform((v) => (v === '' ? undefined : v))
-  .superRefine((v, ctx) => {
-    if (v === undefined) return;
-    try {
-      parseQuery(v);
-    } catch (err) {
-      if (!(err instanceof QueryError)) throw err;
-      ctx.addIssue({ code: 'custom', message: `Conversation key: ${err.message}` });
-    }
-  });
+const MAX_ID_LENGTH = 100;
+const CHANNEL_GONE = 'Its conversation channel was disabled or deleted';
 
 export const triggerSchema = launchSchema.omit({ prompt: true }).extend({
   name: z.string().trim().min(1).max(MAX_NAME_LENGTH).optional(),
@@ -70,10 +57,18 @@ export const triggerSchema = launchSchema.omit({ prompt: true }).extend({
   /** Deterministic conditions on the payload, checked before launching (see `triggerFilters`). */
   filters: triggerFiltersSchema,
   /**
-   * Makes the trigger a conversation trigger: a jq-like expression on the payload (see
-   * `payloadQuery`) whose value keys a long-lived conversation, served by one agent at a time.
+   * Makes the trigger a conversation trigger: one of the conversation channels the admin enabled,
+   * whose key expression keys long-lived conversations, served by one agent at a time. Empty: none.
    */
-  conversationKey: conversationKeySchema,
+  channelId: z
+    .string()
+    .max(MAX_ID_LENGTH)
+    .optional()
+    .transform((v) => (v === '' ? undefined : v)),
+  /** Members no longer write key expressions: refused rather than silently ignored. */
+  conversationKey: z
+    .never({ error: 'Conversation keys are set by the admin: pick a conversation channel' })
+    .optional(),
   /** What the agent should do with an event: added to its system prompt. */
   instructions: z
     .string()
@@ -90,8 +85,8 @@ export interface Trigger {
   webhookId: string;
   eventTypes: string[];
   filters: TriggerFilters;
-  /** The expression keying its conversations, or null: one independent run per delivery. */
-  conversationKey: string | null;
+  /** The conversation channel keying its conversations, or null: one run per delivery. */
+  channelId: string | null;
   instructions: string;
   harness: Harness;
   model: string | null;
@@ -110,8 +105,15 @@ export interface Trigger {
   updatedAt: string;
 }
 
-/** A trigger as the API returns it: with its webhook's name (null once deleted). */
-export type TriggerView = Trigger & { webhookName: string | null };
+/**
+ * A trigger as the API returns it: with its webhook's name (null once deleted), and its
+ * conversation channel's name and key expression (null without one, or once deleted).
+ */
+export type TriggerView = Trigger & {
+  webhookName: string | null;
+  channelName: string | null;
+  conversationKey: string | null;
+};
 
 interface TriggerRow {
   id: string;
@@ -121,7 +123,7 @@ interface TriggerRow {
   webhook_id: string;
   event_types: string;
   filters: string;
-  conversation_key: string | null;
+  channel_id: string | null;
   instructions: string;
   harness: Harness;
   model: string | null;
@@ -147,7 +149,7 @@ function toTrigger(r: TriggerRow): Trigger {
     webhookId: r.webhook_id,
     eventTypes: JSON.parse(r.event_types) as string[],
     filters: parseFilters(r.filters),
-    conversationKey: r.conversation_key,
+    channelId: r.channel_id,
     instructions: r.instructions,
     harness: r.harness,
     model: r.model,
@@ -199,6 +201,8 @@ export function eventPrompt(delivery: AcceptedDelivery, at: Date): string {
 export class Triggers {
   /** The conversations of conversation triggers. */
   readonly conversations: Conversations;
+  /** The conversation channels the admin defined, which triggers pick. */
+  readonly channels: Channels;
 
   constructor(
     private readonly db: Database,
@@ -208,6 +212,7 @@ export class Triggers {
     private readonly now: () => Date = () => new Date(),
   ) {
     this.conversations = new Conversations(db, now);
+    this.channels = new Channels(db, now);
     launchpad.onFinished((run) => {
       this.onRunFinished(run);
     });
@@ -222,6 +227,7 @@ export class Triggers {
       throw notFound('Webhook not found');
     }
     const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
+    if (req.channelId !== undefined) this.channels.usable(req.channelId);
     const keyGeneration = this.gateway.memberKeyGeneration(member.id);
     if (keyGeneration === null) throw badRequest('Your membership is no longer valid');
     const ts = this.now().toISOString();
@@ -229,7 +235,7 @@ export class Triggers {
     this.db.sql
       .prepare(
         `INSERT INTO triggers (id, member_id, member_name, name, webhook_id, event_types, filters,
-           conversation_key, instructions, harness, model, template_id, account_ids, environment_id,
+           channel_id, instructions, harness, model, template_id, account_ids, environment_id,
            skills, key_generation, enabled, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
@@ -241,7 +247,7 @@ export class Triggers {
         req.webhookId,
         JSON.stringify([...new Set(req.eventTypes)]),
         JSON.stringify(req.filters),
-        req.conversationKey ?? null,
+        req.channelId ?? null,
         redact(req.instructions),
         plan.harness,
         plan.model,
@@ -271,12 +277,13 @@ export class Triggers {
       throw notFound('Webhook not found');
     }
     const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
+    if (req.channelId !== undefined) this.channels.usable(req.channelId);
     this.update(id, {
       name: req.name ?? trigger.name,
       webhook_id: req.webhookId,
       event_types: JSON.stringify([...new Set(req.eventTypes)]),
       filters: JSON.stringify(req.filters),
-      conversation_key: req.conversationKey ?? null,
+      channel_id: req.channelId ?? null,
       instructions: redact(req.instructions),
       harness: plan.harness,
       model: plan.model,
@@ -326,7 +333,13 @@ export class Triggers {
     const webhook = owner
       ? this.webhooks.visible(trigger.webhookId, { kind: 'member', member: owner })
       : null;
-    return { ...trigger, webhookName: webhook?.name ?? null };
+    const channel = trigger.channelId === null ? null : this.channels.get(trigger.channelId);
+    return {
+      ...trigger,
+      webhookName: webhook?.name ?? null,
+      channelName: channel?.name ?? null,
+      conversationKey: channel?.conversationKey ?? null,
+    };
   }
 
   /**
@@ -344,6 +357,9 @@ export class Triggers {
     if (actor.kind !== 'member') throw badRequest('Only its member can resume a trigger');
     if (!this.webhooks.visible(trigger.webhookId, actor)) {
       throw badRequest('Its webhook was deleted');
+    }
+    if (trigger.channelId !== null && !this.channels.get(trigger.channelId)?.enabled) {
+      throw badRequest(CHANNEL_GONE);
     }
     this.launchpad.plan(actor.member, this.launchInput(trigger, trigger.instructions));
     const keyGeneration = this.gateway.memberKeyGeneration(actor.member.id);
@@ -437,8 +453,10 @@ export class Triggers {
     if (!member) return;
     // Only the member's own webhooks launch their agents.
     if (delivery.webhook.ownerMemberId !== member.id) return;
-    if (trigger.conversationKey !== null) {
-      this.converse(trigger, member, delivery, trigger.conversationKey);
+    if (trigger.channelId !== null) {
+      const channel = this.channels.get(trigger.channelId);
+      if (channel?.enabled) this.converse(trigger, member, delivery, channel.conversationKey);
+      else this.stop(trigger, CHANNEL_GONE);
       return;
     }
     if (this.launchpad.runs.countActiveForTrigger(trigger.id) >= MAX_ACTIVE_RUNS_PER_TRIGGER) {

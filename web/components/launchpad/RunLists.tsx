@@ -259,7 +259,7 @@ export function TriggersTable({
                   {t.eventTypes.length > 0 ? t.eventTypes.join(', ') : 'Every event'}
                 </div>
                 <TriggerFilterLine filters={t.filters} />
-                {t.conversationKey !== null && (
+                {t.channelId !== null && (
                   <button
                     type="button"
                     className="max-w-xs truncate text-xs text-indigo-600 hover:underline"
@@ -267,7 +267,7 @@ export function TriggersTable({
                       onShowConversations(t);
                     }}
                   >
-                    Conversations by <code className="font-mono">{t.conversationKey}</code>
+                    Conversations on {t.channelName ?? 'a deleted channel'}
                   </button>
                 )}
               </td>
