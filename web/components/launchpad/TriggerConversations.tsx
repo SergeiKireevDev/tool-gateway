@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
-import type { Conversation, ConversationMessage, Trigger } from '@/lib/launchpad';
+import {
+  type Conversation,
+  type ConversationMessage,
+  describeChannelEvents,
+  type Trigger,
+} from '@/lib/launchpad';
 import { Badge, Button, EmptyState, ErrorBanner, Modal } from '../ui';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
@@ -121,7 +126,8 @@ export function TriggerConversations({ api, trigger }: { api: Api; trigger: Trig
         ) : (
           <>
             Channel {trigger.channelName}, keyed by{' '}
-            <code className="font-mono">{trigger.conversationKey}</code>.
+            <code className="font-mono">{trigger.conversationKey}</code>, carries{' '}
+            {describeChannelEvents(trigger.channelEventTypes ?? [])}.
           </>
         )}{' '}
         Each conversation keeps its messages and the memory its last run left.

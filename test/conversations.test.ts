@@ -110,7 +110,13 @@ describe('conversation triggers', () => {
     await t.portal(alice.cookie, 'post', '/channels').send({ name: 'x' }).expect(404);
     const info = await t.portal(alice.cookie, 'get', '').expect(200);
     expect(info.body.channels).toEqual([
-      { id: channelId, name: 'Linear issues', description: 'One per issue', conversationKey: KEY },
+      {
+        id: channelId,
+        name: 'Linear issues',
+        description: 'One per issue',
+        conversationKey: KEY,
+        eventTypes: [],
+      },
     ]);
     const plain = await t
       .portal(alice.cookie, 'post', '/triggers')
@@ -157,6 +163,37 @@ describe('conversation triggers', () => {
       .portal(alice.cookie, 'get', `/triggers/${created.body.id as string}`)
       .expect(200);
     expect(gone.body).toMatchObject({ channelName: null, conversationKey: null });
+  });
+
+  it('lets the admin filter the types of notification a channel carries', async () => {
+    const { cookie, hook, triggerId } = await conversationTrigger();
+    await t
+      .admin('put', `/launchpad/channels/${channelId}`)
+      .send({ name: 'Linear issues', conversationKey: KEY, eventTypes: ['Comment', 'Comment'] })
+      .expect(200);
+    const [listed] = (await t.admin('get', '/launchpad/channels').expect(200)).body;
+    expect(listed).toMatchObject({ eventTypes: ['Comment'] });
+    const trigger = await t.portal(cookie, 'get', `/triggers/${triggerId}`).expect(200);
+    expect(trigger.body).toMatchObject({ channelEventTypes: ['Comment'] });
+
+    // An issue update isn't a notification the channel carries: no conversation, no run.
+    await deliver(hook.path, { type: 'Issue', action: 'update', data: { id: 'ISS-1' } });
+    expect(t.driver.specs).toHaveLength(0);
+    const none = await t.portal(cookie, 'get', `/triggers/${triggerId}/conversations`).expect(200);
+    expect(none.body).toEqual([]);
+    const still = await t.portal(cookie, 'get', `/triggers/${triggerId}`).expect(200);
+    expect(still.body).toMatchObject({ enabled: true });
+
+    // A comment (`Comment.create`, a sub-type) is.
+    await deliver(hook.path, comment('ISS-1', 'Hello'));
+    expect(t.driver.specs).toHaveLength(1);
+    const list = await t.portal(cookie, 'get', `/triggers/${triggerId}/conversations`).expect(200);
+    expect(list.body).toEqual([expect.objectContaining({ key: 'ISS-1', messages: 1 })]);
+
+    await t
+      .admin('put', `/launchpad/channels/${channelId}`)
+      .send({ name: 'Linear issues', conversationKey: KEY, eventTypes: [''] })
+      .expect(400);
   });
 
   it('gives the events of a conversation to its running agent', async () => {

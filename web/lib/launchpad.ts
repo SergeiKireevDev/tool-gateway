@@ -201,6 +201,8 @@ export interface ChannelChoice {
   name: string;
   description: string;
   conversationKey: string;
+  /** The types of notification it carries (sub-types included); empty: every event. */
+  eventTypes: string[];
 }
 
 /** A conversation channel as the admin manages it. */
@@ -275,6 +277,19 @@ export interface TriggerFilters {
 }
 
 /** "contains crash · status → Todo", or null without filters. */
+/** "issues.opened, Issue" → ["issues.opened", "Issue"] */
+export function splitList(value: string): string[] {
+  return value
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** What a conversation channel carries: "Comment, Issue.update events", or every event. */
+export function describeChannelEvents(eventTypes: readonly string[]): string {
+  return eventTypes.length === 0 ? 'every event' : `${eventTypes.join(', ')} events`;
+}
+
 export function describeFilters(f: TriggerFilters): string | null {
   const parts = [
     f.contains.length > 0 ? `contains ${f.contains.join(' / ')}` : null,
@@ -297,9 +312,10 @@ export interface Trigger {
   filters: TriggerFilters;
   /** The conversation channel it picked, or null (one run per delivery). */
   channelId: string | null;
-  /** Its channel's name and key expression (null without one, or once deleted). */
+  /** Its channel's name, key expression and event types (null without one, or once deleted). */
   channelName: string | null;
   conversationKey: string | null;
+  channelEventTypes: string[] | null;
   instructions: string;
   harness: Harness;
   model: string | null;

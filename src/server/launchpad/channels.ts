@@ -3,6 +3,7 @@ import type { Database } from '../db/database.js';
 import { badRequest, notFound } from '../errors.js';
 import { randomId } from '../store/crypto.js';
 import { MAX_QUERY_LENGTH, parseQuery, QueryError } from './payloadQuery.js';
+import { eventTypesSchema } from './triggerFilters.js';
 
 const MAX_NAME_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 500;
@@ -27,19 +28,27 @@ export const channelSchema = z.object({
   name: z.string().trim().min(1, 'Name the channel').max(MAX_NAME_LENGTH),
   description: z.string().trim().max(MAX_DESCRIPTION_LENGTH).default(''),
   conversationKey: conversationKeySchema,
+  /**
+   * The types of notification the channel carries (`Comment` also matches `Comment.create`);
+   * empty = all. A trigger's own event types narrow them further.
+   */
+  eventTypes: eventTypesSchema,
 });
 
 /**
  * A conversation channel: what makes a webhook trigger a duplex, long-lived conversation. The
  * admin defines it (its deliveries reach whoever can post to the webhook's source, and its agents
  * live on); members pick one of the enabled channels for their triggers. Its `conversationKey`, a
- * jq-like expression on the payload, keys the conversations.
+ * jq-like expression on the payload, keys the conversations; its `eventTypes` filter which
+ * notifications reach them.
  */
 export interface ConversationChannel {
   id: string;
   name: string;
   description: string;
   conversationKey: string;
+  /** Event types its conversations hear (sub-types included); empty: every event. */
+  eventTypes: string[];
   /** Members can only pick enabled channels, and triggers on a disabled one stop. */
   enabled: boolean;
   createdAt: string;
@@ -49,7 +58,7 @@ export interface ConversationChannel {
 /** What members see of a channel they can pick. */
 export type ChannelChoice = Pick<
   ConversationChannel,
-  'id' | 'name' | 'description' | 'conversationKey'
+  'id' | 'name' | 'description' | 'conversationKey' | 'eventTypes'
 >;
 
 interface ChannelRow {
@@ -57,6 +66,7 @@ interface ChannelRow {
   name: string;
   description: string;
   conversation_key: string;
+  event_types: string;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -67,6 +77,7 @@ const toChannel = (r: ChannelRow): ConversationChannel => ({
   name: r.name,
   description: r.description,
   conversationKey: r.conversation_key,
+  eventTypes: JSON.parse(r.event_types) as string[],
   enabled: r.enabled === 1,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -101,11 +112,12 @@ export class Channels {
   choices(): ChannelChoice[] {
     return this.list()
       .filter((c) => c.enabled)
-      .map(({ id, name, description, conversationKey }) => ({
+      .map(({ id, name, description, conversationKey, eventTypes }) => ({
         id,
         name,
         description,
         conversationKey,
+        eventTypes,
       }));
   }
 
@@ -122,11 +134,19 @@ export class Channels {
     const id = randomId();
     this.db.sql
       .prepare(
-        `INSERT INTO conversation_channels (id, name, description, conversation_key, enabled,
-           created_at, updated_at)
-         VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO conversation_channels (id, name, description, conversation_key, event_types,
+           enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
       )
-      .run(id, req.name, req.description, req.conversationKey, ts, ts);
+      .run(
+        id,
+        req.name,
+        req.description,
+        req.conversationKey,
+        JSON.stringify(req.eventTypes),
+        ts,
+        ts,
+      );
     return this.require(id);
   }
 
@@ -137,9 +157,16 @@ export class Channels {
     this.db.sql
       .prepare(
         `UPDATE conversation_channels SET name = ?, description = ?, conversation_key = ?,
-           updated_at = ? WHERE id = ?`,
+           event_types = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(req.name, req.description, req.conversationKey, this.now().toISOString(), id);
+      .run(
+        req.name,
+        req.description,
+        req.conversationKey,
+        JSON.stringify(req.eventTypes),
+        this.now().toISOString(),
+        id,
+      );
     return this.require(id);
   }
 
