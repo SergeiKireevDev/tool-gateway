@@ -4,6 +4,8 @@
  * by the pi extension.
  */
 
+import { loadConversationTools } from './conversationTools.js';
+
 const MAX_RESULT_CHARS = 100_000;
 const HTTP_ERROR = 400;
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
@@ -30,6 +32,13 @@ export interface GatewayTool {
   description: string;
   inputSchema: Record<string, unknown>;
   baseUrl: string;
+  /** Tools that are not a third-party API (the run's conversation) do their own call. */
+  call?: (
+    args: unknown,
+    env: GatewayEnv,
+    fetchImpl: typeof fetch,
+    signal?: AbortSignal,
+  ) => Promise<ToolCallResult>;
 }
 
 export interface ToolCallResult {
@@ -98,7 +107,7 @@ export async function loadGatewayTools(
   });
   if (!res.ok) throw new Error(`Gateway session lookup failed: HTTP ${res.status}`);
   const info = (await res.json()) as SessionInfo;
-  return info.grants
+  const tools = info.grants
     .filter((g) => g.kind !== 'llm')
     .map((g) => ({
       name: `gateway_${g.tool}`,
@@ -106,6 +115,7 @@ export async function loadGatewayTools(
       inputSchema: INPUT_SCHEMA,
       baseUrl: g.proxyBaseUrl,
     }));
+  return [...tools, ...(await loadConversationTools(env, fetchImpl))];
 }
 
 interface CallArgs {
@@ -141,6 +151,7 @@ export async function callGatewayTool(
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<ToolCallResult> {
+  if (tool.call) return tool.call(rawArgs, env, fetchImpl, signal);
   let args: CallArgs;
   try {
     args = parseArgs(rawArgs);

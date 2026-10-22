@@ -400,6 +400,31 @@ function FilterFields({
   );
 }
 
+/** Makes the trigger a conversation trigger: deliveries with the same key share one agent. */
+function ConversationKeyField({
+  conversationKey,
+  setConversationKey,
+}: {
+  conversationKey: string;
+  setConversationKey: (v: string) => void;
+}) {
+  return (
+    <Field
+      label="Conversation key"
+      hint="Optional, a jq-like expression on the payload, e.g. .data.issueId or [.repository.full_name, .issue.number]. Events with the same key go to one long-lived conversation: its running agent receives them, and a later event revives it with its history and memory. Empty: one agent per event."
+    >
+      <Input
+        value={conversationKey}
+        onChange={(e) => {
+          setConversationKey(e.target.value);
+        }}
+        placeholder=".data.issueId // .data.id"
+        className="font-mono"
+      />
+    </Field>
+  );
+}
+
 /** Which of the member's webhooks launches the agent, on which event types and filters. */
 function TriggerFields({
   webhooks,
@@ -409,6 +434,8 @@ function TriggerFields({
   setEventTypes,
   filters,
   setFilters,
+  conversationKey,
+  setConversationKey,
 }: {
   webhooks: WebhookOption[];
   webhookId: string;
@@ -417,6 +444,8 @@ function TriggerFields({
   setEventTypes: (v: string) => void;
   filters: FilterDraft;
   setFilters: (v: FilterDraft) => void;
+  conversationKey: string;
+  setConversationKey: (v: string) => void;
 }) {
   if (webhooks.length === 0) {
     return (
@@ -456,6 +485,10 @@ function TriggerFields({
         </Field>
       </div>
       <FilterFields filters={filters} setFilters={setFilters} />
+      <ConversationKeyField
+        conversationKey={conversationKey}
+        setConversationKey={setConversationKey}
+      />
     </div>
   );
 }
@@ -535,6 +568,8 @@ interface Draft {
   webhookId: string;
   eventTypes: string;
   filters: FilterDraft;
+  /** A trigger's conversation key expression ('' = none). */
+  conversationKey: string;
   /** The run whose output files the agent starts from ('' = none). */
   parentRunId: string;
   /** Files uploaded for the launch (a workflow's planning step), copied to /home/agent/in. */
@@ -616,6 +651,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
         filters: toFilters(d.filters),
+        conversationKey: d.conversationKey.trim(),
       },
     };
   }
@@ -1237,6 +1273,7 @@ function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
   );
   const [eventTypes, setEventTypes] = useState(editing?.eventTypes.join(', ') ?? '');
   const [filters, setFilters] = useState(editing ? toDraft(editing.filters) : NO_FILTERS);
+  const [conversationKey, setConversationKey] = useState(editing?.conversationKey ?? '');
   return {
     editing: editing !== null,
     /** Saved with `PUT`, instead of created. */
@@ -1251,6 +1288,8 @@ function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
     setEventTypes,
     filters,
     setFilters,
+    conversationKey,
+    setConversationKey,
   };
 }
 
@@ -1410,6 +1449,7 @@ export function LaunchForm({
       webhookId,
       eventTypes,
       filters,
+      conversationKey: trigger.conversationKey,
       parentRunId: parent?.id ?? relaunched.parentRunId,
       attachmentIds,
       executeAttachmentIds,
@@ -1510,6 +1550,8 @@ export function LaunchForm({
           setEventTypes={trigger.setEventTypes}
           filters={filters}
           setFilters={trigger.setFilters}
+          conversationKey={trigger.conversationKey}
+          setConversationKey={trigger.setConversationKey}
         />
       )}
       {isPreset(when) && (

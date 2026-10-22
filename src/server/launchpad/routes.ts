@@ -2,7 +2,7 @@ import express, { type Request, type Response, type Router } from 'express';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
-import { badRequest, notFound } from '../errors.js';
+import { badRequest, notFound, unauthorized } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { bearerToken } from '../http/auth.js';
 import { created, h, param } from '../http/handlers.js';
@@ -12,7 +12,8 @@ import type { GuestEnvironment } from './environments.js';
 import { ATTACHMENT_LIMITS } from './attachments.js';
 import { type Actor, type Launchpad, launchNowSchema } from './launchpad.js';
 import type { Schedule, Scheduler } from './scheduler.js';
-import type { Triggers } from './triggers.js';
+import { MAX_MESSAGE_CHARS } from './conversations.js';
+import { MAX_RECEIVE_WAIT_SECONDS, type Triggers } from './triggers.js';
 import type { Workflows, WorkflowView } from './workflows.js';
 import { RUN_HARNESSES, RUNNER_LIMITS, SKILL_NAME_RE } from './protocol.js';
 import type { Skills } from './skills.js';
@@ -33,6 +34,8 @@ const SCHEDULES_PATH = '/schedules';
 const SCHEDULE_PATH = '/schedules/:sid';
 const TRIGGERS_PATH = '/triggers';
 const TRIGGER_PATH = '/triggers/:tid';
+const CONVERSATIONS_PATH = `${TRIGGER_PATH}/conversations`;
+const CONVERSATION_PATH = `${CONVERSATIONS_PATH}/:cid`;
 const WORKFLOWS_PATH = '/workflows';
 const WORKFLOW_PATH = '/workflows/:wid';
 const ENVIRONMENTS_PATH = '/environments';
@@ -329,6 +332,77 @@ function triggerRoutes(
       triggers.delete(actorOf(res), param(req, 'tid'));
     }),
   );
+  router.get(
+    CONVERSATIONS_PATH,
+    h((req, res) => triggers.listConversations(actorOf(res), param(req, 'tid'))),
+  );
+  router.get(
+    `${CONVERSATION_PATH}/messages`,
+    h((req, res) => {
+      const page = pageSchema.parse(req.query);
+      return triggers.conversationMessages(
+        actorOf(res),
+        param(req, 'tid'),
+        param(req, 'cid'),
+        page,
+      );
+    }),
+  );
+  router.delete(
+    CONVERSATION_PATH,
+    h((req, res) => {
+      triggers.deleteConversation(actorOf(res), param(req, 'tid'), param(req, 'cid'));
+    }),
+  );
+}
+
+const pageSchema = z.object({
+  after: z.coerce.number().int().min(0).optional(),
+  limit: z.coerce.number().int().min(1).optional(),
+});
+
+const receiveSchema = z.object({
+  waitSeconds: z.number().min(0).max(MAX_RECEIVE_WAIT_SECONDS).default(0),
+});
+const replySchema = z.object({ text: z.string().trim().min(1).max(MAX_MESSAGE_CHARS) });
+
+/**
+ * The agent's side of its conversation (`/api/session/conversation`), authenticated by its
+ * session key: what it is, the events that arrive for it (waiting for one), and its replies.
+ * Served on the VM listener too; runs outside a conversation get 404.
+ */
+export function conversationSessionRoutes(gateway: Gateway, triggers: Triggers): Router {
+  const router = express.Router();
+  router.use(express.json({ limit: '256kb' }));
+  const sessionOf = (req: Request) => {
+    const key = bearerToken(req);
+    if (!key) throw unauthorized('Missing session key');
+    return gateway.resolveSession(key);
+  };
+  router.get(
+    '/',
+    h((req) => {
+      const { conversation } = triggers.sessionConversation(sessionOf(req));
+      return { key: conversation.key, runs: conversation.runs, pending: conversation.pending };
+    }),
+  );
+  router.post(
+    '/receive',
+    h(async (req) => {
+      const { waitSeconds } = receiveSchema.parse(req.body ?? {});
+      const messages = await triggers.receive(sessionOf(req), waitSeconds);
+      return { messages: messages.map(({ id, at, text }) => ({ id, at, text })) };
+    }),
+  );
+  router.post(
+    '/reply',
+    created((req) => {
+      const { text } = replySchema.parse(req.body);
+      const { id, at } = triggers.reply(sessionOf(req), text);
+      return { id, at };
+    }),
+  );
+  return router;
 }
 
 /** Skill library routes shared by the member portal (own skills) and the admin (all). */

@@ -218,6 +218,7 @@ export function TriggersTable({
   onToggle,
   onDelete,
   onShowRuns,
+  onShowConversations,
 }: {
   triggers: Trigger[];
   showMember: boolean;
@@ -227,6 +228,8 @@ export function TriggersTable({
   onToggle: (t: Trigger, enabled: boolean) => void;
   onDelete: (t: Trigger) => void;
   onShowRuns: (t: Trigger) => void;
+  /** Conversation triggers: opens their conversations. */
+  onShowConversations: (t: Trigger) => void;
 }) {
   const now = useNow();
   if (triggers.length === 0) return <EmptyState title="No webhook-triggered agents" />;
@@ -256,6 +259,17 @@ export function TriggersTable({
                   {t.eventTypes.length > 0 ? t.eventTypes.join(', ') : 'Every event'}
                 </div>
                 <TriggerFilterLine filters={t.filters} />
+                {t.conversationKey !== null && (
+                  <button
+                    type="button"
+                    className="max-w-xs truncate text-xs text-indigo-600 hover:underline"
+                    onClick={() => {
+                      onShowConversations(t);
+                    }}
+                  >
+                    Conversations by <code className="font-mono">{t.conversationKey}</code>
+                  </button>
+                )}
               </td>
               <td className="px-4 py-3">
                 <TriggerState trigger={t} now={now} />

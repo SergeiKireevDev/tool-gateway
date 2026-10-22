@@ -69,13 +69,13 @@ async function main(): Promise<void> {
 
   // Agent microVMs reach the gateway on the VM bridge, where only the proxy is served.
   const vmServer = config.vmHost
-    ? createVmApp(gateway, { ...config, publicUrl: vmPublicUrl(config) }, { launchpad }).listen(
-        config.port,
-        config.vmHost,
-        () => {
-          console.info(`  agent VMs: ${vmPublicUrl(config)} (proxy only)`);
-        },
-      )
+    ? createVmApp(
+        gateway,
+        { ...config, publicUrl: vmPublicUrl(config) },
+        { launchpad, triggers },
+      ).listen(config.port, config.vmHost, () => {
+        console.info(`  agent VMs: ${vmPublicUrl(config)} (proxy only)`);
+      })
     : null;
   if (vmServer) attachEgressProxy(vmServer, gateway);
 

@@ -137,6 +137,81 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
   member is deleted or expired, or when a launch fails. The member can resume it; the admin can
   pause it. Deleting the webhook leaves the trigger without events.
 
+### Conversations
+
+A trigger with a `conversationKey` is a conversation trigger: instead of one independent agent
+per delivery, the deliveries whose payload gives the same key are the messages of one long-lived
+conversation (a Linear issue's comments, a GitHub pull request's reviews, a chat thread…). One
+agent at a time serves a conversation; it receives the conversation's new events while it runs,
+and when it has finished, the next event revives the conversation in a new run that starts from
+its history and memory.
+
+```json
+{
+  "name": "Answer issue comments",
+  "webhookId": "<webhook id>",
+  "eventTypes": ["Comment.create"],
+  "conversationKey": ".data.issueId // .data.issue.id",
+  "instructions": "Answer each new comment on the issue, in the issue.",
+  "templateId": "<template id>",
+  "harness": "claude-code"
+}
+```
+
+- **The key.** A jq-like expression on the (redacted) payload, checked when the trigger is saved
+  (**Conversation key** in the launch form; empty: one agent per delivery). The key is the
+  expression's non-null values: a single string as is, anything else as JSON
+  (`[.repository.full_name, .issue.number]` gives `["o/r",42]`). A delivery whose payload gives
+  no key (null, an error, or more than 200 characters) launches nothing and is logged in Activity.
+  The language is a subset of jq:
+  - paths: `.`, `.a.b`, `."a key"`, `.["a key"]`, `.[0]`, `.[-1]`, `.[]`, and `?` to ignore
+    errors (`.a.b?`);
+  - literals (strings, numbers, `true`, `false`, `null`), arrays `[…]` and objects
+    `{a: .x, b, "c": .y, (.k): .v}`;
+  - `|`, `,`, `//` (alternative), `or`, `and`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`
+    (numbers, strings, arrays, objects) and parentheses;
+  - functions: `select(f)`, `map(f)`, `first`, `last`, `first(f)`, `length`, `keys`, `has(k)`,
+    `type`, `not`, `empty`, `tostring`, `tojson`, `ascii_downcase`, `ascii_upcase`, `join(s)`,
+    `split(s)`, `ltrimstr(s)`, `rtrimstr(s)`, `startswith(s)`, `endswith(s)`.
+
+  No variables, definitions, regular expressions or recursion: an expression is at most 500
+  characters and yields at most 1000 values, so it can't hang the gateway.
+
+- **Messages.** Each delivery that passes the trigger's event types and filters is an `in`
+  message of its conversation (opened on its first one). When no agent serves the conversation,
+  a run starts with the waiting messages as its task (as many as fit in a prompt; the others wait
+  for it to ask). Otherwise the message waits for the running (or queued) agent.
+- **The agent's side.** A conversation's run has two more tools (MCP server and pi extension),
+  backed by `/api/session/conversation` with its session key (served on the VM listener; other
+  runs get 404):
+  - `gateway_conversation_receive` (`waitSeconds`, up to 300, default 60) returns the messages
+    that arrived since it last asked, or waits for one (`POST …/receive`, at most 50 s per
+    request: the tool asks again for longer waits). The runner tells Codex to allow tool calls
+    that long.
+  - `gateway_conversation_reply` (`text`) records an `out` message of the agent's
+    (`POST …/reply`). It doesn't reach the third party: the agent answers there with its tools.
+
+  Its system prompt explains the conversation and its tools, and asks it to wait for more events
+  while the exchange goes on, then to finish: it needn't stay until its deadline.
+
+- **Revival.** When a conversation's run ends, its final message is recorded as an `out` message
+  and the `MEMORY.md` it left (if any) is kept for the conversation. Messages that arrived and the
+  agent never asked for start the next run right away; otherwise the next delivery does. A
+  revived run gets the conversation's memory as `MEMORY.md`, and its system prompt lists the
+  conversation's earlier messages (the latest 20,000 characters, each clipped to 4,000), marked as
+  third-party data.
+- **Limits.** The trigger's runs count against its 3 runs queued or running, but a delivery of a
+  conversation is never dropped: it waits, and conversations waiting for room are served, the
+  longest waiting first, as the trigger's runs end. A run serves one conversation; a conversation
+  has at most one run at a time.
+- **Seeing and forgetting.** The triggers table links to a conversation trigger's conversations
+  (key, runs, messages waiting, memory) and their messages:
+  `GET …/triggers/<id>/conversations` and `GET …/triggers/<id>/conversations/<cid>/messages`
+  (`?after=<message id>&limit=`), for its member and the admin. `DELETE …/conversations/<cid>`
+  forgets one (history and memory): the next delivery with its key starts a new conversation; a
+  run still serving it loses its conversation tools. Conversations live as long as their trigger;
+  editing the key leaves the existing conversations under their old keys.
+
 ## Attachments
 
 A member can attach files to an agent launched now (**Attachments** in the launch form). The agent
