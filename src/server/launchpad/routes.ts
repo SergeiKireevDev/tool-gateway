@@ -501,7 +501,7 @@ export function memberLaunchRoutes(
         driver: launchpad.driverName,
         defaultTimeoutSeconds: settings.defaultTimeoutSeconds,
         environments: launchpad.environments.choices(),
-        channels: triggers?.channels.choices(new Set(view.templates.map((t) => t.id))) ?? [],
+        channels: triggers?.channels.choices(member) ?? [],
         skills: launchpad.skills
           .list(member.id)
           .map(({ name, description }) => ({ name, description })),

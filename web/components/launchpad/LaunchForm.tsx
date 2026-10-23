@@ -337,11 +337,13 @@ function ChannelField({
   channelId,
   setChannelId,
   templates,
+  accounts,
 }: {
   channels: ChannelChoice[];
   channelId: string;
   setChannelId: (v: string) => void;
   templates: LaunchTemplate[];
+  accounts: Account[];
 }) {
   if (channels.length === 0) return null;
   const picked = channels.find((c) => c.id === channelId);
@@ -356,7 +358,7 @@ function ChannelField({
             {describeChannelDeliveries(picked)}. Events with the same key go to one long-lived
             conversation: its running agent receives them, and a later event revives it with its
             history and memory.
-            <ChannelAgentNote channel={picked} templates={templates} />
+            <ChannelAgentNote channel={picked} templates={templates} accounts={accounts} />
           </>
         ) : (
           NO_CHANNEL_HINT
@@ -380,21 +382,28 @@ function ChannelField({
   );
 }
 
-/** The template and lifetime a channel sets for its agents, when it sets them. */
+/** The template, shared accounts and lifetime a channel sets for its agents, when it sets them. */
 function ChannelAgentNote({
   channel,
   templates,
+  accounts,
 }: {
   channel: ChannelChoice;
   templates: LaunchTemplate[];
+  accounts: Account[];
 }) {
   const template =
     channel.templateId === null
       ? null
       : (templates.find((t) => t.id === channel.templateId)?.name ?? channel.templateId);
+  const shared = accounts
+    .filter((a) => channel.accountIds.includes(a.id))
+    .map((a) => `${a.label} (${a.tool})`);
   return (
     <>
       {template !== null && ` Its agents use template "${template}": pick it above.`}
+      {shared.length > 0 &&
+        ` They use the shared account${shared.length > 1 ? 's' : ''} ${shared.join(', ')}, and your own for the other tools.`}
       {channel.agentTtlSeconds !== null &&
         ` They live up to ${formatDuration(channel.agentTtlSeconds)}.`}
     </>
@@ -414,6 +423,7 @@ function TriggerFields({
   channelId,
   setChannelId,
   templates,
+  accounts,
 }: {
   webhooks: WebhookOption[];
   webhookId: string;
@@ -426,6 +436,7 @@ function TriggerFields({
   channelId: string;
   setChannelId: (v: string) => void;
   templates: LaunchTemplate[];
+  accounts: Account[];
 }) {
   if (webhooks.length === 0) {
     return (
@@ -472,6 +483,7 @@ function TriggerFields({
         channelId={channelId}
         setChannelId={setChannelId}
         templates={templates}
+        accounts={accounts}
       />
     </div>
   );
@@ -1075,6 +1087,26 @@ function SubmitRow({
 }
 
 /**
+ * The template whose tools the member picks accounts for: a trigger's conversation channel may
+ * set shared accounts for some of them.
+ */
+function pickableTemplate(
+  template: LaunchTemplate | undefined,
+  when: When,
+  channel: ChannelChoice | undefined,
+  accounts: Account[],
+): LaunchTemplate | undefined {
+  if (!template || when !== 'webhook' || !channel || channel.accountIds.length === 0) {
+    return template;
+  }
+  // The channel's shared accounts are among the member's: they must be granted to pick it.
+  const fixed = new Set(
+    accounts.filter((a) => channel.accountIds.includes(a.id)).map((a) => a.tool),
+  );
+  return { ...template, tools: template.tools.filter((tool) => !fixed.has(tool)) };
+}
+
+/**
  * Tools of the template (and a workflow planner's model API) for which the member has several
  * accounts: they pick one.
  */
@@ -1396,7 +1428,12 @@ export function LaunchForm({
   const plannerTool = workflow ? choice?.provider : undefined;
   const { ambiguous, picked, setPicked, pickedFor } = useAccountPicks(
     accounts,
-    template,
+    pickableTemplate(
+      template,
+      when,
+      options.channels.find((c) => c.id === trigger.channelId),
+      accounts,
+    ),
     plannerTool,
     defaults.picked,
   );
@@ -1538,6 +1575,7 @@ export function LaunchForm({
           channelId={trigger.channelId}
           setChannelId={trigger.setChannelId}
           templates={templates}
+          accounts={accounts}
         />
       )}
       {isPreset(when) && (

@@ -398,7 +398,7 @@ admin creates webhooks under **Webhooks**, and members create their own.
   types and deterministic filters (payload contains a keyword, status changed to, assigned to)
   pick the deliveries that launch it. The member can edit a trigger later. On a conversation
   channel (defined by the admin like a trigger: the webhook sources, types of notification and
-  filters it carries, the template of its agents, plus a jq-like key expression on the payload
+  filters it carries, the template of its agents and, per tool, the member's own account or a shared one, plus a jq-like key expression on the payload
   and how long its agents live), deliveries with the same
   key form one long-lived conversation, served by one agent that receives them while it runs and revived later with its
   history and memory. See [docs/launchpad.md](docs/launchpad.md#webhook-triggers) and

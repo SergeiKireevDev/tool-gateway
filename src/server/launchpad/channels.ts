@@ -19,6 +19,8 @@ import {
 const MAX_NAME_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_ID_LENGTH = 100;
+/** At most one shared account per tool of the channel's template. */
+const MAX_ACCOUNTS = 20;
 const CHANNEL_NOT_FOUND = 'Conversation channel not found';
 const MIN_AGENT_TTL_MINUTES = 5;
 /** Longest an agent of a channel may live: a day, for long-lived sessions. */
@@ -63,6 +65,15 @@ export const channelSchema = z.object({
     .max(MAX_ID_LENGTH)
     .nullish()
     .transform((v) => (v === '' || v === undefined ? null : v)),
+  /**
+   * The admin's shared accounts its agents use, at most one per tool of its template; the tools
+   * without one use the member's own account (as their trigger picks it).
+   */
+  accountIds: z
+    .array(z.string().min(1).max(MAX_ID_LENGTH))
+    .max(MAX_ACCOUNTS)
+    .default([])
+    .transform((list) => [...new Set(list)]),
   /** How long each of its agents may live, in seconds; none: the launchpad's default timeout. */
   agentTtlSeconds: z
     .number()
@@ -73,11 +84,29 @@ export const channelSchema = z.object({
     .transform((v) => v ?? null),
 });
 
-/** What channels need to know of the admin's templates: which exist, and how long keys may last. */
+/**
+ * What channels need to know of the admin's templates: which exist, how long keys may last, and
+ * the tools they cover (those with an endpoint need no account).
+ */
 export interface ChannelTemplate {
   id: string;
   name: string;
   maxTtlSeconds: number;
+  grants: { tool: string; endpoint?: unknown }[];
+}
+
+/** What channels need to know of the accounts: the admin's shared ones its agents may use. */
+export interface ChannelAccount {
+  id: string;
+  tool: string;
+  label: string;
+  owner: { kind: string };
+}
+
+/** What a member must have to pick a channel: its template and its shared accounts. */
+export interface ChannelPicker {
+  templateIds: readonly string[];
+  accountIds: readonly string[];
 }
 
 /**
@@ -86,7 +115,9 @@ export interface ChannelTemplate {
  * live on); members pick one of the enabled channels for their triggers. Its `conversationKey`, a
  * jq-like expression on the payload, keys the conversations; its `eventTypes`, `sources` and
  * `filters` pick which deliveries reach them, like a trigger's. It also sets the access template
- * of its agents and how long they live (`agentTtlSeconds`), so that they can serve long sessions.
+ * of its agents and how long they live (`agentTtlSeconds`), so that they can serve long sessions,
+ * and for each tool of that template, whether they use the member's own account or a shared one
+ * the admin connected (`accountIds`).
  */
 export interface ConversationChannel {
   id: string;
@@ -102,6 +133,8 @@ export interface ConversationChannel {
   templateId: string | null;
   /** How long each of its agents may live (capped by the template's max TTL); null: default. */
   agentTtlSeconds: number | null;
+  /** The shared accounts its agents use (one per tool); other tools: the member's own account. */
+  accountIds: string[];
   /** Members can only pick enabled channels, and triggers on a disabled one stop. */
   enabled: boolean;
   createdAt: string;
@@ -120,6 +153,7 @@ export type ChannelChoice = Pick<
   | 'filters'
   | 'templateId'
   | 'agentTtlSeconds'
+  | 'accountIds'
 >;
 
 interface ChannelRow {
@@ -132,6 +166,7 @@ interface ChannelRow {
   filters: string;
   template_id: string | null;
   agent_ttl_seconds: number | null;
+  account_ids: string;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -147,6 +182,7 @@ const toChannel = (r: ChannelRow): ConversationChannel => ({
   filters: parseFilters(r.filters),
   templateId: r.template_id,
   agentTtlSeconds: r.agent_ttl_seconds,
+  accountIds: JSON.parse(r.account_ids) as string[],
   enabled: r.enabled === 1,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -158,6 +194,8 @@ export class Channels {
     private readonly db: Database,
     /** The admin's templates, which a channel's agents may get. */
     private readonly templates: () => ChannelTemplate[],
+    /** The accounts, of which the admin's shared ones a channel's agents may use. */
+    private readonly accounts: () => ChannelAccount[],
     private readonly now: () => Date = () => new Date(),
   ) {}
 
@@ -179,13 +217,21 @@ export class Channels {
     return channel;
   }
 
+  /** Whether the member may pick the channel: its template and shared accounts are theirs. */
+  allows(channel: ConversationChannel, member: ChannelPicker): boolean {
+    return (
+      (channel.templateId === null || member.templateIds.includes(channel.templateId)) &&
+      channel.accountIds.every((id) => member.accountIds.includes(id))
+    );
+  }
+
   /**
-   * The channels a member can pick now: the enabled ones whose template (if any) is one of the
-   * member's.
+   * The channels a member can pick now: the enabled ones whose template (if any) and shared
+   * accounts are the member's.
    */
-  choices(templateIds: ReadonlySet<string>): ChannelChoice[] {
+  choices(member: ChannelPicker): ChannelChoice[] {
     return this.list()
-      .filter((c) => c.enabled && (c.templateId === null || templateIds.has(c.templateId)))
+      .filter((c) => c.enabled && this.allows(c, member))
       .map((c) => ({
         id: c.id,
         name: c.name,
@@ -196,6 +242,7 @@ export class Channels {
         filters: c.filters,
         templateId: c.templateId,
         agentTtlSeconds: c.agentTtlSeconds,
+        accountIds: c.accountIds,
       }));
   }
 
@@ -211,10 +258,18 @@ export class Channels {
     );
   }
 
-  /** The request, checked: its template exists and keys of it last long enough for its agents. */
+  /**
+   * The request, checked: its template exists, keys of it last long enough for its agents, and
+   * its accounts are shared ones for tools of the template.
+   */
   private parse(input: unknown): z.infer<typeof channelSchema> {
     const req = channelSchema.parse(input);
-    if (req.templateId === null) return req;
+    if (req.templateId === null) {
+      if (req.accountIds.length > 0) {
+        throw badRequest('Pick the template of its agents to give them shared accounts');
+      }
+      return req;
+    }
     const template = this.templates().find((t) => t.id === req.templateId);
     if (!template) throw badRequest('Template not found');
     const longest = template.maxTtlSeconds - KEY_MARGIN_SECONDS;
@@ -223,7 +278,26 @@ export class Channels {
         `Template "${template.name}" keys last too little for this agent TTL (at most ${longest}s)`,
       );
     }
+    this.checkAccounts(req.accountIds, template);
     return req;
+  }
+
+  /** Shared accounts, at most one per tool of the template that takes one. */
+  private checkAccounts(accountIds: readonly string[], template: ChannelTemplate): void {
+    const tools = new Set<string>();
+    for (const id of accountIds) {
+      const account = this.accounts().find((a) => a.id === id && a.owner.kind === 'shared');
+      if (!account) throw badRequest('Shared account not found');
+      if (!template.grants.some((g) => g.tool === account.tool && !g.endpoint)) {
+        throw badRequest(
+          `Account "${account.label}" is a ${account.tool} account but template "${template.name}" gives no ${account.tool} access`,
+        );
+      }
+      if (tools.has(account.tool)) {
+        throw badRequest(`Give its agents at most one ${account.tool} account`);
+      }
+      tools.add(account.tool);
+    }
   }
 
   /** The channel a trigger may use, or why not. */
@@ -240,8 +314,9 @@ export class Channels {
     this.db.sql
       .prepare(
         `INSERT INTO conversation_channels (id, name, description, conversation_key, event_types,
-           sources, filters, template_id, agent_ttl_seconds, enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           sources, filters, template_id, agent_ttl_seconds, account_ids, enabled, created_at,
+           updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       )
       .run(
         id,
@@ -253,6 +328,7 @@ export class Channels {
         JSON.stringify(req.filters),
         req.templateId,
         req.agentTtlSeconds,
+        JSON.stringify(req.accountIds),
         ts,
         ts,
       );
@@ -261,7 +337,7 @@ export class Channels {
 
   /**
    * Edits a channel: its conversations stay under the keys they had, and its triggers' next runs
-   * use its new template and agent TTL.
+   * use its new template, accounts and agent TTL.
    */
   update(id: string, input: unknown): ConversationChannel {
     this.require(id);
@@ -270,7 +346,7 @@ export class Channels {
       .prepare(
         `UPDATE conversation_channels SET name = ?, description = ?, conversation_key = ?,
            event_types = ?, sources = ?, filters = ?, template_id = ?, agent_ttl_seconds = ?,
-           updated_at = ? WHERE id = ?`,
+           account_ids = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         req.name,
@@ -281,6 +357,7 @@ export class Channels {
         JSON.stringify(req.filters),
         req.templateId,
         req.agentTtlSeconds,
+        JSON.stringify(req.accountIds),
         this.now().toISOString(),
         id,
       );

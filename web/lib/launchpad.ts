@@ -223,6 +223,8 @@ export interface ChannelChoice {
   templateId: string | null;
   /** How long each of its agents may live; null: the default timeout. */
   agentTtlSeconds: number | null;
+  /** The admin's shared accounts its agents use (one per tool); other tools: the member's own. */
+  accountIds: string[];
 }
 
 /** A conversation channel as the admin manages it. */
