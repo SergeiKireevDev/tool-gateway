@@ -156,6 +156,51 @@ describe('webhook triggers', () => {
       .expect(404);
   });
 
+  it('listens to the webhooks the admin shares, while they are shared', async () => {
+    const alice = await t.member('alice');
+    const bob = await t.member('bob');
+    const shared = await t
+      .admin('post', '/webhooks')
+      .send({ name: 'team issues', source: 'generic', auth: 'url', shared: true })
+      .expect(201);
+    const id = shared.body.webhook.id as string;
+    const path = new URL(shared.body.url as string).pathname;
+    const listed = await t.hooks(alice.cookie, 'get', '').expect(200);
+    expect(listed.body).toMatchObject([{ id, shared: true, ownerMemberId: null }]);
+    const mine = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(id))
+      .expect(201);
+    expect(mine.body).toMatchObject({ webhookName: 'team issues' });
+    await t.portal(bob.cookie, 'post', '/triggers').send(triggerBody(id)).expect(201);
+    // One delivery launches every member's triggers on it.
+    await deliver(path, { type: 'Issue', action: 'create' });
+    expect(t.driver.specs).toHaveLength(2);
+
+    await t.admin('patch', `/webhooks/${id}`).send({ shared: false }).expect(200);
+    expect((await t.hooks(alice.cookie, 'get', '').expect(200)).body).toEqual([]);
+    await deliver(path, { type: 'Issue', action: 'create' });
+    expect(t.driver.specs).toHaveLength(2);
+    const triggerId = mine.body.id as string;
+    const stopped = await t.portal(alice.cookie, 'get', `/triggers/${triggerId}`).expect(200);
+    expect(stopped.body).toMatchObject({
+      enabled: false,
+      stoppedReason: 'Its webhook is no longer shared',
+    });
+    await t
+      .portal(alice.cookie, 'patch', `/triggers/${triggerId}`)
+      .send({ enabled: true })
+      .expect(400);
+
+    await t.admin('patch', `/webhooks/${id}`).send({ shared: true }).expect(200);
+    await t
+      .portal(alice.cookie, 'patch', `/triggers/${triggerId}`)
+      .send({ enabled: true })
+      .expect(200);
+    await deliver(path, { type: 'Issue', action: 'create' });
+    expect(t.driver.specs).toHaveLength(3);
+  });
+
   it('validates the launch like any other', async () => {
     const alice = await t.member('alice');
     const hook = await webhookOf(alice.cookie);

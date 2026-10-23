@@ -18,7 +18,7 @@ function jwt(secret: string, claims: object, alg = 'HS256'): string {
   return `${head}.${body}.${sig}`;
 }
 
-const asAdmin = (method: 'get' | 'post' | 'delete', path: string) =>
+const asAdmin = (method: 'get' | 'post' | 'patch' | 'delete', path: string) =>
   request(app)[method](`/api/admin/webhooks${path}`).set('authorization', `Bearer ${admin}`);
 
 async function create(body: object): Promise<{ id: string; path: string; bearerSecret?: string }> {
@@ -221,30 +221,32 @@ describe('signed bodies (Linear, GitHub)', () => {
   });
 });
 
+/** A new member's web session cookie. */
+async function memberCookie(name: string): Promise<string> {
+  const tpl = await request(app)
+    .post('/api/admin/templates')
+    .set('authorization', `Bearer ${admin}`)
+    .send({
+      name: `t-${name}`,
+      grants: [{ tool: 'github', permissions: ['issues:read'], resources: [] }],
+      defaultTtlSeconds: 600,
+      maxTtlSeconds: 600,
+    })
+    .expect(201);
+  await request(app)
+    .post('/api/admin/members')
+    .set('authorization', `Bearer ${admin}`)
+    .send({ name, email: `${name}@example.com`, templateIds: [tpl.body.id] })
+    .expect(201);
+  const identity = h.gateway.identify(`${name}@example.com`);
+  if (identity?.role !== 'member') throw new Error('no member');
+  return `gw_session=${(await h.gateway.createWebSession(identity)).token}`;
+}
+
 describe('ownership', () => {
   it('lets members manage only their own webhooks', async () => {
-    const tpl = await request(app)
-      .post('/api/admin/templates')
-      .set('authorization', `Bearer ${admin}`)
-      .send({
-        name: 't',
-        grants: [{ tool: 'github', permissions: ['issues:read'], resources: [] }],
-        defaultTtlSeconds: 600,
-        maxTtlSeconds: 600,
-      })
-      .expect(201);
-    const cookie = async (name: string): Promise<string> => {
-      await request(app)
-        .post('/api/admin/members')
-        .set('authorization', `Bearer ${admin}`)
-        .send({ name, email: `${name}@example.com`, templateIds: [tpl.body.id] })
-        .expect(201);
-      const identity = h.gateway.identify(`${name}@example.com`);
-      if (identity?.role !== 'member') throw new Error('no member');
-      return `gw_session=${(await h.gateway.createWebSession(identity)).token}`;
-    };
-    const alice = await cookie('alice');
-    const bob = await cookie('bob');
+    const alice = await memberCookie('alice');
+    const bob = await memberCookie('bob');
     const portal = (c: string, method: 'get' | 'post' | 'delete', path: string) =>
       request(app)
         [method](`/api/me/webhooks${path}`)
@@ -260,5 +262,38 @@ describe('ownership', () => {
     await portal(bob, 'delete', `/${id}`).expect(404);
     expect((await asAdmin('get', '').expect(200)).body).toHaveLength(1);
     await portal(alice, 'delete', `/${id}`).expect(204);
+  });
+
+  it('lets members list and use the admin’s shared webhooks, but not manage them', async () => {
+    const alice = await memberCookie('alice');
+    const portal = (method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string) =>
+      request(app)
+        [method](`/api/me/webhooks${path}`)
+        .set('cookie', alice)
+        .set('x-gateway-request', '1');
+    const shared = await create({ name: 'team', source: 'generic', auth: 'url', shared: true });
+    const unshared = await create({ name: 'admin only', source: 'generic', auth: 'url' });
+    const listed = await portal('get', '').expect(200);
+    expect(listed.body).toMatchObject([{ id: shared.id, name: 'team', shared: true }]);
+    await portal('get', `/${shared.id}/events`).expect(404);
+    await portal('post', `/${shared.id}/rotate`).expect(404);
+    await portal('put', `/${shared.id}/auth`).send({ auth: 'bearer' }).expect(404);
+    await portal('patch', `/${shared.id}`).send({ shared: false }).expect(404);
+    await portal('delete', `/${shared.id}`).expect(404);
+    await portal('post', '')
+      .send({ name: 'mine', source: 'generic', auth: 'url', shared: true })
+      .expect(400);
+    const mine = await portal('post', '')
+      .send({ name: 'mine', source: 'generic', auth: 'url' })
+      .expect(201);
+    expect(mine.body.webhook.shared).toBe(false);
+    // The admin shares only its own webhooks.
+    await asAdmin('patch', `/${mine.body.webhook.id as string}`)
+      .send({ shared: true })
+      .expect(400);
+    const toggled = await asAdmin('patch', `/${unshared.id}`).send({ shared: true }).expect(200);
+    expect(toggled.body).toMatchObject({ id: unshared.id, shared: true });
+    expect((await portal('get', '').expect(200)).body).toHaveLength(3);
+    await asAdmin('patch', `/${shared.id}`).send({ shared: 'yes' }).expect(400);
   });
 });

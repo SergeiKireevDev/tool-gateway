@@ -13,7 +13,7 @@ import {
   verifyHmacSha256,
 } from './store/crypto.js';
 import type { EncryptedStore } from './store/store.js';
-import type { Webhook, WebhookAuth, WebhookSource } from './store/types.js';
+import type { Member, Webhook, WebhookAuth, WebhookSource } from './store/types.js';
 import { isRecord } from './tools/json.js';
 import { BYTES_PER_KIB, MS_PER_MINUTE, MS_PER_SECOND } from './units.js';
 
@@ -50,15 +50,17 @@ export const WEBHOOK_SOURCES = [
 ] as const satisfies readonly WebhookSource[];
 const source = z.enum(WEBHOOK_SOURCES);
 const signingSecret = z.string().trim().min(1).max(MAX_SIGNING_SECRET);
+/** Usable by every member's triggers (the admin's webhooks only). */
+const shared = z.boolean().optional();
 
 export const webhookSchema = z
   .discriminatedUnion('auth', [
-    z.object({ name, source, auth: z.literal('url') }),
+    z.object({ name, source, shared, auth: z.literal('url') }),
     /** e.g. the Signing Secret of the monday.com app that creates the webhook. */
-    z.object({ name, source, auth: z.literal('jwt'), signingSecret }),
-    z.object({ name, source, auth: z.literal('bearer') }),
+    z.object({ name, source, shared, auth: z.literal('jwt'), signingSecret }),
+    z.object({ name, source, shared, auth: z.literal('bearer') }),
     /** The webhook's signing secret, as shown by Linear or set in GitHub. */
-    z.object({ name, source, auth: z.literal('hmac'), signingSecret }),
+    z.object({ name, source, shared, auth: z.literal('hmac'), signingSecret }),
   ])
   .refine((w) => w.auth !== 'hmac' || w.source in SIGNATURE_HEADERS, {
     message: 'Signed bodies are checked for Linear and GitHub webhooks',
@@ -82,8 +84,11 @@ const SIGNATURE_HEADERS: Partial<Record<WebhookSource, { header: string; prefix:
 const MAX_DELIVERY_AGE_MS = MS_PER_MINUTE;
 const HEX_RE = /^[0-9a-f]+$/i;
 
-export type PublicWebhook = Omit<Webhook, 'tokenHash' | 'auth'> & {
+export const webhookSharingSchema = z.object({ shared: z.boolean() });
+
+export type PublicWebhook = Omit<Webhook, 'tokenHash' | 'auth' | 'shared'> & {
   auth: WebhookAuth['kind'];
+  shared: boolean;
   lastEventAt: string | null;
   accepted: number;
   rejected: number;
@@ -218,9 +223,16 @@ export class Webhooks {
     this.deliveryListeners.push(listener);
   }
 
-  /** A webhook the actor may see, or null. */
+  /** A webhook the actor manages (the admin: all; a member: its own), or null. */
   visible(id: string, actor: Actor): PublicWebhook | null {
     const w = this.store.read().webhooks.find((x) => x.id === id && this.visibleTo(x, actor));
+    return w ? this.toPublic(w) : null;
+  }
+
+  /** A webhook whose deliveries may launch the member's triggers: its own or a shared one. */
+  usable(id: string, member: Member): PublicWebhook | null {
+    const actor: Actor = { kind: 'member', member };
+    const w = this.store.read().webhooks.find((x) => x.id === id && this.usableBy(x, actor));
     return w ? this.toPublic(w) : null;
   }
 
@@ -228,6 +240,9 @@ export class Webhooks {
 
   async create(input: unknown, actor: Actor): Promise<CreatedWebhook> {
     const data = webhookSchema.parse(input);
+    if (data.shared && actor.kind !== 'admin') {
+      throw badRequest('Only the admin shares webhooks with every member');
+    }
     const token = randomToken('', TOKEN_BYTES);
     const bearerSecret = data.auth === 'bearer' ? randomToken(SECRET_PREFIX) : undefined;
     const auth = this.authOf(data, bearerSecret);
@@ -238,12 +253,16 @@ export class Webhooks {
       tokenHash: this.crypto.hashToken(token),
       auth,
       ownerMemberId: actor.kind === 'member' ? actor.member.id : null,
+      ...(data.shared ? { shared: true } : {}),
       createdAt: this.now().toISOString(),
     };
     await this.store.update((s) => {
       s.webhooks.push(webhook);
     });
-    this.log(actor, `created webhook "${webhook.name}" (${auth.kind})`);
+    this.log(
+      actor,
+      `created ${webhook.shared ? 'shared ' : ''}webhook "${webhook.name}" (${auth.kind})`,
+    );
     return {
       webhook: this.toPublic(webhook),
       url: this.url(token),
@@ -288,10 +307,33 @@ export class Webhooks {
     }
   }
 
+  /**
+   * Shares one of the admin's webhooks with every member, or stops sharing it: members' triggers
+   * on it then stop at its next delivery.
+   */
+  async setShared(id: string, input: unknown, actor: Actor): Promise<PublicWebhook> {
+    const { shared: share } = webhookSharingSchema.parse(input);
+    const updated = await this.store.update((s) => {
+      const w = s.webhooks.find((x) => x.id === id && this.visibleTo(x, actor));
+      if (!w) throw notFound(WEBHOOK_NOT_FOUND);
+      if (actor.kind !== 'admin' || w.ownerMemberId !== null) {
+        throw badRequest('Only the admin shares its own webhooks with every member');
+      }
+      w.shared = share;
+      return w;
+    });
+    this.log(
+      actor,
+      `${share ? 'shared' : 'stopped sharing'} webhook "${updated.name}" with every member`,
+    );
+    return this.toPublic(updated);
+  }
+
+  /** The actor's webhooks and, for a member, the ones the admin shares. */
   list(actor: Actor): PublicWebhook[] {
     return this.store
       .read()
-      .webhooks.filter((w) => this.visibleTo(w, actor))
+      .webhooks.filter((w) => this.usableBy(w, actor))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map((w) => this.toPublic(w));
   }
@@ -499,8 +541,13 @@ export class Webhooks {
     return actor.kind === 'admin' || w.ownerMemberId === actor.member.id;
   }
 
+  /** What the actor may list and trigger on: what it manages, plus the admin's shared ones. */
+  private usableBy(w: Webhook, actor: Actor): boolean {
+    return this.visibleTo(w, actor) || (w.ownerMemberId === null && w.shared === true);
+  }
+
   private toPublic(w: Webhook): PublicWebhook {
-    const { tokenHash: _t, auth, ...rest } = w;
+    const { tokenHash: _t, auth, shared: isShared, ...rest } = w;
     const stats = this.db.sql
       .prepare(
         `SELECT MAX(at) AS last, COALESCE(SUM(accepted), 0) AS accepted, COUNT(*) - COALESCE(SUM(accepted), 0) AS rejected
@@ -510,6 +557,7 @@ export class Webhooks {
     return {
       ...rest,
       auth: auth.kind,
+      shared: isShared === true,
       lastEventAt: stats.last,
       accepted: stats.accepted,
       rejected: stats.rejected,

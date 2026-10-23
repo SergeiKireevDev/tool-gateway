@@ -410,7 +410,7 @@ function ChannelAgentNote({
   );
 }
 
-/** Which of the member's webhooks launches the agent, on which event types and filters. */
+/** Which of the member's webhooks (or the admin's shared ones) launches the agent, on which event types and filters. */
 function TriggerFields({
   webhooks,
   webhookId,
@@ -441,7 +441,8 @@ function TriggerFields({
   if (webhooks.length === 0) {
     return (
       <p className="text-sm text-slate-600">
-        You have no webhooks yet. Create one under Webhooks first, then come back.
+        You have no webhooks yet, and the admin shares none. Create one under Webhooks first, then
+        come back.
       </p>
     );
   }
@@ -458,7 +459,8 @@ function TriggerFields({
           >
             {webhooks.map((w) => (
               <option key={w.id} value={w.id}>
-                {w.name} ({w.source})
+                {w.name} ({w.source}
+                {w.shared ? ', shared' : ''})
               </option>
             ))}
           </Select>

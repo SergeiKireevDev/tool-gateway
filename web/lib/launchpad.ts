@@ -400,6 +400,8 @@ export interface WebhookOption {
   id: string;
   name: string;
   source: WebhookSource;
+  /** One of the admin's, shared with every member. */
+  shared: boolean;
 }
 
 export interface LaunchSettings {

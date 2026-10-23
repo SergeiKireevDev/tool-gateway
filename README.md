@@ -375,6 +375,14 @@ workflow's page shows the steps as a graph. See
 Other services can send events to the gateway: `POST <GATEWAY_PUBLIC_URL>/hooks/<token>`. The
 admin creates webhooks under **Webhooks**, and members create their own.
 
+- **Shared webhooks.** The admin can share one of its webhooks with every member (**Share
+  with every member** when creating it, **Share** / **Stop sharing** later, or
+  `PATCH /api/admin/webhooks/<id>` with `{"shared": true}`). One address then serves everyone:
+  members see it in their webhook list (`shared: true`) and their agent triggers can listen to it,
+  and each delivery launches the matching triggers of every member. Only the admin manages it
+  (access control, address, deletion) and reads its delivery log. Once it is no longer shared,
+  members' triggers on it stop at its next delivery.
+
 - **Hard-to-guess address.** Each webhook's address carries 256 random bits. It is shown once,
   only its keyed hash is stored, and **New address** rotates it.
 - **Authorization check (optional):**
@@ -392,7 +400,7 @@ admin creates webhooks under **Webhooks**, and members create their own.
   not logged. Each webhook takes at most 120 deliveries a minute (429 after that).
 - The VM listener does not serve `/hooks`.
 - **Agent triggers:** with the [launchpad](#agent-launchpad) on, a member can have each delivery
-  on one of their webhooks launch an agent (**Agents → New agent → On a webhook event**). The
+  on one of their webhooks (or one the admin shares) launch an agent (**Agents → New agent → On a webhook event**). The
   trigger holds the agent's instructions, permission template, harness and model; the
   instructions go into the agent's system prompt and the (redacted) payload is its task. Event
   types and deterministic filters (payload contains a keyword, status changed to, assigned to)
