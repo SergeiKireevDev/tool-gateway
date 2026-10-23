@@ -149,8 +149,8 @@ its history and memory.
 - **Channels are the admin's.** A conversation's agent hears whoever can post to the webhook's
   source, and lives on across runs, so members don't write conversation keys: the admin defines
   **conversation channels** (**Launchpad → Conversation channels**, or
-  `POST /api/admin/launchpad/channels` with `name`, `description`, `conversationKey` and
-  `eventTypes`; `PUT`,
+  `POST /api/admin/launchpad/channels` with `name`, `description`, `conversationKey`,
+  `eventTypes`, `sources`, `filters`, `templateId` and `agentTtlSeconds`; `PUT`,
   `PATCH {enabled}` and `DELETE …/channels/<id>`). Members see the enabled ones in
   `GET /api/me/launchpad` (`channels`) and pick one for a trigger (**Conversation channel** in the
   launch form, `channelId`; none: one agent per delivery). A trigger body with a
@@ -181,6 +181,22 @@ its history and memory.
   with the channel (`eventTypes` in `channels`, `channelEventTypes` on the trigger); editing them
   applies to the next deliveries.
 
+- **Like a trigger.** A channel picks the deliveries it carries with the same machinery as
+  triggers: besides its event types, its `sources` (the webhook sources, `monday`, `linear`,
+  `github` or `generic`; empty: any) and its `filters` (`contains`, `statusChangedTo`,
+  `assignedTo`, as a trigger's; a trigger's own filters narrow them further). Only triggers on a
+  webhook of one of its sources can pick it (the launch form lists only those). Only its key and
+  its agents differ:
+  - `templateId`: the access template its agents get (null: the trigger's own). Members only see
+    the channels whose template is one of theirs, and a trigger on the channel must use it. When
+    the admin changes it, the next runs of its triggers get the new template (with the member's
+    accounts for it picked anew); a run that can no longer launch stops its trigger.
+  - `agentTtlSeconds`: how long each of its agents may live, from 5 minutes to 24 hours, instead
+    of the launchpad's default run timeout (null), so that an agent can hold a long session. It
+    is capped by its template's max TTL (less the 5 minutes session keys outlive a run); a channel
+    whose template's keys can't last that long is refused. Triggers' views carry it as
+    `channelAgentTtlSeconds`.
+
 - **The key.** The channel's jq-like expression on the (redacted) payload, checked when the
   channel is saved. The key is the expression's non-null values: a single string as is, anything else as JSON
   (`[.repository.full_name, .issue.number]` gives `["o/r",42]`). A delivery whose payload gives
@@ -199,8 +215,8 @@ its history and memory.
   No variables, definitions, regular expressions or recursion: an expression is at most 500
   characters and yields at most 1000 values, so it can't hang the gateway.
 
-- **Messages.** Each delivery that passes the channel's event types, and the trigger's event
-  types and filters, is an `in`
+- **Messages.** Each delivery that passes the channel's sources, event types and filters, and the
+  trigger's event types and filters, is an `in`
   message of its conversation (opened on its first one). When no agent serves the conversation,
   a run starts with the waiting messages as its task (as many as fit in a prompt; the others wait
   for it to ask). Otherwise the message waits for the running (or queued) agent.

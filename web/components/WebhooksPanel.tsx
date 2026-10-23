@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type Api, ApiError } from '@/lib/api';
 import { formatDateTime, formatRelative } from '@/lib/format';
+import { WEBHOOK_SOURCES, type WebhookSource } from '@/lib/launchpad';
 import type { PanelProps } from './AdminApp';
 import {
   Badge,
@@ -20,7 +21,7 @@ import {
 } from './ui';
 
 type AuthKind = 'url' | 'jwt' | 'bearer' | 'hmac';
-type Source = 'monday' | 'linear' | 'github' | 'generic';
+type Source = WebhookSource;
 
 interface Webhook {
   id: string;
@@ -56,12 +57,7 @@ const AUTH_LABELS: Record<AuthKind, string> = {
   bearer: 'Bearer secret',
 };
 
-const SOURCES: Record<Source, string> = {
-  monday: 'monday.com',
-  linear: 'Linear',
-  github: 'GitHub',
-  generic: 'Other',
-};
+const SOURCES = WEBHOOK_SOURCES;
 
 /** Senders whose body signature the gateway knows how to check. */
 const SIGNS_BODY: readonly Source[] = ['linear', 'github'];

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Api } from '@/lib/api';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, formatDuration } from '@/lib/format';
 import {
   type Conversation,
   type ConversationMessage,
@@ -127,7 +127,10 @@ export function TriggerConversations({ api, trigger }: { api: Api; trigger: Trig
           <>
             Channel {trigger.channelName}, keyed by{' '}
             <code className="font-mono">{trigger.conversationKey}</code>, carries{' '}
-            {describeChannelEvents(trigger.channelEventTypes ?? [])}.
+            {describeChannelEvents(trigger.channelEventTypes ?? [])}
+            {trigger.channelAgentTtlSeconds !== null &&
+              `; its agents live up to ${formatDuration(trigger.channelAgentTtlSeconds)}`}
+            .
           </>
         )}{' '}
         Each conversation keeps its messages and the memory its last run left.

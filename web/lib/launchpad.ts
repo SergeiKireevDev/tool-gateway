@@ -195,7 +195,20 @@ export interface EnvironmentChoice {
   description: string;
 }
 
-/** A conversation channel a trigger can pick: its key expression keys the conversations. */
+/** What can send to a webhook. */
+export type WebhookSource = 'monday' | 'linear' | 'github' | 'generic';
+
+export const WEBHOOK_SOURCES: Record<WebhookSource, string> = {
+  monday: 'monday.com',
+  linear: 'Linear',
+  github: 'GitHub',
+  generic: 'Other',
+};
+
+/**
+ * A conversation channel a trigger can pick: its key expression keys the conversations, and it
+ * sets which deliveries it carries, the template of its agents and how long they live.
+ */
 export interface ChannelChoice {
   id: string;
   name: string;
@@ -203,6 +216,13 @@ export interface ChannelChoice {
   conversationKey: string;
   /** The types of notification it carries (sub-types included); empty: every event. */
   eventTypes: string[];
+  /** The sources of the webhooks it carries; empty: any. */
+  sources: WebhookSource[];
+  filters: TriggerFilters;
+  /** The template its agents get (triggers on it must use it); null: the trigger's. */
+  templateId: string | null;
+  /** How long each of its agents may live; null: the default timeout. */
+  agentTtlSeconds: number | null;
 }
 
 /** A conversation channel as the admin manages it. */
@@ -290,6 +310,22 @@ export function describeChannelEvents(eventTypes: readonly string[]): string {
   return eventTypes.length === 0 ? 'every event' : `${eventTypes.join(', ')} events`;
 }
 
+/**
+ * Which deliveries a conversation channel carries: "Comment events from Linear webhooks
+ * (contains urgent)".
+ */
+export function describeChannelDeliveries(
+  c: Pick<ChannelChoice, 'eventTypes' | 'sources' | 'filters'>,
+): string {
+  const sources =
+    c.sources.length === 0
+      ? ''
+      : ` from ${c.sources.map((s) => WEBHOOK_SOURCES[s]).join(' / ')} webhooks`;
+  const filters = describeFilters(c.filters);
+  const narrowed = filters === null ? '' : ` (${filters})`;
+  return `${describeChannelEvents(c.eventTypes)}${sources}${narrowed}`;
+}
+
 export function describeFilters(f: TriggerFilters): string | null {
   const parts = [
     f.contains.length > 0 ? `contains ${f.contains.join(' / ')}` : null,
@@ -312,10 +348,14 @@ export interface Trigger {
   filters: TriggerFilters;
   /** The conversation channel it picked, or null (one run per delivery). */
   channelId: string | null;
-  /** Its channel's name, key expression and event types (null without one, or once deleted). */
+  /**
+   * Its channel's name, key expression, event types and agent TTL (null without one, or once
+   * deleted).
+   */
   channelName: string | null;
   conversationKey: string | null;
   channelEventTypes: string[] | null;
+  channelAgentTtlSeconds: number | null;
   instructions: string;
   harness: Harness;
   model: string | null;
@@ -357,7 +397,7 @@ export interface ConversationMessage {
 export interface WebhookOption {
   id: string;
   name: string;
-  source: string;
+  source: WebhookSource;
 }
 
 export interface LaunchSettings {

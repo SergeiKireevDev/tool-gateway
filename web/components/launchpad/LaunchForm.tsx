@@ -5,7 +5,7 @@ import type { Api } from '@/lib/api';
 import { formatDuration } from '@/lib/format';
 import {
   type ChannelChoice,
-  describeChannelEvents,
+  describeChannelDeliveries,
   type EnvironmentChoice,
   HARNESS_LABELS,
   type HarnessChoice,
@@ -16,7 +16,6 @@ import {
   type Schedule,
   splitList,
   type Trigger,
-  type TriggerFilters,
   type WebhookOption,
   WEEKDAYS,
   type Workflow,
@@ -29,6 +28,7 @@ import {
   UploadProgress,
   uploadAttachments,
 } from './AttachmentsField';
+import { type FilterDraft, FilterFields, NO_FILTERS, toDraft, toFilters } from './FilterFields';
 import {
   BLANK_DEFAULTS,
   InstructionsField,
@@ -326,75 +326,6 @@ function ModelField({
   );
 }
 
-/** A trigger's deterministic filters, as typed: comma-separated lists. */
-type FilterDraft = Record<keyof TriggerFilters, string>;
-const NO_FILTERS: FilterDraft = { contains: '', statusChangedTo: '', assignedTo: '' };
-
-interface FilterField {
-  key: keyof TriggerFilters;
-  label: string;
-  hint: string;
-  placeholder: string;
-}
-
-const FILTER_FIELDS: FilterField[] = [
-  {
-    key: 'contains',
-    label: 'Contains',
-    hint: 'Only events whose payload contains one of these keywords.',
-    placeholder: 'crash, urgent',
-  },
-  {
-    key: 'statusChangedTo',
-    label: 'Status changed to',
-    hint: 'Only events that move an item to one of these statuses.',
-    placeholder: 'Todo, merged',
-  },
-  {
-    key: 'assignedTo',
-    label: 'Assigned to',
-    hint: 'Only events that assign an item to one of these people (name, email, login or id).',
-    placeholder: 'octocat, ada@example.com',
-  },
-];
-
-const toFilters = (f: FilterDraft): TriggerFilters => ({
-  contains: splitList(f.contains),
-  statusChangedTo: splitList(f.statusChangedTo),
-  assignedTo: splitList(f.assignedTo),
-});
-
-const toDraft = (f: TriggerFilters): FilterDraft => ({
-  contains: f.contains.join(', '),
-  statusChangedTo: f.statusChangedTo.join(', '),
-  assignedTo: f.assignedTo.join(', '),
-});
-
-/** Optional conditions on the event, checked before an agent is launched. */
-function FilterFields({
-  filters,
-  setFilters,
-}: {
-  filters: FilterDraft;
-  setFilters: (v: FilterDraft) => void;
-}) {
-  return (
-    <div className="grid gap-3 sm:grid-cols-3">
-      {FILTER_FIELDS.map((f) => (
-        <Field key={f.key} label={f.label} hint={`${f.hint} Comma-separated; empty: any.`}>
-          <Input
-            value={filters[f.key]}
-            onChange={(e) => {
-              setFilters({ ...filters, [f.key]: e.target.value });
-            }}
-            placeholder={f.placeholder}
-          />
-        </Field>
-      ))}
-    </div>
-  );
-}
-
 const NO_CHANNEL_HINT = 'None: one agent per event.';
 
 /**
@@ -405,10 +336,12 @@ function ChannelField({
   channels,
   channelId,
   setChannelId,
+  templates,
 }: {
   channels: ChannelChoice[];
   channelId: string;
   setChannelId: (v: string) => void;
+  templates: LaunchTemplate[];
 }) {
   if (channels.length === 0) return null;
   const picked = channels.find((c) => c.id === channelId);
@@ -420,9 +353,10 @@ function ChannelField({
           <>
             {picked.description && `${picked.description} · `}Keyed by{' '}
             <code className="font-mono">{picked.conversationKey}</code>, carries{' '}
-            {describeChannelEvents(picked.eventTypes)}. Events with the same key go to one
-            long-lived conversation: its running agent receives them, and a later event revives it
-            with its history and memory.
+            {describeChannelDeliveries(picked)}. Events with the same key go to one long-lived
+            conversation: its running agent receives them, and a later event revives it with its
+            history and memory.
+            <ChannelAgentNote channel={picked} templates={templates} />
           </>
         ) : (
           NO_CHANNEL_HINT
@@ -446,6 +380,27 @@ function ChannelField({
   );
 }
 
+/** The template and lifetime a channel sets for its agents, when it sets them. */
+function ChannelAgentNote({
+  channel,
+  templates,
+}: {
+  channel: ChannelChoice;
+  templates: LaunchTemplate[];
+}) {
+  const template =
+    channel.templateId === null
+      ? null
+      : (templates.find((t) => t.id === channel.templateId)?.name ?? channel.templateId);
+  return (
+    <>
+      {template !== null && ` Its agents use template "${template}": pick it above.`}
+      {channel.agentTtlSeconds !== null &&
+        ` They live up to ${formatDuration(channel.agentTtlSeconds)}.`}
+    </>
+  );
+}
+
 /** Which of the member's webhooks launches the agent, on which event types and filters. */
 function TriggerFields({
   webhooks,
@@ -458,6 +413,7 @@ function TriggerFields({
   channels,
   channelId,
   setChannelId,
+  templates,
 }: {
   webhooks: WebhookOption[];
   webhookId: string;
@@ -469,6 +425,7 @@ function TriggerFields({
   channels: ChannelChoice[];
   channelId: string;
   setChannelId: (v: string) => void;
+  templates: LaunchTemplate[];
 }) {
   if (webhooks.length === 0) {
     return (
@@ -477,6 +434,7 @@ function TriggerFields({
       </p>
     );
   }
+  const source = webhooks.find((w) => w.id === webhookId)?.source ?? 'generic';
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -508,7 +466,13 @@ function TriggerFields({
         </Field>
       </div>
       <FilterFields filters={filters} setFilters={setFilters} />
-      <ChannelField channels={channels} channelId={channelId} setChannelId={setChannelId} />
+      <ChannelField
+        // Only the channels that carry the webhook's source.
+        channels={channels.filter((c) => c.sources.length === 0 || c.sources.includes(source))}
+        channelId={channelId}
+        setChannelId={setChannelId}
+        templates={templates}
+      />
     </div>
   );
 }
@@ -1573,6 +1537,7 @@ export function LaunchForm({
           channels={options.channels}
           channelId={trigger.channelId}
           setChannelId={trigger.setChannelId}
+          templates={templates}
         />
       )}
       {isPreset(when) && (
