@@ -314,4 +314,7 @@ export const MIGRATIONS: readonly string[] = [
    ALTER TABLE conversation_channels ADD COLUMN filters TEXT NOT NULL DEFAULT '{}';
    ALTER TABLE conversation_channels ADD COLUMN template_id TEXT;
    ALTER TABLE conversation_channels ADD COLUMN agent_ttl_seconds INTEGER;`,
+  // 22: the shared accounts a conversation channel's agents use, per tool of its template (tools
+  // without one: the member's own account).
+  `ALTER TABLE conversation_channels ADD COLUMN account_ids TEXT NOT NULL DEFAULT '[]';`,
 ];

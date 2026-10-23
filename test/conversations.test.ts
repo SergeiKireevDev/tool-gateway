@@ -120,6 +120,7 @@ describe('conversation triggers', () => {
         filters: { contains: [], statusChangedTo: [], assignedTo: [] },
         templateId: null,
         agentTtlSeconds: null,
+        accountIds: [],
       },
     ]);
     const plain = await t
@@ -306,6 +307,87 @@ describe('conversation triggers', () => {
     expect(next.body.lastRunId).not.toBe(run.id);
     const nextRun = t.launchpad.runs.require(next.body.lastRunId as string);
     expect(nextRun).toMatchObject({ templateId: t.ids.template, timeoutSeconds: 2 * 3600 });
+  });
+
+  it("lets the admin pick, per tool, a shared account or the member's own for a channel's agents", async () => {
+    const bot = await t
+      .admin('post', '/accounts')
+      .send({ tool: 'github', label: 'gh-bot', secret: 'ghp_bot' })
+      .expect(201);
+    const botId = bot.body.id as string;
+    const body = (extra: object) => ({
+      name: 'Threads',
+      conversationKey: KEY,
+      templateId: t.ids.template,
+      ...extra,
+    });
+    // Only with a template, shared accounts of its tools, one per tool.
+    const noTemplate = await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ templateId: null, accountIds: [botId] }))
+      .expect(400);
+    expect(noTemplate.body.message).toContain('Pick the template');
+    await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ accountIds: ['nope'] }))
+      .expect(400);
+    const twice = await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ accountIds: [botId, t.ids.github] }))
+      .expect(400);
+    expect(twice.body.message).toContain('at most one github account');
+    const uncovered = await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ templateId: t.ids.noLlmTemplate, accountIds: [t.ids.anthropic] }))
+      .expect(400);
+    expect(uncovered.body.message).toContain('gives no anthropic access');
+    const created = await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ accountIds: [botId, botId] }))
+      .expect(201);
+    expect(created.body).toMatchObject({ accountIds: [botId] });
+    channelId = created.body.id as string;
+
+    // Members not granted the shared account can't pick the channel.
+    const alice = await t.member('alice');
+    expect((await t.portal(alice.cookie, 'get', '').expect(200)).body.channels).toEqual([]);
+    const aliceHook = await webhookOf(alice.cookie);
+    const refused = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(aliceHook.id))
+      .expect(400);
+    expect(refused.body.message).toContain('not granted');
+
+    // Carol has two GitHub accounts: the channel's agents use the shared one, without her picking.
+    await t
+      .admin('post', '/members')
+      .send({
+        name: 'carol',
+        email: 'carol@example.com',
+        templateIds: [t.ids.template],
+        accountIds: [t.ids.github, t.ids.anthropic, botId],
+      })
+      .expect(201);
+    const carol = await t.cookieFor('carol');
+    const info = await t.portal(carol, 'get', '').expect(200);
+    expect(info.body.channels).toEqual([expect.objectContaining({ accountIds: [botId] })]);
+    const hook = await webhookOf(carol);
+    await t
+      .portal(carol, 'post', '/triggers')
+      .send(triggerBody(hook.id, { channelId: '' }))
+      .expect(400);
+    const trigger = await t
+      .portal(carol, 'post', '/triggers')
+      .send(triggerBody(hook.id, { accountIds: [t.ids.github] }))
+      .expect(201);
+    // The trigger keeps the accounts the channel doesn't set.
+    expect(trigger.body.accountIds).toEqual([t.ids.anthropic]);
+    await deliver(hook.path, comment('ISS-1', 'Hello'));
+    const fired = await t
+      .portal(carol, 'get', `/triggers/${trigger.body.id as string}`)
+      .expect(200);
+    const run = t.launchpad.runs.require(fired.body.lastRunId as string);
+    expect([...run.accountIds].sort()).toEqual([t.ids.anthropic, botId].sort());
   });
 
   it('gives the events of a conversation to its running agent', async () => {
