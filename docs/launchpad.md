@@ -89,7 +89,8 @@ the gateway host whatever the environment.
 ## Webhook triggers
 
 A trigger launches an agent for each accepted delivery on one of the member's own
-[webhooks](../README.md#webhooks) (**New agent → On a webhook event**, or
+[webhooks](../README.md#webhooks), or on one the admin shares with every member (**New agent → On
+a webhook event**, or
 `POST /api/me/launchpad/triggers`):
 
 ```json
@@ -124,8 +125,10 @@ A trigger launches an agent for each accepted delivery on one of the member's ow
     or updated to, an assignee (id, name or email), GitHub's `assigned` action (login or id), or
     people added to a monday.com people column (user id).
 - **Permissions.** The template, accounts, harness and model are checked like a launch when the
-  trigger is created and resumed, and again on each launch. Only the member's own webhooks can
-  trigger their agents.
+  trigger is created and resumed, and again on each launch. Only the member's own webhooks and
+  the admin's shared ones can trigger their agents; a delivery on a shared webhook launches the
+  matching triggers of every member. A trigger on a webhook the admin no longer shares stops at
+  its next delivery, and can be resumed once it is shared again.
 - **Limits.** A trigger has at most 3 runs queued or running; further deliveries are skipped (and
   logged in Activity). The usual concurrency limits and token budget apply to each run.
 - **Editing.** The member can change everything a trigger does and listens to (**Edit** in the

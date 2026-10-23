@@ -25,7 +25,10 @@ export function webhookReceiver(webhooks: Webhooks): Router {
   return router;
 }
 
-/** Managing webhooks, for the admin (all) or a member (its own). */
+/**
+ * Managing webhooks, for the admin (all) or a member (its own; it also lists the admin's shared
+ * ones, which only the admin manages).
+ */
 export function webhookRoutes(webhooks: Webhooks, actorOf: (res: Response) => Actor): Router {
   const router = express.Router();
   router.use(express.json({ limit: '16kb' }));
@@ -44,6 +47,10 @@ export function webhookRoutes(webhooks: Webhooks, actorOf: (res: Response) => Ac
   router.put(
     `${WEBHOOK_PATH}/auth`,
     h((req, res) => webhooks.setAuth(param(req, 'id'), req.body, actorOf(res))),
+  );
+  router.patch(
+    WEBHOOK_PATH,
+    h((req, res) => webhooks.setShared(param(req, 'id'), req.body, actorOf(res))),
   );
   router.delete(
     WEBHOOK_PATH,

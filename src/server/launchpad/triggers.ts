@@ -193,9 +193,9 @@ export function eventPrompt(delivery: AcceptedDelivery, at: Date): string {
 }
 
 /**
- * Webhook triggers: each accepted delivery on a member's webhook launches the agents its triggers
- * describe, with the trigger's instructions in the system prompt and the event's payload as the
- * task. Like schedules, a trigger stops for good when its member's key is rotated or revoked, the
+ * Webhook triggers: each accepted delivery on a member's webhook (or one the admin shares)
+ * launches the agents its triggers describe, with the trigger's instructions in the system prompt
+ * and the event's payload as the task. Like schedules, a trigger stops for good when its member's key is rotated or revoked, the
  * member is gone, or the launch is no longer allowed.
  */
 export class Triggers {
@@ -228,7 +228,7 @@ export class Triggers {
 
   create(member: Member, input: unknown): Trigger {
     const req = triggerSchema.parse(input);
-    const webhook = this.webhooks.visible(req.webhookId, { kind: 'member', member });
+    const webhook = this.webhooks.usable(req.webhookId, member);
     if (!webhook) throw notFound('Webhook not found');
     const { plan, accountIds } = this.planTrigger(member, req, webhook.source);
     const keyGeneration = this.gateway.memberKeyGeneration(member.id);
@@ -276,7 +276,7 @@ export class Triggers {
   edit(member: Member, id: string, input: unknown): Trigger {
     const trigger = this.visible({ kind: 'member', member }, id);
     const req = triggerSchema.parse(input);
-    const webhook = this.webhooks.visible(req.webhookId, { kind: 'member', member });
+    const webhook = this.webhooks.usable(req.webhookId, member);
     if (!webhook) throw notFound('Webhook not found');
     const { plan, accountIds } = this.planTrigger(member, req, webhook.source);
     this.update(id, {
@@ -395,9 +395,7 @@ export class Triggers {
 
   view(trigger: Trigger): TriggerView {
     const owner = this.gateway.activeMember(trigger.memberId);
-    const webhook = owner
-      ? this.webhooks.visible(trigger.webhookId, { kind: 'member', member: owner })
-      : null;
+    const webhook = owner ? this.webhooks.usable(trigger.webhookId, owner) : null;
     const channel = trigger.channelId === null ? null : this.channels.get(trigger.channelId);
     return {
       ...trigger,
@@ -422,8 +420,8 @@ export class Triggers {
       return this.require(id);
     }
     if (actor.kind !== 'member') throw badRequest('Only its member can resume a trigger');
-    if (!this.webhooks.visible(trigger.webhookId, actor)) {
-      throw badRequest('Its webhook was deleted');
+    if (!this.webhooks.usable(trigger.webhookId, actor.member)) {
+      throw badRequest('Its webhook was deleted or is no longer shared');
     }
     const channel = trigger.channelId === null ? null : this.channels.get(trigger.channelId);
     if (trigger.channelId !== null && !channel?.enabled) throw badRequest(CHANNEL_GONE);
@@ -529,8 +527,12 @@ export class Triggers {
   private fire(trigger: Trigger, delivery: AcceptedDelivery): void {
     const member = this.owner(trigger);
     if (!member) return;
-    // Only the member's own webhooks launch their agents.
-    if (delivery.webhook.ownerMemberId !== member.id) return;
+    // Only the member's own webhooks and those the admin shares launch their agents.
+    const { ownerMemberId, shared } = delivery.webhook;
+    if (ownerMemberId !== member.id && !(ownerMemberId === null && shared)) {
+      this.stop(trigger, 'Its webhook is no longer shared');
+      return;
+    }
     if (trigger.channelId !== null) {
       const channel = this.channels.get(trigger.channelId);
       if (!channel?.enabled) this.stop(trigger, CHANNEL_GONE);

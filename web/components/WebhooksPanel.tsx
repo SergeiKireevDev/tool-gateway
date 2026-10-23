@@ -29,6 +29,8 @@ interface Webhook {
   source: Source;
   auth: AuthKind;
   ownerMemberId: string | null;
+  /** The admin's webhooks only: every member's triggers can listen to it. */
+  shared: boolean;
   createdAt: string;
   lastEventAt: string | null;
   accepted: number;
@@ -75,6 +77,9 @@ const SETUP: Partial<Record<Source, string>> = {
   github:
     'In GitHub: repository → Settings → Webhooks → Add webhook, with this address, content type application/json, and the same secret as here.',
 };
+
+const SHARE_HINT =
+  'Share with every member: their agent triggers can listen to it (only you manage it and see its deliveries)';
 
 const HTTP_NOT_FOUND = 404;
 const PAYLOAD_PREVIEW = 160;
@@ -136,14 +141,18 @@ function AuthFields({
 
 function CreateForm({
   api,
+  admin,
   onCreated,
   onCancel,
 }: {
   api: Api;
+  /** The admin can share the webhook with every member. */
+  admin: boolean;
   onCreated: (c: Created) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState('');
+  const [shared, setShared] = useState(false);
   const [source, setSource] = useState<Source>('monday');
   const [auth, setAuth] = useState<AuthKind>('url');
   const [secret, setSecret] = useState('');
@@ -158,6 +167,7 @@ function CreateForm({
           source,
           auth,
           ...(needsSecret(auth) ? { signingSecret: secret } : {}),
+          ...(admin ? { shared } : {}),
         };
         api<Created>('POST', '/webhooks', body).then(onCreated, (err: unknown) => {
           setError((err as Error).message);
@@ -200,6 +210,18 @@ function CreateForm({
         secret={secret}
         setSecret={setSecret}
       />
+      {admin && (
+        <label className="flex items-center gap-1.5 text-sm text-slate-600">
+          <input
+            type="checkbox"
+            checked={shared}
+            onChange={(e) => {
+              setShared(e.target.checked);
+            }}
+          />
+          {SHARE_HINT}
+        </label>
+      )}
       <ErrorBanner message={error} />
       <div className="flex justify-end gap-2">
         <Button variant="secondary" onClick={onCancel}>
@@ -314,27 +336,111 @@ function Deliveries({ api, webhook }: { api: Api; webhook: Webhook }) {
   );
 }
 
-function WebhookCard({
-  api,
-  webhook: w,
-  now,
-  onReveal,
-  onAuth,
-  onChanged,
-  onError,
-}: {
+interface CardProps {
   api: Api;
   webhook: Webhook;
+  /** Whether the viewer is the admin (members can't manage the admin's shared webhooks). */
+  admin: boolean;
   now: number;
   onReveal: (c: Created) => void;
   onAuth: (w: Webhook) => void;
   onChanged: () => void;
   onError: (message: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
+}
+
+/** Sharing one of the admin's webhooks with every member, or no longer. */
+function ShareButton({
+  api,
+  webhook: w,
+  onChanged,
+  fail,
+}: Pick<CardProps, 'api' | 'webhook' | 'onChanged'> & { fail: (err: unknown) => void }) {
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      onClick={() => {
+        if (
+          w.shared &&
+          !confirm(`Stop sharing "${w.name}"? Members' triggers on it stop at its next delivery.`)
+        )
+          return;
+        api('PATCH', `/webhooks/${w.id}`, { shared: !w.shared }).then(onChanged, fail);
+      }}
+    >
+      {w.shared ? 'Stop sharing' : 'Share'}
+    </Button>
+  );
+}
+
+/** Managing a webhook: its log, access control, address, sharing; deleting it. */
+function WebhookActions({
+  api,
+  webhook: w,
+  admin,
+  open,
+  setOpen,
+  onReveal,
+  onAuth,
+  onChanged,
+  onError,
+}: Omit<CardProps, 'now'> & { open: boolean; setOpen: (open: boolean) => void }) {
   const fail = (err: unknown): void => {
     onError((err as Error).message);
   };
+  return (
+    <span className="flex gap-2">
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => {
+          setOpen(!open);
+        }}
+      >
+        {open ? 'Hide deliveries' : 'Deliveries'}
+      </Button>
+      {admin && w.ownerMemberId === null && (
+        <ShareButton api={api} webhook={w} onChanged={onChanged} fail={fail} />
+      )}
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => {
+          onAuth(w);
+        }}
+      >
+        Access control
+      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => {
+          if (!confirm('Give this webhook a new address? The current one stops working at once.'))
+            return;
+          api<Created>('POST', `/webhooks/${w.id}/rotate`).then(onReveal, fail);
+        }}
+      >
+        New address
+      </Button>
+      <Button
+        size="sm"
+        variant="danger"
+        onClick={() => {
+          if (confirm(`Delete the webhook "${w.name}"?`))
+            api('DELETE', `/webhooks/${w.id}`).then(onChanged, fail);
+        }}
+      >
+        Delete
+      </Button>
+    </span>
+  );
+}
+
+function WebhookCard(props: CardProps) {
+  const { webhook: w, admin, now } = props;
+  const [open, setOpen] = useState(false);
+  // Members only use the admin's shared webhooks.
+  const manages = admin || w.ownerMemberId !== null;
   return (
     <Card className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -343,57 +449,25 @@ function WebhookCard({
             <span className="font-semibold">{w.name}</span>
             <Badge tone="indigo">{SOURCES[w.source]}</Badge>
             <Badge>{AUTH_LABELS[w.auth]}</Badge>
+            {w.shared && (
+              <Badge tone="green">
+                {admin ? 'Shared with every member' : 'Shared by the admin'}
+              </Badge>
+            )}
           </div>
           <p className="mt-1 text-xs text-slate-500">
             {w.accepted} accepted · {w.rejected} rejected
             {w.lastEventAt && ` · last ${formatRelative(w.lastEventAt, now)}`}
           </p>
+          {!manages && (
+            <p className="mt-1 text-xs text-slate-500">
+              Your agent triggers can listen to it; the admin manages it.
+            </p>
+          )}
         </div>
-        <span className="flex gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setOpen(!open);
-            }}
-          >
-            {open ? 'Hide deliveries' : 'Deliveries'}
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => {
-              onAuth(w);
-            }}
-          >
-            Access control
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => {
-              if (
-                !confirm('Give this webhook a new address? The current one stops working at once.')
-              )
-                return;
-              api<Created>('POST', `/webhooks/${w.id}/rotate`).then(onReveal, fail);
-            }}
-          >
-            New address
-          </Button>
-          <Button
-            size="sm"
-            variant="danger"
-            onClick={() => {
-              if (confirm(`Delete the webhook "${w.name}"?`))
-                api('DELETE', `/webhooks/${w.id}`).then(onChanged, fail);
-            }}
-          >
-            Delete
-          </Button>
-        </span>
+        {manages && <WebhookActions {...props} open={open} setOpen={setOpen} />}
       </div>
-      {open && <Deliveries api={api} webhook={w} />}
+      {open && <Deliveries api={props.api} webhook={w} />}
     </Card>
   );
 }
@@ -430,7 +504,7 @@ export function WebhooksPanel({ api, viewer }: Pick<PanelProps, 'api' | 'viewer'
     <section>
       <SectionHeader
         title="Webhooks"
-        description={`Addresses that receive events from other services (monday.com, Linear, GitHub…). Each has a secret address; a body signature, signed token or bearer secret can also be required. Every delivery is logged.${viewer.role === 'admin' ? ' You see every member’s webhooks.' : ''}`}
+        description={`Addresses that receive events from other services (monday.com, Linear, GitHub…). Each has a secret address; a body signature, signed token or bearer secret can also be required. Every delivery is logged.${viewer.role === 'admin' ? ' You see every member’s webhooks, and can share yours with every member for their agent triggers.' : ' Webhooks the admin shares are listed too: your agent triggers can listen to them.'}`}
         action={
           <Button
             onClick={() => {
@@ -451,6 +525,7 @@ export function WebhooksPanel({ api, viewer }: Pick<PanelProps, 'api' | 'viewer'
             key={w.id}
             api={api}
             webhook={w}
+            admin={viewer.role === 'admin'}
             now={now}
             onReveal={reveal}
             onAuth={setEditing}
@@ -468,6 +543,7 @@ export function WebhooksPanel({ api, viewer }: Pick<PanelProps, 'api' | 'viewer'
       >
         <CreateForm
           api={api}
+          admin={viewer.role === 'admin'}
           onCancel={() => {
             setCreating(false);
           }}

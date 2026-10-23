@@ -160,6 +160,11 @@ export interface Webhook {
   auth: WebhookAuth;
   /** The member who owns it, or null for the admin. */
   ownerMemberId: string | null;
+  /**
+   * The admin's webhooks only: every member can see it and have its deliveries launch their own
+   * triggers (absent: false). Only the admin manages it and reads its log.
+   */
+  shared?: boolean;
   createdAt: string;
 }
 
