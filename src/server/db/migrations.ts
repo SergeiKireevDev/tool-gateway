@@ -308,4 +308,10 @@ export const MIGRATIONS: readonly string[] = [
    ALTER TABLE triggers DROP COLUMN conversation_key;`,
   // 20: the types of notification a conversation channel carries (empty: all).
   `ALTER TABLE conversation_channels ADD COLUMN event_types TEXT NOT NULL DEFAULT '[]';`,
+  // 21: conversation channels pick deliveries like triggers (webhook sources, filters), and set
+  // the access template and the TTL of their agents (null: the trigger's, the default timeout).
+  `ALTER TABLE conversation_channels ADD COLUMN sources TEXT NOT NULL DEFAULT '[]';
+   ALTER TABLE conversation_channels ADD COLUMN filters TEXT NOT NULL DEFAULT '{}';
+   ALTER TABLE conversation_channels ADD COLUMN template_id TEXT;
+   ALTER TABLE conversation_channels ADD COLUMN agent_ttl_seconds INTEGER;`,
 ];

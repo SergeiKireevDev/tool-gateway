@@ -116,6 +116,10 @@ describe('conversation triggers', () => {
         description: 'One per issue',
         conversationKey: KEY,
         eventTypes: [],
+        sources: [],
+        filters: { contains: [], statusChangedTo: [], assignedTo: [] },
+        templateId: null,
+        agentTtlSeconds: null,
       },
     ]);
     const plain = await t
@@ -194,6 +198,114 @@ describe('conversation triggers', () => {
       .admin('put', `/launchpad/channels/${channelId}`)
       .send({ name: 'Linear issues', conversationKey: KEY, eventTypes: [''] })
       .expect(400);
+  });
+
+  it('lets the admin pick the sources, filters, template and agent TTL of a channel', async () => {
+    const own = await t
+      .admin('post', '/templates')
+      .send({
+        name: 'conversation agents',
+        grants: [
+          { tool: 'anthropic', permissions: ['llm:invoke'], resources: ['claude-sonnet-5'] },
+        ],
+        defaultTtlSeconds: 3600,
+        maxTtlSeconds: 12 * 3600,
+      })
+      .expect(201);
+    const convTemplate = own.body.id as string;
+    const body = (extra: object) => ({ name: 'Threads', conversationKey: KEY, ...extra });
+    // The template must exist, and its keys must outlive the agents.
+    await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ templateId: 'nope' }))
+      .expect(400);
+    const tooLong = await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ templateId: t.ids.template, agentTtlSeconds: 5 * 3600 }))
+      .expect(400);
+    expect(JSON.stringify(tooLong.body)).toContain('agent TTL');
+    await t
+      .admin('post', '/launchpad/channels')
+      .send(body({ agentTtlSeconds: 60 }))
+      .expect(400);
+    const created = await t
+      .admin('post', '/launchpad/channels')
+      .send(
+        body({
+          sources: ['github'],
+          filters: { contains: ['urgent'] },
+          templateId: convTemplate,
+          agentTtlSeconds: 10 * 3600,
+        }),
+      )
+      .expect(201);
+    channelId = created.body.id as string;
+    expect(created.body).toMatchObject({
+      sources: ['github'],
+      filters: { contains: ['urgent'], statusChangedTo: [], assignedTo: [] },
+      templateId: convTemplate,
+      agentTtlSeconds: 10 * 3600,
+    });
+
+    // Members only see the channels whose template is one of theirs.
+    const bob = await t.member('bob');
+    expect((await t.portal(bob.cookie, 'get', '').expect(200)).body.channels).toEqual([]);
+    const alice = await t.member('alice', [t.ids.template, convTemplate]);
+    const info = await t.portal(alice.cookie, 'get', '').expect(200);
+    expect(info.body.channels).toEqual([expect.objectContaining({ id: channelId })]);
+
+    // A trigger on the channel listens to one of its sources, with its template.
+    const hook = await webhookOf(alice.cookie);
+    const source = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id, { templateId: convTemplate }))
+      .expect(400);
+    expect(JSON.stringify(source.body)).toContain('only carries github webhooks');
+    await t
+      .admin('put', `/launchpad/channels/${channelId}`)
+      .send(
+        body({
+          sources: ['generic', 'github'],
+          filters: { contains: ['urgent'] },
+          templateId: convTemplate,
+          agentTtlSeconds: 10 * 3600,
+        }),
+      )
+      .expect(200);
+    const template = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id))
+      .expect(400);
+    expect(template.body.message).toContain('use template "conversation agents"');
+    const trigger = await t
+      .portal(alice.cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id, { templateId: convTemplate }))
+      .expect(201);
+    expect(trigger.body).toMatchObject({ channelAgentTtlSeconds: 10 * 3600 });
+    const triggerId = trigger.body.id as string;
+
+    // Only deliveries that pass its filters are messages.
+    await deliver(hook.path, comment('ISS-1', 'Hello'));
+    expect(t.driver.specs).toHaveLength(0);
+    await deliver(hook.path, comment('ISS-1', 'Urgent: it crashes'));
+    expect(t.driver.specs).toHaveLength(1);
+
+    // Its agents live as long as its agent TTL, with its template.
+    const first = await t.portal(alice.cookie, 'get', `/triggers/${triggerId}`).expect(200);
+    const run = t.launchpad.runs.require(first.body.lastRunId as string);
+    expect(run).toMatchObject({ templateId: convTemplate, timeoutSeconds: 10 * 3600 });
+
+    // The admin moves the channel to another template: the next agent gets it.
+    await t
+      .admin('put', `/launchpad/channels/${channelId}`)
+      .send(body({ templateId: t.ids.template }))
+      .expect(200);
+    await finish(t.driver.specs[0]?.config.runToken ?? '');
+    await deliver(hook.path, comment('ISS-2', 'urgent too'));
+    const next = await t.portal(alice.cookie, 'get', `/triggers/${triggerId}`).expect(200);
+    expect(next.body.lastRunId).not.toBe(run.id);
+    const nextRun = t.launchpad.runs.require(next.body.lastRunId as string);
+    expect(nextRun).toMatchObject({ templateId: t.ids.template, timeoutSeconds: 2 * 3600 });
   });
 
   it('gives the events of a conversation to its running agent', async () => {

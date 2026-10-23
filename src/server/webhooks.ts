@@ -41,7 +41,14 @@ const JWT_PARTS = 3;
 const WEBHOOK_NOT_FOUND = 'Webhook not found';
 
 const name = z.string().trim().min(1).max(MAX_NAME);
-const source = z.enum(['monday', 'linear', 'github', 'generic']);
+/** What can send to a webhook (see `Webhook.source`). */
+export const WEBHOOK_SOURCES = [
+  'monday',
+  'linear',
+  'github',
+  'generic',
+] as const satisfies readonly WebhookSource[];
+const source = z.enum(WEBHOOK_SOURCES);
 const signingSecret = z.string().trim().min(1).max(MAX_SIGNING_SECRET);
 
 export const webhookSchema = z

@@ -125,6 +125,11 @@ export interface LaunchOptions {
   /** A trigger's instructions, added to the system prompt. */
   instructions?: string;
   memoryIn?: string | null;
+  /**
+   * How long the agent may live, instead of the launchpad's default timeout (a conversation
+   * channel's agent TTL); capped by the template's max TTL.
+   */
+  timeoutSeconds?: number;
   /** The schedule's recorded member key generation: the run fails if it changed. */
   keyGeneration?: number;
   /** The workflow the run is a step of. */
@@ -462,7 +467,7 @@ export class Launchpad {
   }
 
   launch(member: Member, input: unknown, opts: LaunchOptions = {}): Run {
-    const plan = this.plan(member, input, opts.workflowStep);
+    const plan = this.withTimeout(this.plan(member, input, opts.workflowStep), opts.timeoutSeconds);
     if (opts.parentRunId !== undefined) this.chainParent(member, opts.parentRunId);
     const attachments = this.attachments.forLaunch(member.id, opts.attachmentIds ?? []);
     const copied =
@@ -473,6 +478,13 @@ export class Launchpad {
             attachments,
           );
     return this.launchPlan(member, plan, opts, attachments, copied);
+  }
+
+  /** The plan with the run's own timeout, if it has one, within what the template's keys allow. */
+  private withTimeout(plan: LaunchPlan, timeoutSeconds: number | undefined): LaunchPlan {
+    if (timeoutSeconds === undefined) return plan;
+    const longest = plan.template.maxTtlSeconds - KEY_MARGIN_SECONDS;
+    return { ...plan, timeoutSeconds: Math.min(timeoutSeconds, longest) };
   }
 
   /**

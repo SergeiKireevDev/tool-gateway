@@ -4,7 +4,7 @@ import { redact } from '../db/redact.js';
 import { badRequest, notFound } from '../errors.js';
 import type { Gateway } from '../gateway.js';
 import { randomId } from '../store/crypto.js';
-import type { Member, Session } from '../store/types.js';
+import type { Member, Session, WebhookSource } from '../store/types.js';
 import { MS_PER_SECOND } from '../units.js';
 import type { AcceptedDelivery, Webhooks } from '../webhooks.js';
 import { type Actor, launchSchema, type Launchpad, MAX_PROMPT_LENGTH } from './launchpad.js';
@@ -16,7 +16,7 @@ import {
   conversationKeyOf,
   Conversations,
 } from './conversations.js';
-import { Channels } from './channels.js';
+import { Channels, type ConversationChannel } from './channels.js';
 import { parseQuery } from './payloadQuery.js';
 import type { PromptConversation } from './systemPrompt.js';
 import {
@@ -105,13 +105,15 @@ export interface Trigger {
 
 /**
  * A trigger as the API returns it: with its webhook's name (null once deleted), and its
- * conversation channel's name, key expression and event types (null without one, or once deleted).
+ * conversation channel's name, key expression, event types and agent TTL (null without one, or once
+ * deleted).
  */
 export type TriggerView = Trigger & {
   webhookName: string | null;
   channelName: string | null;
   conversationKey: string | null;
   channelEventTypes: string[] | null;
+  channelAgentTtlSeconds: number | null;
 };
 
 interface TriggerRow {
@@ -204,7 +206,7 @@ export class Triggers {
     private readonly now: () => Date = () => new Date(),
   ) {
     this.conversations = new Conversations(db, now);
-    this.channels = new Channels(db, now);
+    this.channels = new Channels(db, () => gateway.listTemplates(), now);
     launchpad.onFinished((run) => {
       this.onRunFinished(run);
     });
@@ -215,11 +217,10 @@ export class Triggers {
 
   create(member: Member, input: unknown): Trigger {
     const req = triggerSchema.parse(input);
-    if (!this.webhooks.visible(req.webhookId, { kind: 'member', member })) {
-      throw notFound('Webhook not found');
-    }
+    const webhook = this.webhooks.visible(req.webhookId, { kind: 'member', member });
+    if (!webhook) throw notFound('Webhook not found');
     const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
-    if (req.channelId !== undefined) this.channels.usable(req.channelId);
+    this.checkChannel(req.channelId, webhook.source, plan.template.id);
     const keyGeneration = this.gateway.memberKeyGeneration(member.id);
     if (keyGeneration === null) throw badRequest('Your membership is no longer valid');
     const ts = this.now().toISOString();
@@ -265,11 +266,10 @@ export class Triggers {
   edit(member: Member, id: string, input: unknown): Trigger {
     const trigger = this.visible({ kind: 'member', member }, id);
     const req = triggerSchema.parse(input);
-    if (!this.webhooks.visible(req.webhookId, { kind: 'member', member })) {
-      throw notFound('Webhook not found');
-    }
+    const webhook = this.webhooks.visible(req.webhookId, { kind: 'member', member });
+    if (!webhook) throw notFound('Webhook not found');
     const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
-    if (req.channelId !== undefined) this.channels.usable(req.channelId);
+    this.checkChannel(req.channelId, webhook.source, plan.template.id);
     this.update(id, {
       name: req.name ?? trigger.name,
       webhook_id: req.webhookId,
@@ -290,6 +290,30 @@ export class Triggers {
       detail: `Member "${member.name}" edited the agent trigger "${trigger.name}"`,
     });
     return this.require(id);
+  }
+
+  /**
+   * The conversation channel a trigger may pick, if any: an enabled one that carries its webhook's
+   * source, and whose agents' template (if it sets one) is the trigger's.
+   */
+  private checkChannel(
+    channelId: string | undefined,
+    source: WebhookSource,
+    templateId: string,
+  ): void {
+    if (channelId === undefined) return;
+    const channel = this.channels.usable(channelId);
+    if (channel.sources.length > 0 && !channel.sources.includes(source)) {
+      throw badRequest(
+        `This conversation channel only carries ${channel.sources.join(', ')} webhooks`,
+      );
+    }
+    if (channel.templateId !== null && channel.templateId !== templateId) {
+      const template = this.gateway.listTemplates().find((t) => t.id === channel.templateId);
+      throw badRequest(
+        `The agents of this conversation channel use template "${template?.name ?? channel.templateId}": pick it`,
+      );
+    }
   }
 
   list(memberId?: string): Trigger[] {
@@ -332,6 +356,7 @@ export class Triggers {
       channelName: channel?.name ?? null,
       conversationKey: channel?.conversationKey ?? null,
       channelEventTypes: channel?.eventTypes ?? null,
+      channelAgentTtlSeconds: channel?.agentTtlSeconds ?? null,
     };
   }
 
@@ -351,10 +376,9 @@ export class Triggers {
     if (!this.webhooks.visible(trigger.webhookId, actor)) {
       throw badRequest('Its webhook was deleted');
     }
-    if (trigger.channelId !== null && !this.channels.get(trigger.channelId)?.enabled) {
-      throw badRequest(CHANNEL_GONE);
-    }
-    this.launchpad.plan(actor.member, this.launchInput(trigger, trigger.instructions));
+    const channel = trigger.channelId === null ? null : this.channels.get(trigger.channelId);
+    if (trigger.channelId !== null && !channel?.enabled) throw badRequest(CHANNEL_GONE);
+    this.launchpad.plan(actor.member, this.launchInput(trigger, trigger.instructions, channel));
     const keyGeneration = this.gateway.memberKeyGeneration(actor.member.id);
     if (keyGeneration === null) throw badRequest('Your membership is no longer valid');
     this.update(id, {
@@ -380,11 +404,20 @@ export class Triggers {
       .run(...Object.values(fields), id);
   }
 
-  private launchInput(t: Trigger, prompt: string): Record<string, unknown> {
+  /**
+   * What a run of the trigger launches. A conversation channel's agents get its template (with the
+   * member's accounts for it picked anew when the admin changed it).
+   */
+  private launchInput(
+    t: Trigger,
+    prompt: string,
+    channel: ConversationChannel | null = null,
+  ): Record<string, unknown> {
+    const templateId = channel?.templateId ?? t.templateId;
     return {
       prompt,
-      templateId: t.templateId,
-      accountIds: t.accountIds,
+      templateId,
+      accountIds: templateId === t.templateId ? t.accountIds : [],
       harness: t.harness,
       ...(t.model ? { model: t.model } : {}),
       ...(t.environmentId ? { environmentId: t.environmentId } : {}),
@@ -449,8 +482,8 @@ export class Triggers {
     if (trigger.channelId !== null) {
       const channel = this.channels.get(trigger.channelId);
       if (!channel?.enabled) this.stop(trigger, CHANNEL_GONE);
-      // The channel carries only the event types the admin chose for it.
-      else if (matchesEventTypes(channel.eventTypes, delivery.eventType)) {
+      // The channel carries only the deliveries the admin chose for it.
+      else if (this.channels.carries(channel, delivery)) {
         this.converse(trigger, member, delivery, channel.conversationKey);
       }
       return;
@@ -471,15 +504,18 @@ export class Triggers {
     trigger: Trigger,
     member: Member,
     prompt: string,
-    opts: { memoryIn?: string | null },
+    opts: { memoryIn?: string | null; channel?: ConversationChannel },
   ): Run | null {
     const now = this.now();
+    const { channel = null, ...rest } = opts;
+    const ttl = channel?.agentTtlSeconds ?? null;
     try {
-      const run = this.launchpad.launch(member, this.launchInput(trigger, prompt), {
+      const run = this.launchpad.launch(member, this.launchInput(trigger, prompt, channel), {
         triggerId: trigger.id,
         instructions: trigger.instructions,
         keyGeneration: trigger.keyGeneration,
-        ...opts,
+        ...(ttl === null ? {} : { timeoutSeconds: ttl }),
+        ...rest,
       });
       this.update(trigger.id, { last_run_id: run.id, last_fired_at: now.toISOString() });
       return run;
@@ -545,12 +581,19 @@ export class Triggers {
 
   /**
    * Starts a run of the conversation: its task is the messages waiting (as many as fit), it starts
-   * from the memory the last run left, and its system prompt gives the history.
+   * from the memory the last run left, and its system prompt gives the history. It runs with the
+   * channel's template and lives as long as the channel's agent TTL.
    */
   private revive(trigger: Trigger, member: Member, conversation: Conversation): boolean {
+    const channel = trigger.channelId === null ? null : this.channels.get(trigger.channelId);
+    if (!channel?.enabled) {
+      this.stop(trigger, CHANNEL_GONE);
+      return false;
+    }
     const messages = fitting(this.conversations.pending(conversation.id));
     const run = this.launch(trigger, member, conversationPrompt(messages), {
       memoryIn: conversation.memory,
+      channel,
     });
     if (!run) return false;
     this.conversations.give(run.id, messages);
