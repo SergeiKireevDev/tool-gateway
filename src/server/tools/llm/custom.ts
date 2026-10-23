@@ -206,3 +206,72 @@ export async function listEndpointModels(
   }
   return modelIds(await res.json().catch(() => null));
 }
+
+/** A single-turn request to an endpoint, made by the gateway itself (not an agent's call). */
+export interface EndpointPrompt {
+  model: string;
+  system: string;
+  user: string;
+  maxTokens: number;
+  timeoutSeconds: number;
+}
+
+/** The text of a chat answer in the endpoint's API shape, or null when it has none. */
+function answerText(api: LlmEndpointApi, body: unknown): string | null {
+  if (!isRecord(body)) return null;
+  if (api === 'anthropic') {
+    const blocks = Array.isArray(body.content) ? (body.content as unknown[]) : [];
+    const texts = blocks.flatMap((b) =>
+      isRecord(b) && b.type === 'text' && typeof b.text === 'string' ? [b.text] : [],
+    );
+    return texts.length > 0 ? texts.join('') : null;
+  }
+  const choice: unknown = Array.isArray(body.choices) ? (body.choices as unknown[])[0] : undefined;
+  const message = isRecord(choice) ? choice.message : undefined;
+  return isRecord(message) && typeof message.content === 'string' ? message.content : null;
+}
+
+/**
+ * Asks an endpoint for one answer (no streaming, no tools), with the endpoint's token. Throws
+ * when it can't be reached, refuses, or answers no text.
+ */
+export async function completeOnEndpoint(
+  endpoint: LlmEndpoint,
+  prompt: EndpointPrompt,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const headers = new Headers({
+    accept: 'application/json',
+    'content-type': 'application/json',
+    'user-agent': 'local-gateway',
+  });
+  if (endpoint.token) headers.set('authorization', `Bearer ${endpoint.token}`);
+  const user = { role: 'user', content: prompt.user };
+  let url: string;
+  let body: Record<string, unknown>;
+  if (endpoint.api === 'anthropic') {
+    headers.set('anthropic-version', ANTHROPIC_VERSION);
+    url = `${apiBase(endpoint.url)}/v1/messages`;
+    body = {
+      model: prompt.model,
+      max_tokens: prompt.maxTokens,
+      system: prompt.system,
+      messages: [user],
+    };
+  } else {
+    url = `${apiBase(endpoint.url)}/v1/chat/completions`;
+    const system = { role: 'system', content: prompt.system };
+    body = { model: prompt.model, max_tokens: prompt.maxTokens, messages: [system, user] };
+  }
+  const res = await fetchImpl(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    redirect: 'error',
+    signal: AbortSignal.timeout(prompt.timeoutSeconds * MS_PER_SECOND),
+  });
+  if (!res.ok) throw new Error(`The custom LLM endpoint answered HTTP ${String(res.status)}`);
+  const text = answerText(endpoint.api, await res.json().catch(() => null));
+  if (text === null) throw new Error('The custom LLM endpoint gave no answer');
+  return text;
+}

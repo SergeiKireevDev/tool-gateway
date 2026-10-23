@@ -49,6 +49,7 @@ import {
 import { ATTACHMENT_LIMITS, type Attachment, Attachments } from './attachments.js';
 import { writeChunks } from './chunks.js';
 import { Environments } from './environments.js';
+import { RunTitles } from './runTitles.js';
 import { type Skill, Skills } from './skills.js';
 import {
   buildSystemPrompt,
@@ -124,6 +125,8 @@ export interface LaunchOptions {
   triggerId?: string;
   /** A trigger's instructions, added to the system prompt. */
   instructions?: string;
+  /** The run's title in run lists (webhook runs: from their event). */
+  title?: string;
   memoryIn?: string | null;
   /**
    * How long the agent may live, instead of the launchpad's default timeout (a conversation
@@ -186,7 +189,7 @@ export interface LaunchpadDeps {
   /** Gateway base URL as seen from inside the VMs. */
   vmGatewayUrl: string;
   now?: () => Date;
-  /** Reaches custom LLM endpoints, to list their models. */
+  /** Reaches custom LLM endpoints, to list their models and title runs. */
   fetchImpl?: typeof fetch;
 }
 
@@ -261,12 +264,15 @@ export class Launchpad {
   readonly skills: Skills;
   /** Files members attach to their launches. */
   readonly attachments: Attachments;
+  /** Titles of webhook runs, from the admin's title model. */
+  readonly titles: RunTitles;
 
   constructor(private readonly deps: LaunchpadDeps) {
     this.now = deps.now ?? (() => new Date());
     this.environments = new Environments(deps.runs.db, deps.driver, this.now);
     this.skills = new Skills(deps.runs.db, this.now);
     this.attachments = new Attachments(deps.runs.db, this.now);
+    this.titles = new RunTitles(deps.gateway, deps.runs, deps.fetchImpl);
   }
 
   /** Called after a run reached a final state (the scheduler keeps memory from it). */
@@ -524,6 +530,7 @@ export class Launchpad {
       model: plan.model,
       prompt: plan.prompt,
       instructions: opts.instructions ?? null,
+      title: opts.title ?? null,
       templateId: plan.template.id,
       templateName: plan.template.name,
       accountIds: plan.accountIds,

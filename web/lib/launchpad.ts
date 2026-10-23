@@ -34,6 +34,8 @@ export interface Run {
   prompt: string;
   /** A webhook trigger's instructions (the prompt is then the event). */
   instructions: string | null;
+  /** One line for run lists (webhook runs: from their event), or null: show the prompt. */
+  title: string | null;
   templateId: string;
   templateName: string;
   /** The member's accounts the run used, when they have several for a tool. */
@@ -411,6 +413,8 @@ export interface LaunchSettings {
   vcpus: number;
   memMib: number;
   outputRetentionDays: number;
+  /** One of a template's custom LLM endpoint models, which titles webhook runs (null: none). */
+  titleModel: { templateId: string; model: string } | null;
 }
 
 export interface MemberLaunch {

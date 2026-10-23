@@ -47,6 +47,8 @@ export interface Run {
   prompt: string;
   /** A trigger's instructions, added to the system prompt (the prompt is then the event). */
   instructions: string | null;
+  /** One line for run lists (webhook runs: from their event), or null: the prompt is shown. */
+  title: string | null;
   templateId: string;
   templateName: string;
   accountIds: string[];
@@ -87,6 +89,7 @@ export type NewRun = Pick<
   | 'model'
   | 'prompt'
   | 'instructions'
+  | 'title'
   | 'templateId'
   | 'templateName'
   | 'accountIds'
@@ -213,6 +216,17 @@ export interface LaunchSettings {
   memMib: number;
   /** Output files are deleted after this many days; transcripts are kept. */
   outputRetentionDays: number;
+  /**
+   * The model that titles webhook runs: one of a template's custom LLM endpoint models (null:
+   * titles come from the event alone).
+   */
+  titleModel: TitleModel | null;
+}
+
+/** A template whose custom LLM endpoint (URL, chat API, token, allowlist) serves `model`. */
+export interface TitleModel {
+  templateId: string;
+  model: string;
 }
 
 const DEFAULT_TIMEOUT_HOURS = 2;
@@ -226,6 +240,7 @@ export const DEFAULT_SETTINGS: LaunchSettings = {
   vcpus: 1,
   memMib: 1024,
   outputRetentionDays: 30,
+  titleModel: null,
 };
 
 export interface MemberLaunch {
@@ -248,6 +263,7 @@ interface RunRow {
   model: string | null;
   prompt: string;
   instructions: string | null;
+  title: string | null;
   template_id: string;
   template_name: string;
   account_ids: string;
@@ -300,6 +316,7 @@ function toRun(r: RunRow): Run {
     model: r.model,
     prompt: r.prompt,
     instructions: r.instructions,
+    title: r.title,
     templateId: r.template_id,
     templateName: r.template_name,
     accountIds: JSON.parse(r.account_ids) as string[],
@@ -332,6 +349,7 @@ const COLUMNS: Readonly<Partial<Record<string, string>>> = {
   statusReason: 'status_reason',
   memoryOut: 'memory_out',
   finalMessage: 'final_message',
+  title: 'title',
   startedAt: 'started_at',
   deadline: 'deadline',
   finishedAt: 'finished_at',
@@ -345,6 +363,7 @@ export type RunPatch = { runTokenHash?: string } & Partial<
     | 'statusReason'
     | 'memoryOut'
     | 'finalMessage'
+    | 'title'
     | 'startedAt'
     | 'deadline'
     | 'finishedAt'
@@ -363,10 +382,10 @@ export class RunStore {
     this.db.sql
       .prepare(
         `INSERT INTO runs (id, member_id, member_name, schedule_id, trigger_id, workflow_id,
-           workflow_step, parent_run_id, harness, model, prompt, instructions, template_id,
+           workflow_step, parent_run_id, harness, model, prompt, instructions, title, template_id,
            template_name, account_ids, environment_id, environment_name, skills, run_token_hash,
            status, timeout_seconds, token_budget, key_generation, memory_in, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         run.id,
@@ -381,6 +400,7 @@ export class RunStore {
         run.model,
         redact(run.prompt),
         run.instructions === null ? null : redact(run.instructions),
+        run.title === null ? null : redact(run.title),
         run.templateId,
         run.templateName,
         JSON.stringify(run.accountIds),

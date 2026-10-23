@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type Api, ApiError } from '@/lib/api';
 import { HTTP_NOT_FOUND } from '@/lib/http';
+import type { TemplateSummary } from '@/lib/types';
 import {
   formatTokens,
   type LaunchSettings,
@@ -19,6 +20,7 @@ import {
   Field,
   Input,
   SectionHeader,
+  Select,
 } from '../ui';
 import { ConversationChannelsPanel } from './ConversationChannelsPanel';
 import { GuestEnvironmentsPanel } from './GuestEnvironmentsPanel';
@@ -54,6 +56,73 @@ const NUMBER_FIELDS: { key: NumberKey; label: string; hint: string }[] = [
     hint: 'Transcripts and gateway calls are kept.',
   },
 ];
+
+const CUSTOM_LLM_TOOL = 'custom';
+const TITLE_MODELS_LIST = 'title-models';
+
+/** The models a template's custom LLM endpoint allows by name (patterns aside), or null: none. */
+function endpointModels(template: TemplateSummary | undefined): string[] | null {
+  const grant = template?.grants.find((g) => g.tool === CUSTOM_LLM_TOOL && g.endpoint);
+  return grant ? grant.resources.filter((r) => !r.includes('*')) : null;
+}
+
+/** The title model: a template with a custom LLM endpoint, and one of its models. */
+function TitleModelFields({
+  api,
+  value,
+  onChange,
+}: {
+  api: Api;
+  value: LaunchSettings['titleModel'];
+  onChange: (v: LaunchSettings['titleModel']) => void;
+}) {
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
+  useEffect(() => {
+    api<TemplateSummary[]>('GET', '/templates').then(setTemplates, () => undefined);
+  }, [api]);
+  const withEndpoint = templates.filter((t) => endpointModels(t) !== null);
+  const models = endpointModels(templates.find((t) => t.id === value?.templateId)) ?? [];
+  return (
+    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <Field
+        label="Title model"
+        hint="Titles webhook runs from their event, with this template's custom LLM endpoint (events only go there). None: titles come from the event alone."
+      >
+        <Select
+          value={value?.templateId ?? ''}
+          onChange={(e) => {
+            const templateId = e.target.value;
+            const model = endpointModels(templates.find((t) => t.id === templateId))?.[0] ?? '';
+            onChange(templateId === '' ? null : { templateId, model });
+          }}
+        >
+          <option value="">None</option>
+          {withEndpoint.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {value && (
+        <Field label="Model" hint="One the template's endpoint allows.">
+          <Input
+            list={TITLE_MODELS_LIST}
+            value={value.model}
+            onChange={(e) => {
+              onChange({ ...value, model: e.target.value });
+            }}
+          />
+          <datalist id={TITLE_MODELS_LIST}>
+            {models.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </Field>
+      )}
+    </div>
+  );
+}
 
 function SettingsForm({
   api,
@@ -115,6 +184,13 @@ function SettingsForm({
           </Field>
         ))}
       </div>
+      <TitleModelFields
+        api={api}
+        value={draft.titleModel}
+        onChange={(titleModel) => {
+          setDraft({ ...draft, titleModel });
+        }}
+      />
       <div className="mt-4 flex items-center justify-between gap-4">
         <ErrorBanner message={error} />
         <Button onClick={save}>Save settings</Button>
