@@ -49,7 +49,7 @@ function ChainNode({
   now: number;
   onOpen?: () => void;
 }) {
-  const prompt = run.instructions ?? run.prompt;
+  const prompt = run.title ?? run.instructions ?? run.prompt;
   return (
     <button
       type="button"

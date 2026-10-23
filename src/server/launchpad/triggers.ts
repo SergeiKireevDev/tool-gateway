@@ -18,6 +18,7 @@ import {
 } from './conversations.js';
 import { Channels, type ConversationChannel } from './channels.js';
 import { parseQuery } from './payloadQuery.js';
+import { conversationTitle, eventTitle } from './runTitles.js';
 import type { PromptConversation } from './systemPrompt.js';
 import {
   eventTypesSchema,
@@ -512,16 +513,21 @@ export class Triggers {
       });
       return;
     }
-    const now = this.now();
-    this.launch(trigger, member, eventPrompt(delivery, now), {});
+    const { webhook, eventType, payload } = delivery;
+    this.launch(trigger, member, eventPrompt(delivery, this.now()), {
+      title: eventTitle({ source: webhook.source, webhookName: webhook.name, eventType, payload }),
+    });
   }
 
-  /** Launches one of the trigger's runs; a launch that is no longer allowed stops the trigger. */
+  /**
+   * Launches one of the trigger's runs, titled from its event (the title model, if the admin set
+   * one, then refines it); a launch that is no longer allowed stops the trigger.
+   */
   private launch(
     trigger: Trigger,
     member: Member,
     prompt: string,
-    opts: { memoryIn?: string | null; channel?: ConversationChannel },
+    opts: { title: string; memoryIn?: string | null; channel?: ConversationChannel },
   ): Run | null {
     const now = this.now();
     const { channel = null, ...rest } = opts;
@@ -535,6 +541,7 @@ export class Triggers {
         ...rest,
       });
       this.update(trigger.id, { last_run_id: run.id, last_fired_at: now.toISOString() });
+      void this.launchpad.titles.refine(run.id, trigger.instructions, prompt);
       return run;
     } catch (err) {
       this.stop(trigger, `Can't launch anymore: ${(err as Error).message}`);
@@ -609,6 +616,7 @@ export class Triggers {
     }
     const messages = fitting(this.conversations.pending(conversation.id));
     const run = this.launch(trigger, member, conversationPrompt(messages), {
+      title: conversationTitle(channel.name, conversation.key, messages.length),
       memoryIn: conversation.memory,
       channel,
     });

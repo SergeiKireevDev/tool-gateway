@@ -18,7 +18,14 @@ import { MAX_RECEIVE_WAIT_SECONDS, type Triggers } from './triggers.js';
 import type { Workflows, WorkflowView } from './workflows.js';
 import { RUN_HARNESSES, RUNNER_LIMITS, SKILL_NAME_RE } from './protocol.js';
 import type { Skills } from './skills.js';
-import { RUN_STATUSES, type LaunchSettings, type Run, type RunFilter } from './runStore.js';
+import {
+  RUN_STATUSES,
+  type LaunchSettings,
+  type Run,
+  type RunFilter,
+  type TitleModel,
+} from './runStore.js';
+import { RunTitles } from './runTitles.js';
 
 const MAX_TIMEOUT_HOURS = 24;
 const MIN_TIMEOUT_MINUTES = 5;
@@ -63,6 +70,14 @@ const settingsSchema = z
     vcpus: z.number().int().min(1).max(MAX_VCPUS),
     memMib: z.number().int().min(MIN_MEM_MIB).max(MAX_MEM_MIB),
     outputRetentionDays: z.number().int().min(1).max(MAX_RETENTION_DAYS),
+    /** Absent: unchanged. */
+    titleModel: z
+      .object({
+        templateId: z.string().min(1).max(MAX_ID_LENGTH),
+        model: z.string().trim().min(1).max(MAX_ID_LENGTH),
+      })
+      .nullable()
+      .optional(),
   })
   .refine((s) => s.defaultTimeoutSeconds <= s.maxTimeoutSeconds, {
     message: 'The default timeout must not exceed the maximum',
@@ -149,6 +164,18 @@ function runFilter(req: Request): RunFilter {
 }
 
 /** A run with its token usage, as the API returns it. */
+/** A title model must be one of a template's custom LLM endpoint models. */
+function checkTitleModel(gateway: Gateway, choice: TitleModel | null): void {
+  if (choice === null) return;
+  const template = gateway.storedTemplate(choice.templateId);
+  if (!template) throw badRequest("The title model's template does not exist");
+  if (!RunTitles.grantFor(template.grants, choice.model)) {
+    throw badRequest(
+      `Template "${template.name}" gives no custom LLM endpoint that allows model "${choice.model}"`,
+    );
+  }
+}
+
 function runView(launchpad: Launchpad, gateway: Gateway, run: Run) {
   const usage = run.sessionId ? gateway.llmUsage.totalsFor([run.sessionId]) : null;
   return { ...run, tokensUsed: usage?.total ?? 0 };
@@ -658,7 +685,12 @@ export function adminLaunchRoutes(
   router.put(
     '/settings',
     h((req) => {
-      const settings: LaunchSettings = settingsSchema.parse(req.body);
+      const { titleModel, ...limits } = settingsSchema.parse(req.body);
+      const settings: LaunchSettings = {
+        ...limits,
+        titleModel: titleModel === undefined ? launchpad.runs.settings().titleModel : titleModel,
+      };
+      checkTitleModel(gateway, settings.titleModel);
       launchpad.runs.saveSettings(settings);
       gateway.activity.add({ kind: 'admin', detail: 'Updated launchpad settings' });
       void launchpad.pump();

@@ -1234,6 +1234,11 @@ export class Gateway {
     return template;
   }
 
+  /** A template as stored (endpoint tokens included: keep it server-side), or null. */
+  storedTemplate(templateId: string): Template | null {
+    return this.store.read().templates.find((t) => t.id === templateId) ?? null;
+  }
+
   /** The member's current key generation, or null when it is gone or expired. */
   memberKeyGeneration(memberId: string): number | null {
     const member = this.store.read().members.find((m) => m.id === memberId);

@@ -322,4 +322,6 @@ export const MIGRATIONS: readonly string[] = [
   `ALTER TABLE conversation_channels DROP COLUMN account_ids;`,
   // 24: a conversation channel picks its deliveries (event types, filters): triggers on one set none.
   `UPDATE triggers SET event_types = '[]', filters = '{}' WHERE channel_id IS NOT NULL;`,
+  // 25: a run's title for run lists, computed when it is created (null: its prompt is shown).
+  `ALTER TABLE runs ADD COLUMN title TEXT;`,
 ];

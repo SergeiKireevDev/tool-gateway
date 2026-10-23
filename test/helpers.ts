@@ -123,6 +123,10 @@ export const CUSTOM_LLM_URL = 'https://llm.example.com/';
 /** What the fake custom LLM endpoint lists at `GET /v1/models`. */
 export const CUSTOM_LLM_MODELS = ['qwen3', 'llama-4', 'gpt-6', 'qwen3'];
 
+/** What the fake custom LLM endpoint answers to the gateway's own calls (run titles). */
+const TITLE_REQUEST = 'the title of an agent run';
+export const CUSTOM_LLM_ANSWER = '**Triage: crash on start**\nA second line that is dropped';
+
 /** Usage every fake LLM answer reports: 100 input, 50 output, 10 cache reads, 5 cache writes. */
 export const FAKE_LLM_TOTAL = 165;
 
@@ -228,8 +232,21 @@ export function fakeLlmFetch(calls: Harness['upstreamCalls']): typeof fetch {
       string,
       unknown
     >;
-    return Promise.resolve(fakeLlmAnswer(customAsOfficial(url), body));
+    const answer = fakeLlmAnswer(customAsOfficial(url), body);
+    return url.startsWith(CUSTOM_LLM_URL) && JSON.stringify(body).includes(TITLE_REQUEST)
+      ? withCustomText(answer)
+      : Promise.resolve(answer);
   };
+}
+
+/** A custom endpoint's answer, with `CUSTOM_LLM_ANSWER` as its text in the API's shape. */
+async function withCustomText(answer: Response): Promise<Response> {
+  const body = (await answer.json()) as Record<string, unknown>;
+  return Response.json(
+    body.type === 'message'
+      ? { ...body, content: [{ type: 'text', text: CUSTOM_LLM_ANSWER }] }
+      : { ...body, choices: [{ message: { role: 'assistant', content: CUSTOM_LLM_ANSWER } }] },
+  );
 }
 
 /** The official API URL a custom endpoint's request mimics. */

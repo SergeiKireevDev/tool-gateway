@@ -129,6 +129,16 @@ a webhook event**, or
   the admin's shared ones can trigger their agents; a delivery on a shared webhook launches the
   matching triggers of every member. A trigger on a webhook the admin no longer shares stops at
   its next delivery, and can be resumed once it is shared again.
+- **Titles.** Run lists show each webhook run's title, stored on the run when it is created: the
+  tool, the event type and what the event is about, e.g. `Linear · Issue.update · SER-16: Enhance
+agent title` or `GitHub · pull_request.opened · owner/repo#42: Fix` (conversation runs: their
+  channel and key). The admin can pick a **Title model** in Launchpad → Settings: a template and
+  one of the models its Custom LLM endpoint allows. Each new webhook run then asks that endpoint
+  (with its URL, chat API and token, `max_tokens` 64) for a one-line title from the trigger's
+  instructions and the event, so payloads only go to that endpoint. The answer is kept as plain
+  text: its first line, without control characters, capped to 120 characters, rendered escaped.
+  Without a title model, or when its template or model is gone or the call fails, the run keeps
+  its event title.
 - **Limits.** A trigger has at most 3 runs queued or running; further deliveries are skipped (and
   logged in Activity). The usual concurrency limits and token budget apply to each run.
 - **Editing.** The member can change everything a trigger does and listens to (**Edit** in the

@@ -55,7 +55,9 @@ export function RunsTable({
                 <StatusBadge status={r.status} />
               </td>
               <td className="max-w-md px-4 py-3">
-                <div className="truncate text-slate-800">{excerpt(r.prompt)}</div>
+                <div className="truncate text-slate-800" title={r.title ?? undefined}>
+                  {r.title ?? excerpt(r.prompt)}
+                </div>
                 <div className="text-xs text-slate-500">
                   {r.templateName}
                   {runOrigin(r)}
