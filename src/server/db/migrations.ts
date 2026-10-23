@@ -317,4 +317,7 @@ export const MIGRATIONS: readonly string[] = [
   // 22: the shared accounts a conversation channel's agents use, per tool of its template (tools
   // without one: the member's own account).
   `ALTER TABLE conversation_channels ADD COLUMN account_ids TEXT NOT NULL DEFAULT '[]';`,
+  // 23: channels no longer set accounts: a conversation's agents use those of the trigger's member
+  // (the admin defines a member to handle the conversations).
+  `ALTER TABLE conversation_channels DROP COLUMN account_ids;`,
 ];
