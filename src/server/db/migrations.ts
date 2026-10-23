@@ -320,4 +320,6 @@ export const MIGRATIONS: readonly string[] = [
   // 23: channels no longer set accounts: a conversation's agents use those of the trigger's member
   // (the admin defines a member to handle the conversations).
   `ALTER TABLE conversation_channels DROP COLUMN account_ids;`,
+  // 24: a conversation channel picks its deliveries (event types, filters): triggers on one set none.
+  `UPDATE triggers SET event_types = '[]', filters = '{}' WHERE channel_id IS NOT NULL;`,
 ];

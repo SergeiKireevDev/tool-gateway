@@ -21,6 +21,7 @@ import { parseQuery } from './payloadQuery.js';
 import type { PromptConversation } from './systemPrompt.js';
 import {
   eventTypesSchema,
+  hasFilters,
   MAX_EVENT_TYPE_LENGTH,
   matchesEventTypes,
   matchesFilters,
@@ -50,13 +51,20 @@ const CHANNEL_GONE = 'Its conversation channel was disabled or deleted';
 export const triggerSchema = launchSchema.omit({ prompt: true }).extend({
   name: z.string().trim().min(1).max(MAX_NAME_LENGTH).optional(),
   webhookId: z.string().min(1),
-  /** Event types that launch the agent (`issues` also matches `issues.opened`); empty = all. */
+  /**
+   * Event types that launch the agent (`issues` also matches `issues.opened`); empty = all. None on
+   * a conversation channel: its own pick the deliveries.
+   */
   eventTypes: eventTypesSchema,
-  /** Deterministic conditions on the payload, checked before launching (see `triggerFilters`). */
+  /**
+   * Deterministic conditions on the payload, checked before launching (see `triggerFilters`). None
+   * on a conversation channel, like event types.
+   */
   filters: triggerFiltersSchema,
   /**
    * Makes the trigger a conversation trigger: one of the conversation channels the admin enabled,
-   * whose key expression keys long-lived conversations, served by one agent at a time. Empty: none.
+   * whose key expression keys long-lived conversations, served by one agent at a time, and whose
+   * event types and filters pick the deliveries. Empty: none.
    */
   channelId: z
     .string()
@@ -220,7 +228,7 @@ export class Triggers {
     const webhook = this.webhooks.usable(req.webhookId, member);
     if (!webhook) throw notFound('Webhook not found');
     const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
-    this.checkChannel(req.channelId, webhook.source, plan.template.id);
+    this.checkChannel(req, webhook.source, plan.template.id);
     const keyGeneration = this.gateway.memberKeyGeneration(member.id);
     if (keyGeneration === null) throw badRequest('Your membership is no longer valid');
     const ts = this.now().toISOString();
@@ -269,7 +277,7 @@ export class Triggers {
     const webhook = this.webhooks.usable(req.webhookId, member);
     if (!webhook) throw notFound('Webhook not found');
     const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
-    this.checkChannel(req.channelId, webhook.source, plan.template.id);
+    this.checkChannel(req, webhook.source, plan.template.id);
     this.update(id, {
       name: req.name ?? trigger.name,
       webhook_id: req.webhookId,
@@ -294,15 +302,21 @@ export class Triggers {
 
   /**
    * The conversation channel a trigger may pick, if any: an enabled one that carries its webhook's
-   * source, and whose agents' template (if it sets one) is the trigger's.
+   * source, and whose agents' template (if it sets one) is the trigger's. The channel picks the
+   * deliveries: the trigger sets no event types or filters of its own.
    */
   private checkChannel(
-    channelId: string | undefined,
+    { channelId, eventTypes, filters }: z.infer<typeof triggerSchema>,
     source: WebhookSource,
     templateId: string,
   ): void {
     if (channelId === undefined) return;
     const channel = this.channels.usable(channelId);
+    if (eventTypes.length > 0 || hasFilters(filters)) {
+      throw badRequest(
+        'The conversation channel sets the event types and filters of its deliveries: leave them empty',
+      );
+    }
     if (channel.sources.length > 0 && !channel.sources.includes(source)) {
       throw badRequest(
         `This conversation channel only carries ${channel.sources.join(', ')} webhooks`,
@@ -427,7 +441,7 @@ export class Triggers {
 
   /**
    * Launches the agents of the enabled triggers on the delivery's webhook that match its type and
-   * whose filters its payload passes.
+   * whose filters its payload passes (a conversation channel's: see `fire`).
    */
   onDelivery(delivery: AcceptedDelivery): void {
     const rows = this.db.sql
@@ -435,8 +449,9 @@ export class Triggers {
       .all(delivery.webhook.id) as unknown as TriggerRow[];
     for (const trigger of rows.map(toTrigger)) {
       if (
-        matchesEventTypes(trigger.eventTypes, delivery.eventType) &&
-        matchesFilters(trigger.filters, delivery.payload)
+        trigger.channelId !== null ||
+        (matchesEventTypes(trigger.eventTypes, delivery.eventType) &&
+          matchesFilters(trigger.filters, delivery.payload))
       ) {
         this.fire(trigger, delivery);
       }

@@ -407,8 +407,9 @@ admin creates webhooks under **Webhooks**, and members create their own.
   pick the deliveries that launch it. The member can edit a trigger later. As a conversation
   channel (**New agent → As a conversation channel**; defined by the admin like a trigger: the webhook sources, types of notification and
   filters it carries, the template of its agents, plus a jq-like key expression on the payload
-  and how long its agents live; its agents use the member's accounts, so the admin defines a
-  member to handle conversations with dedicated ones), deliveries with the same
+  and how long its agents live; the member only picks the webhook and the channel, and its agents
+  use the member's accounts, so the admin defines a member to handle conversations with dedicated
+  ones), deliveries with the same
   key form one long-lived conversation, served by one agent that receives them while it runs and revived later with its
   history and memory. See [docs/launchpad.md](docs/launchpad.md#webhook-triggers) and
   [conversations](docs/launchpad.md#conversations).
