@@ -200,6 +200,35 @@ describe('conversation triggers', () => {
       .expect(400);
   });
 
+  it("leaves a channel's event types and filters to the admin", async () => {
+    const { cookie, hook, triggerId } = await conversationTrigger();
+    // A trigger on a channel can't set event types or filters of its own…
+    for (const extra of [{ eventTypes: ['Issue'] }, { filters: { contains: ['urgent'] } }]) {
+      const res = await t
+        .portal(cookie, 'post', '/triggers')
+        .send(triggerBody(hook.id, extra))
+        .expect(400);
+      expect(JSON.stringify(res.body)).toContain('conversation channel sets the event types');
+      await t
+        .portal(cookie, 'put', `/triggers/${triggerId}`)
+        .send(triggerBody(hook.id, extra))
+        .expect(400);
+    }
+    // …but a plain trigger can.
+    await t
+      .portal(cookie, 'post', '/triggers')
+      .send(triggerBody(hook.id, { channelId: '', eventTypes: ['Issue'] }))
+      .expect(201);
+
+    // Those a trigger set before channels picked them are ignored: the channel's apply.
+    t.db.sql
+      .prepare('UPDATE triggers SET event_types = ? WHERE id = ?')
+      .run(JSON.stringify(['Issue']), triggerId);
+    await deliver(hook.path, comment('ISS-1', 'Hello'));
+    const list = await t.portal(cookie, 'get', `/triggers/${triggerId}/conversations`).expect(200);
+    expect(list.body).toEqual([expect.objectContaining({ key: 'ISS-1', messages: 1 })]);
+  });
+
   it('lets the admin pick the sources, filters, template and agent TTL of a channel', async () => {
     const own = await t
       .admin('post', '/templates')

@@ -51,6 +51,10 @@ export const triggerFiltersSchema = z
   .object({ contains: values, statusChangedTo: values, assignedTo: values })
   .default(NO_FILTERS);
 
+/** Whether any filter is set. */
+export const hasFilters = (f: TriggerFilters): boolean =>
+  f.contains.length > 0 || f.statusChangedTo.length > 0 || f.assignedTo.length > 0;
+
 /** Filters as stored: anything missing or malformed counts as "no filter". */
 export function parseFilters(json: string): TriggerFilters {
   const parsed = triggerFiltersSchema.safeParse(JSON.parse(json));

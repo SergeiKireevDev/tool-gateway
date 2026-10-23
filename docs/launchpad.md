@@ -159,7 +159,9 @@ its history and memory.
   a conversation channel** in the launch form (listed once the admin enabled a channel they can
   pick), then the webhook and one of the channels that carry its source (`channelId`; none, with
   **On a webhook event**: one agent per delivery). An edited trigger can switch between the two.
-  A trigger body with a `conversationKey` of its own is refused.
+  A trigger body with a `conversationKey` of its own is refused, and so is one on a channel with
+  `eventTypes` or `filters` of its own: the admin set them on the channel (the launch form doesn't
+  ask for them).
 - **Accounts are the member's.** A channel sets no accounts: the agents of a conversation trigger
   use the accounts its member picked, like any launch. To handle conversations with dedicated
   accounts (a bot's), the admin creates a member for them, grants it those accounts (or lets it
@@ -169,7 +171,6 @@ its history and memory.
   {
     "name": "Answer issue comments",
     "webhookId": "<webhook id>",
-    "eventTypes": ["Comment.create"],
     "channelId": "<channel id>",
     "instructions": "Answer each new comment on the issue, in the issue.",
     "templateId": "<template id>",
@@ -185,15 +186,15 @@ its history and memory.
 - **The types of notification.** A channel's `eventTypes` (like a trigger's: `Comment` also
   matches `Comment.create`; empty: every event) are the notifications it carries, e.g.
   `["Comment.create"]` for a Linear issue's comments but not its updates. A delivery of another
-  type is no message of a trigger on the channel: it opens no conversation and starts no run,
-  whatever the trigger's own event types (which can only narrow the channel's). Members see them
+  type is no message of a trigger on the channel: it opens no conversation and starts no run.
+  Triggers on the channel set no event types of their own. Members see them
   with the channel (`eventTypes` in `channels`, `channelEventTypes` on the trigger); editing them
   applies to the next deliveries.
 
 - **Like a trigger.** A channel picks the deliveries it carries with the same machinery as
   triggers: besides its event types, its `sources` (the webhook sources, `monday`, `linear`,
   `github` or `generic`; empty: any) and its `filters` (`contains`, `statusChangedTo`,
-  `assignedTo`, as a trigger's; a trigger's own filters narrow them further). Only triggers on a
+  `assignedTo`, as a trigger's; triggers on the channel set none of their own). Only triggers on a
   webhook of one of its sources can pick it (the launch form lists only those). Only its key and
   its agents differ:
   - `templateId`: the access template its agents get (null: the trigger's own). Members only see
@@ -224,8 +225,7 @@ its history and memory.
   No variables, definitions, regular expressions or recursion: an expression is at most 500
   characters and yields at most 1000 values, so it can't hang the gateway.
 
-- **Messages.** Each delivery that passes the channel's sources, event types and filters, and the
-  trigger's event types and filters, is an `in`
+- **Messages.** Each delivery that passes the channel's sources, event types and filters is an `in`
   message of its conversation (opened on its first one). When no agent serves the conversation,
   a run starts with the waiting messages as its task (as many as fit in a prompt; the others wait
   for it to ask). Otherwise the message waits for the running (or queued) agent.

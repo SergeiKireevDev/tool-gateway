@@ -47,7 +47,7 @@ export const channelSchema = z.object({
   conversationKey: conversationKeySchema,
   /**
    * The types of notification the channel carries (`Comment` also matches `Comment.create`);
-   * empty = all. A trigger's own event types narrow them further.
+   * empty = all. Triggers on the channel set none of their own.
    */
   eventTypes: eventTypesSchema,
   /** The sources of the webhooks whose deliveries it carries (like a trigger's webhook); empty = any. */
@@ -55,7 +55,7 @@ export const channelSchema = z.object({
     .array(z.enum(WEBHOOK_SOURCES))
     .default([])
     .transform((list) => [...new Set(list)]),
-  /** Conditions on the payload, like a trigger's; a trigger's own filters narrow them further. */
+  /** Conditions on the payload, like a trigger's; triggers on the channel set none of their own. */
   filters: triggerFiltersSchema,
   /** The access template its agents get (triggers on the channel must use it); none: the trigger's. */
   templateId: z

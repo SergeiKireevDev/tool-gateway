@@ -255,10 +255,15 @@ export function TriggersTable({
               {showMember && <td className="px-4 py-3 text-slate-600">{t.memberName}</td>}
               <td className="px-4 py-3 text-slate-600">
                 <div>{t.webhookName ?? 'Deleted webhook'}</div>
-                <div className="text-xs text-slate-500">
-                  {t.eventTypes.length > 0 ? t.eventTypes.join(', ') : 'Every event'}
-                </div>
-                <TriggerFilterLine filters={t.filters} />
+                {/* A conversation channel's deliveries are the admin's to pick. */}
+                {t.channelId === null && (
+                  <>
+                    <div className="text-xs text-slate-500">
+                      {t.eventTypes.length > 0 ? t.eventTypes.join(', ') : 'Every event'}
+                    </div>
+                    <TriggerFilterLine filters={t.filters} />
+                  </>
+                )}
                 {t.channelId !== null && (
                   <button
                     type="button"

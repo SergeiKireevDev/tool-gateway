@@ -421,7 +421,10 @@ function ChannelAgentNote({
 const channelsFor = (channels: ChannelChoice[], source: WebhookSource): ChannelChoice[] =>
   channels.filter((c) => c.sources.length === 0 || c.sources.includes(source));
 
-/** Which of the member's webhooks (or the admin's shared ones) launches the agent, on which event types and filters. */
+/**
+ * Which of the member's webhooks (or the admin's shared ones) launches the agent, on which event
+ * types and filters; as a conversation channel, on the channel's (set by the admin).
+ */
 function TriggerFields({
   webhooks,
   webhookId,
@@ -477,20 +480,23 @@ function TriggerFields({
             ))}
           </Select>
         </Field>
-        <Field
-          label="Event types"
-          hint="Comma-separated. issues also matches issues.opened. Empty: every event."
-        >
-          <Input
-            value={eventTypes}
-            onChange={(e) => {
-              setEventTypes(e.target.value);
-            }}
-            placeholder="issues.opened, Issue.create"
-          />
-        </Field>
+        {!conversation && (
+          <Field
+            label="Event types"
+            hint="Comma-separated. issues also matches issues.opened. Empty: every event."
+          >
+            <Input
+              value={eventTypes}
+              onChange={(e) => {
+                setEventTypes(e.target.value);
+              }}
+              placeholder="issues.opened, Issue.create"
+            />
+          </Field>
+        )}
       </div>
-      <FilterFields filters={filters} setFilters={setFilters} />
+      {/* A channel's event types and filters are the admin's. */}
+      {!conversation && <FilterFields filters={filters} setFilters={setFilters} />}
       {conversation && (
         <ChannelField
           channels={channelsFor(channels, source)}
@@ -664,10 +670,10 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
         ...(d.name.trim() ? { name: d.name.trim() } : {}),
         instructions: d.prompt,
         webhookId: d.webhookId,
-        eventTypes: splitList(d.eventTypes),
-        filters: toFilters(d.filters),
-        // A plain trigger: one agent per event.
-        channelId: d.when === 'conversation' ? d.channelId : '',
+        // A conversation channel picks its deliveries; a plain trigger: one agent per event.
+        ...(d.when === 'conversation'
+          ? { channelId: d.channelId }
+          : { eventTypes: splitList(d.eventTypes), filters: toFilters(d.filters), channelId: '' }),
       },
     };
   }

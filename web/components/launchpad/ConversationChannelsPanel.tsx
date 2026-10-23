@@ -232,7 +232,7 @@ function ChannelForm({
       </Field>
       <Field
         label="Event types"
-        hint="The types of notification the channel carries, comma-separated. Comment also matches Comment.create. Empty: every event. Members' triggers can narrow them further."
+        hint="The types of notification the channel carries, comma-separated. Comment also matches Comment.create. Empty: every event. Members' agents on the channel don't set their own."
       >
         <Input
           value={draft.eventTypes}
