@@ -17,6 +17,7 @@ import {
   splitList,
   type Trigger,
   type WebhookOption,
+  type WebhookSource,
   WEEKDAYS,
   type Workflow,
 } from '@/lib/launchpad';
@@ -41,7 +42,7 @@ import {
 } from './RelaunchFields';
 import { SkillsField } from './SkillsField';
 
-type When = 'now' | Preset | 'webhook';
+type When = 'now' | Preset | 'webhook' | 'conversation';
 const WHEN_LABELS: Record<When, string> = {
   now: 'Run once, now',
   hourly: 'Every hour',
@@ -49,6 +50,7 @@ const WHEN_LABELS: Record<When, string> = {
   weekly: 'Every week',
   monthly: 'Every month',
   webhook: 'On a webhook event',
+  conversation: 'As a conversation channel',
 };
 const CREATE_SCHEDULE = 'Create schedule';
 const SUBMIT_LABELS: Record<When, string> = {
@@ -58,7 +60,11 @@ const SUBMIT_LABELS: Record<When, string> = {
   weekly: CREATE_SCHEDULE,
   monthly: CREATE_SCHEDULE,
   webhook: 'Create trigger',
+  conversation: 'Create conversation trigger',
 };
+/** Run on webhook events: one agent per event, or one per conversation of a channel. */
+const TRIGGERED: readonly When[] = ['webhook', 'conversation'];
+const triggered = (when: When): boolean => TRIGGERED.includes(when);
 /** The workflow is picked among the templates, with this select value. */
 const WORKFLOW = 'workflow';
 const LAST_DAY = 28;
@@ -178,6 +184,7 @@ function complete(d: {
   when: When;
   prompt: string;
   webhookId: string;
+  channelId: string;
   choice: HarnessChoice | undefined;
   model: string;
   executor: HarnessChoice | undefined;
@@ -326,26 +333,31 @@ function ModelField({
   );
 }
 
-const NO_CHANNEL_HINT = 'None: one agent per event.';
+const NO_CHANNEL_HINT =
+  'The admin’s channels that carry this webhook’s events. Events with the same key share one long-lived agent.';
 
 /**
- * Makes the trigger a conversation trigger: one of the channels the admin defined. Events with
- * the same key share one long-lived agent. Hidden when the admin defined none.
+ * Makes the trigger a conversation trigger: one of the channels the admin defined (that carry the
+ * webhook's source). Events with the same key share one long-lived agent.
  */
 function ChannelField({
   channels,
   channelId,
   setChannelId,
   templates,
-  accounts,
 }: {
   channels: ChannelChoice[];
   channelId: string;
   setChannelId: (v: string) => void;
   templates: LaunchTemplate[];
-  accounts: Account[];
 }) {
-  if (channels.length === 0) return null;
+  if (channels.length === 0) {
+    return (
+      <p className="text-sm text-slate-600">
+        No conversation channel carries this webhook&apos;s events: pick another webhook.
+      </p>
+    );
+  }
   const picked = channels.find((c) => c.id === channelId);
   return (
     <Field
@@ -358,7 +370,7 @@ function ChannelField({
             {describeChannelDeliveries(picked)}. Events with the same key go to one long-lived
             conversation: its running agent receives them, and a later event revives it with its
             history and memory.
-            <ChannelAgentNote channel={picked} templates={templates} accounts={accounts} />
+            <ChannelAgentNote channel={picked} templates={templates} />
           </>
         ) : (
           NO_CHANNEL_HINT
@@ -371,7 +383,9 @@ function ChannelField({
           setChannelId(e.target.value);
         }}
       >
-        <option value="">None</option>
+        <option value="" disabled>
+          Choose a channel
+        </option>
         {channels.map((c) => (
           <option key={c.id} value={c.id}>
             {c.name}
@@ -382,33 +396,30 @@ function ChannelField({
   );
 }
 
-/** The template, shared accounts and lifetime a channel sets for its agents, when it sets them. */
+/** The template and lifetime a channel sets for its agents, when it sets them. */
 function ChannelAgentNote({
   channel,
   templates,
-  accounts,
 }: {
   channel: ChannelChoice;
   templates: LaunchTemplate[];
-  accounts: Account[];
 }) {
   const template =
     channel.templateId === null
       ? null
       : (templates.find((t) => t.id === channel.templateId)?.name ?? channel.templateId);
-  const shared = accounts
-    .filter((a) => channel.accountIds.includes(a.id))
-    .map((a) => `${a.label} (${a.tool})`);
   return (
     <>
       {template !== null && ` Its agents use template "${template}": pick it above.`}
-      {shared.length > 0 &&
-        ` They use the shared account${shared.length > 1 ? 's' : ''} ${shared.join(', ')}, and your own for the other tools.`}
       {channel.agentTtlSeconds !== null &&
         ` They live up to ${formatDuration(channel.agentTtlSeconds)}.`}
     </>
   );
 }
+
+/** The channels that carry a webhook's source. */
+const channelsFor = (channels: ChannelChoice[], source: WebhookSource): ChannelChoice[] =>
+  channels.filter((c) => c.sources.length === 0 || c.sources.includes(source));
 
 /** Which of the member's webhooks (or the admin's shared ones) launches the agent, on which event types and filters. */
 function TriggerFields({
@@ -419,11 +430,11 @@ function TriggerFields({
   setEventTypes,
   filters,
   setFilters,
+  conversation,
   channels,
   channelId,
   setChannelId,
   templates,
-  accounts,
 }: {
   webhooks: WebhookOption[];
   webhookId: string;
@@ -432,11 +443,12 @@ function TriggerFields({
   setEventTypes: (v: string) => void;
   filters: FilterDraft;
   setFilters: (v: FilterDraft) => void;
+  /** A conversation trigger: on one of the admin's channels. */
+  conversation: boolean;
   channels: ChannelChoice[];
   channelId: string;
   setChannelId: (v: string) => void;
   templates: LaunchTemplate[];
-  accounts: Account[];
 }) {
   if (webhooks.length === 0) {
     return (
@@ -479,14 +491,14 @@ function TriggerFields({
         </Field>
       </div>
       <FilterFields filters={filters} setFilters={setFilters} />
-      <ChannelField
-        // Only the channels that carry the webhook's source.
-        channels={channels.filter((c) => c.sources.length === 0 || c.sources.includes(source))}
-        channelId={channelId}
-        setChannelId={setChannelId}
-        templates={templates}
-        accounts={accounts}
-      />
+      {conversation && (
+        <ChannelField
+          channels={channelsFor(channels, source)}
+          channelId={channelId}
+          setChannelId={setChannelId}
+          templates={templates}
+        />
+      )}
     </div>
   );
 }
@@ -566,7 +578,7 @@ interface Draft {
   webhookId: string;
   eventTypes: string;
   filters: FilterDraft;
-  /** A trigger's conversation channel ('' = none). */
+  /** A conversation trigger's channel. */
   channelId: string;
   /** The run whose output files the agent starts from ('' = none). */
   parentRunId: string;
@@ -580,14 +592,19 @@ interface Draft {
   attachmentsFrom: string;
 }
 
-const isPreset = (when: When): when is Preset => when !== 'now' && when !== 'webhook';
+const isPreset = (when: When): when is Preset => when !== 'now' && !triggered(when);
 
 /** Files are attached to agents launched now and to workflows (not to schedules or triggers). */
 const attachable = (when: When): boolean => when === 'now';
 
-/** Whether the form holds what its request needs: a task, and for a trigger a webhook. */
-function ready(d: Pick<Draft, 'when' | 'prompt' | 'webhookId'>): boolean {
-  return d.prompt.trim() !== '' && (d.when !== 'webhook' || d.webhookId !== '');
+/**
+ * Whether the form holds what its request needs: a task, for a trigger a webhook, and for a
+ * conversation trigger its channel.
+ */
+function ready(d: Pick<Draft, 'when' | 'prompt' | 'webhookId' | 'channelId'>): boolean {
+  if (d.prompt.trim() === '') return false;
+  if (!triggered(d.when)) return true;
+  return d.webhookId !== '' && (d.when !== 'conversation' || d.channelId !== '');
 }
 
 /** A workflow's request: its two steps, each with its attached files. */
@@ -639,7 +656,7 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
       body: { ...agent, ...chain, ...attached, ...instructions, prompt: d.prompt },
     };
   }
-  if (d.when === 'webhook') {
+  if (triggered(d.when)) {
     return {
       path: d.triggerId ? `/launchpad/triggers/${d.triggerId}` : '/launchpad/triggers',
       body: {
@@ -649,7 +666,8 @@ function requestFor(d: Draft): { path: string; body: Record<string, unknown> } {
         webhookId: d.webhookId,
         eventTypes: splitList(d.eventTypes),
         filters: toFilters(d.filters),
-        channelId: d.channelId,
+        // A plain trigger: one agent per event.
+        channelId: d.when === 'conversation' ? d.channelId : '',
       },
     };
   }
@@ -1089,26 +1107,6 @@ function SubmitRow({
 }
 
 /**
- * The template whose tools the member picks accounts for: a trigger's conversation channel may
- * set shared accounts for some of them.
- */
-function pickableTemplate(
-  template: LaunchTemplate | undefined,
-  when: When,
-  channel: ChannelChoice | undefined,
-  accounts: Account[],
-): LaunchTemplate | undefined {
-  if (!template || when !== 'webhook' || !channel || channel.accountIds.length === 0) {
-    return template;
-  }
-  // The channel's shared accounts are among the member's: they must be granted to pick it.
-  const fixed = new Set(
-    accounts.filter((a) => channel.accountIds.includes(a.id)).map((a) => a.tool),
-  );
-  return { ...template, tools: template.tools.filter((tool) => !fixed.has(tool)) };
-}
-
-/**
  * Tools of the template (and a workflow planner's model API) for which the member has several
  * accounts: they pick one.
  */
@@ -1132,8 +1130,19 @@ function useAccountPicks(
   return { ambiguous, picked, setPicked, pickedFor };
 }
 
-/** Run once now, on a schedule, or on webhook events. */
-function WhenField({ when, setWhen }: { when: When; setWhen: (when: When) => void }) {
+/**
+ * Run once now, on a schedule, or on webhook events: one agent per event, or as a conversation
+ * channel (when the admin defined some). An edited trigger stays a trigger.
+ */
+function WhenField({
+  when,
+  setWhen,
+  choices,
+}: {
+  when: When;
+  setWhen: (when: When) => void;
+  choices: readonly When[];
+}) {
   return (
     <Field label="When">
       <Select
@@ -1142,7 +1151,7 @@ function WhenField({ when, setWhen }: { when: When; setWhen: (when: When) => voi
           setWhen(e.target.value as When);
         }}
       >
-        {(Object.keys(WHEN_LABELS) as When[]).map((w) => (
+        {choices.map((w) => (
           <option key={w} value={w}>
             {WHEN_LABELS[w]}
           </option>
@@ -1150,6 +1159,14 @@ function WhenField({ when, setWhen }: { when: When; setWhen: (when: When) => voi
       </Select>
     </Field>
   );
+}
+
+/** The `When` choices of a new agent, or of an edited trigger; channels only when there are. */
+function whenChoices(editing: boolean, channels: ChannelChoice[]): When[] {
+  const all = (Object.keys(WHEN_LABELS) as When[]).filter(
+    (w) => w !== 'conversation' || channels.length > 0,
+  );
+  return editing ? all.filter(triggered) : all;
 }
 
 const PARENT_PROMPT_PREVIEW = 200;
@@ -1281,8 +1298,17 @@ function formMode(parent: Run | null, relaunch: Relaunch | null, editing: Trigge
   return { single, fixed: single || editing !== null };
 }
 
+function initialWhen(editing: Trigger | null): When {
+  if (!editing) return 'now';
+  return editing.channelId ? 'conversation' : 'webhook';
+}
+
 /** What an edited trigger listens to, or a new trigger's defaults. */
-function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
+function useTriggerFields(
+  editing: Trigger | null,
+  webhooks: WebhookOption[],
+  channels: ChannelChoice[],
+) {
   const [name, setName] = useState(editing?.name ?? '');
   const [webhookId, setWebhookId] = useState(() =>
     editing && webhooks.some((w) => w.id === editing.webhookId)
@@ -1292,12 +1318,13 @@ function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
   const [eventTypes, setEventTypes] = useState(editing?.eventTypes.join(', ') ?? '');
   const [filters, setFilters] = useState(editing ? toDraft(editing.filters) : NO_FILTERS);
   const [channelId, setChannelId] = useState(editing?.channelId ?? '');
+  const source = webhooks.find((w) => w.id === webhookId)?.source ?? 'generic';
   return {
     editing: editing !== null,
     /** Saved with `PUT`, instead of created. */
     triggerId: editing?.id ?? null,
     method: editing ? 'PUT' : 'POST',
-    initialWhen: (editing ? 'webhook' : 'now') as When,
+    initialWhen: initialWhen(editing),
     name,
     setName,
     webhookId,
@@ -1308,6 +1335,8 @@ function useTriggerFields(editing: Trigger | null, webhooks: WebhookOption[]) {
     setFilters,
     channelId,
     setChannelId,
+    /** The picked channel, while it carries the picked webhook's source ('' = none). */
+    pickedChannel: channelsFor(channels, source).some((c) => c.id === channelId) ? channelId : '',
   };
 }
 
@@ -1407,7 +1436,7 @@ export function LaunchForm({
   const { prompt } = task;
   const agent = useAgentChoice(api, templates, defaults);
   const { workflow, templateId, template, harness, choice, model, executor, executorModel } = agent;
-  const trigger = useTriggerFields(editing, webhooks);
+  const trigger = useTriggerFields(editing, webhooks, options.channels);
   const { webhookId, eventTypes, filters } = trigger;
   const [chosenWhen, setWhen] = useState<When>(trigger.initialWhen);
   const { single, fixed } = formMode(parent, relaunch, editing);
@@ -1430,12 +1459,7 @@ export function LaunchForm({
   const plannerTool = workflow ? choice?.provider : undefined;
   const { ambiguous, picked, setPicked, pickedFor } = useAccountPicks(
     accounts,
-    pickableTemplate(
-      template,
-      when,
-      options.channels.find((c) => c.id === trigger.channelId),
-      accounts,
-    ),
+    template,
     plannerTool,
     defaults.picked,
   );
@@ -1472,7 +1496,7 @@ export function LaunchForm({
       webhookId,
       eventTypes,
       filters,
-      channelId: trigger.channelId,
+      channelId: trigger.pickedChannel,
       parentRunId: parent?.id ?? relaunched.parentRunId,
       attachmentIds,
       executeAttachmentIds,
@@ -1490,7 +1514,7 @@ export function LaunchForm({
     });
     if (workflow) onWorkflow(sent as Workflow);
     else if (when === 'now') onLaunched(sent as Run);
-    else if (when === 'webhook') onTriggered(sent as Trigger);
+    else if (triggered(when)) onTriggered(sent as Trigger);
     else onScheduled(sent as Schedule);
   };
 
@@ -1537,7 +1561,7 @@ export function LaunchForm({
         setInstructions={task.setInstructions}
       />
       <TaskField
-        kind={taskKind(task.event, !workflow && when === 'webhook')}
+        kind={taskKind(task.event, !workflow && triggered(when))}
         prompt={prompt}
         setPrompt={task.setPrompt}
       />
@@ -1556,7 +1580,13 @@ export function LaunchForm({
         setSkills={setSkills}
       />
       <AccountFields ambiguous={ambiguous} picked={picked} setPicked={setPicked} />
-      {!(workflow || fixed) && <WhenField when={when} setWhen={setWhen} />}
+      {!(workflow || single) && (
+        <WhenField
+          when={when}
+          setWhen={setWhen}
+          choices={whenChoices(trigger.editing, options.channels)}
+        />
+      )}
       <LaunchAttachments
         attaching={attaching}
         workflow={workflow}
@@ -1564,7 +1594,7 @@ export function LaunchForm({
         setFiles={setFiles}
         uploading={uploading}
       />
-      {when === 'webhook' && (
+      {triggered(when) && (
         <TriggerFields
           webhooks={webhooks}
           webhookId={webhookId}
@@ -1573,11 +1603,11 @@ export function LaunchForm({
           setEventTypes={trigger.setEventTypes}
           filters={filters}
           setFilters={trigger.setFilters}
+          conversation={when === 'conversation'}
           channels={options.channels}
           channelId={trigger.channelId}
           setChannelId={trigger.setChannelId}
           templates={templates}
-          accounts={accounts}
         />
       )}
       {isPreset(when) && (
@@ -1601,7 +1631,16 @@ export function LaunchForm({
           busy ||
           // A workflow waits for its planning agents.
           (workflow && !choice) ||
-          !complete({ when, prompt, webhookId, choice, model, executor, executorModel })
+          !complete({
+            when,
+            prompt,
+            webhookId,
+            channelId: trigger.pickedChannel,
+            choice,
+            model,
+            executor,
+            executorModel,
+          })
         }
       />
     </form>

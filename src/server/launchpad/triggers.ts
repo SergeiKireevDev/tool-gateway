@@ -7,13 +7,7 @@ import { randomId } from '../store/crypto.js';
 import type { Member, Session, WebhookSource } from '../store/types.js';
 import { MS_PER_SECOND } from '../units.js';
 import type { AcceptedDelivery, Webhooks } from '../webhooks.js';
-import {
-  type Actor,
-  type LaunchPlan,
-  launchSchema,
-  type Launchpad,
-  MAX_PROMPT_LENGTH,
-} from './launchpad.js';
+import { type Actor, launchSchema, type Launchpad, MAX_PROMPT_LENGTH } from './launchpad.js';
 import type { Harness } from './protocol.js';
 import { clip, isActive, type Run } from './runStore.js';
 import {
@@ -212,12 +206,7 @@ export class Triggers {
     private readonly now: () => Date = () => new Date(),
   ) {
     this.conversations = new Conversations(db, now);
-    this.channels = new Channels(
-      db,
-      () => gateway.listTemplates(),
-      () => gateway.listAccounts(),
-      now,
-    );
+    this.channels = new Channels(db, () => gateway.listTemplates(), now);
     launchpad.onFinished((run) => {
       this.onRunFinished(run);
     });
@@ -230,7 +219,8 @@ export class Triggers {
     const req = triggerSchema.parse(input);
     const webhook = this.webhooks.usable(req.webhookId, member);
     if (!webhook) throw notFound('Webhook not found');
-    const { plan, accountIds } = this.planTrigger(member, req, webhook.source);
+    const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
+    this.checkChannel(req.channelId, webhook.source, plan.template.id);
     const keyGeneration = this.gateway.memberKeyGeneration(member.id);
     if (keyGeneration === null) throw badRequest('Your membership is no longer valid');
     const ts = this.now().toISOString();
@@ -255,7 +245,7 @@ export class Triggers {
         plan.harness,
         plan.model,
         plan.template.id,
-        JSON.stringify(accountIds),
+        JSON.stringify(plan.accountIds),
         plan.environment?.id ?? null,
         JSON.stringify(plan.skills),
         keyGeneration,
@@ -278,7 +268,8 @@ export class Triggers {
     const req = triggerSchema.parse(input);
     const webhook = this.webhooks.usable(req.webhookId, member);
     if (!webhook) throw notFound('Webhook not found');
-    const { plan, accountIds } = this.planTrigger(member, req, webhook.source);
+    const plan = this.launchpad.plan(member, { ...req, prompt: req.instructions });
+    this.checkChannel(req.channelId, webhook.source, plan.template.id);
     this.update(id, {
       name: req.name ?? trigger.name,
       webhook_id: req.webhookId,
@@ -289,7 +280,7 @@ export class Triggers {
       harness: plan.harness,
       model: plan.model,
       template_id: plan.template.id,
-      account_ids: JSON.stringify(accountIds),
+      account_ids: JSON.stringify(plan.accountIds),
       environment_id: plan.environment?.id ?? null,
       skills: JSON.stringify(plan.skills),
       updated_at: this.now().toISOString(),
@@ -302,51 +293,15 @@ export class Triggers {
   }
 
   /**
-   * Checks a new or edited trigger like a launch, with the shared accounts its conversation
-   * channel sets, and what it keeps of the accounts: those not set by its channel.
-   */
-  private planTrigger(
-    member: Member,
-    req: z.infer<typeof triggerSchema>,
-    source: WebhookSource,
-  ): { plan: LaunchPlan; accountIds: string[] } {
-    const channel = this.checkChannel(member, req.channelId, source, req.templateId);
-    const plan = this.launchpad.plan(member, {
-      ...req,
-      prompt: req.instructions,
-      accountIds: this.withChannelAccounts(channel, req.accountIds),
-    });
-    const set = new Set(channel?.accountIds ?? []);
-    return { plan, accountIds: plan.accountIds.filter((id) => !set.has(id)) };
-  }
-
-  /**
-   * The accounts a run uses: the channel's shared ones for the tools it sets them for, the
-   * trigger's for the others.
-   */
-  private withChannelAccounts(
-    channel: ConversationChannel | null,
-    accountIds: readonly string[],
-  ): string[] {
-    if (!channel || channel.accountIds.length === 0) return [...accountIds];
-    const accounts = this.gateway.listAccounts();
-    const toolOf = (id: string): string | undefined => accounts.find((a) => a.id === id)?.tool;
-    const set = new Set(channel.accountIds.map(toolOf));
-    return [...channel.accountIds, ...accountIds.filter((id) => !set.has(toolOf(id)))];
-  }
-
-  /**
    * The conversation channel a trigger may pick, if any: an enabled one that carries its webhook's
-   * source, whose agents' template (if it sets one) is the trigger's, and whose shared accounts
-   * the member was granted.
+   * source, and whose agents' template (if it sets one) is the trigger's.
    */
   private checkChannel(
-    member: Member,
     channelId: string | undefined,
     source: WebhookSource,
     templateId: string,
-  ): ConversationChannel | null {
-    if (channelId === undefined) return null;
+  ): void {
+    if (channelId === undefined) return;
     const channel = this.channels.usable(channelId);
     if (channel.sources.length > 0 && !channel.sources.includes(source)) {
       throw badRequest(
@@ -359,10 +314,6 @@ export class Triggers {
         `The agents of this conversation channel use template "${template?.name ?? channel.templateId}": pick it`,
       );
     }
-    if (!this.channels.allows(channel, member)) {
-      throw badRequest('The agents of this conversation channel use accounts you were not granted');
-    }
-    return channel;
   }
 
   list(memberId?: string): Trigger[] {
@@ -453,7 +404,7 @@ export class Triggers {
 
   /**
    * What a run of the trigger launches. A conversation channel's agents get its template (with the
-   * member's accounts for it picked anew when the admin changed it) and its shared accounts.
+   * member's accounts for it picked anew when the admin changed it).
    */
   private launchInput(
     t: Trigger,
@@ -464,10 +415,7 @@ export class Triggers {
     return {
       prompt,
       templateId,
-      accountIds: this.withChannelAccounts(
-        channel,
-        templateId === t.templateId ? t.accountIds : [],
-      ),
+      accountIds: templateId === t.templateId ? t.accountIds : [],
       harness: t.harness,
       ...(t.model ? { model: t.model } : {}),
       ...(t.environmentId ? { environmentId: t.environmentId } : {}),

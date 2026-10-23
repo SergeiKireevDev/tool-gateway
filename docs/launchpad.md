@@ -153,11 +153,17 @@ its history and memory.
   source, and lives on across runs, so members don't write conversation keys: the admin defines
   **conversation channels** (**Launchpad → Conversation channels**, or
   `POST /api/admin/launchpad/channels` with `name`, `description`, `conversationKey`,
-  `eventTypes`, `sources`, `filters`, `templateId`, `accountIds` and `agentTtlSeconds`; `PUT`,
+  `eventTypes`, `sources`, `filters`, `templateId` and `agentTtlSeconds`; `PUT`,
   `PATCH {enabled}` and `DELETE …/channels/<id>`). Members see the enabled ones in
-  `GET /api/me/launchpad` (`channels`) and pick one for a trigger (**Conversation channel** in the
-  launch form, `channelId`; none: one agent per delivery). A trigger body with a
-  `conversationKey` of its own is refused.
+  `GET /api/me/launchpad` (`channels`) and create agents as a conversation channel: **When → As
+  a conversation channel** in the launch form (listed once the admin enabled a channel they can
+  pick), then the webhook and one of the channels that carry its source (`channelId`; none, with
+  **On a webhook event**: one agent per delivery). An edited trigger can switch between the two.
+  A trigger body with a `conversationKey` of its own is refused.
+- **Accounts are the member's.** A channel sets no accounts: the agents of a conversation trigger
+  use the accounts its member picked, like any launch. To handle conversations with dedicated
+  accounts (a bot's), the admin creates a member for them, grants it those accounts (or lets it
+  connect its own) and creates the conversation triggers as that member.
 
   ```json
   {
@@ -199,14 +205,6 @@ its history and memory.
     is capped by its template's max TTL (less the 5 minutes session keys outlive a run); a channel
     whose template's keys can't last that long is refused. Triggers' views carry it as
     `channelAgentTtlSeconds`.
-  - `accountIds`: for each tool of its template, whether its agents use the member's own account
-    (no entry: the account the trigger picks, as for any launch) or one of the admin's shared
-    accounts (**Agent accounts** in the channel form: "The member's own" or a shared account).
-    At most one per tool, of a tool the template gives (custom LLM endpoints take none), and only
-    with a template. Members only see the channels whose shared accounts they were granted, and
-    don't pick an account for those tools; the trigger keeps only its accounts for the other
-    tools, and its runs get the channel's current shared accounts (one deleted since: the run
-    can't launch).
 
 - **The key.** The channel's jq-like expression on the (redacted) payload, checked when the
   channel is saved. The key is the expression's non-null values: a single string as is, anything else as JSON
