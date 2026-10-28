@@ -147,7 +147,8 @@ per delivery, the deliveries whose payload gives the same key are the messages o
 conversation (a Linear issue's comments, a GitHub pull request's reviews, a chat thread…). One
 agent at a time serves a conversation; it receives the conversation's new events while it runs,
 and when it has finished, the next event revives the conversation in a new run that starts from
-its history and memory.
+its history and memory. [Duplex conversations, explained](conversations.md) walks through how it
+works and how to design a channel.
 
 - **Channels are the admin's.** A conversation's agent hears whoever can post to the webhook's
   source, and lives on across runs, so members don't write conversation keys: the admin defines
