@@ -85,6 +85,19 @@ describe('Linear permissions', () => {
       403,
     );
     await gql(key, 'query { apiKeys { nodes { id } } }').expect(403);
+    // Reactions are their own permission: comments:write doesn't cover them.
+    const commenter = await keyFor(['comments:write']);
+    const noReact = await gql(
+      commenter,
+      'mutation { reactionCreate(input: { issueId: "ENG-1", emoji: "eyes" }) { success } }',
+    ).expect(403);
+    expect(noReact.body.message).toContain('reactions:write');
+    const reactor = await keyFor(['reactions:write']);
+    await gql(
+      reactor,
+      'mutation { reactionCreate(input: { commentId: "c-ops", emoji: "eyes" }) { success } }',
+    ).expect(200);
+    await gql(reactor, 'mutation { reactionDelete(id: "r-1") { success } }').expect(200);
     await request(app)
       .get('/proxy/linear/graphql')
       .set('authorization', `Bearer ${key}`)
@@ -96,7 +109,14 @@ describe('team-restricted templates', () => {
   let key: string;
   beforeEach(async () => {
     key = await keyFor(
-      ['issues:read', 'issues:write', 'comments:write', 'workspace:read', 'projects:read'],
+      [
+        'issues:read',
+        'issues:write',
+        'comments:write',
+        'reactions:write',
+        'workspace:read',
+        'projects:read',
+      ],
       ['ENG'],
     );
   });
@@ -143,6 +163,8 @@ describe('team-restricted templates', () => {
       key,
       'mutation { reactionCreate(input: { issueId: "ENG-1", commentId: "c-ops", emoji: "eyes" }) { success } }',
     ).expect(403);
+    // A reaction's id doesn't tell its team.
+    await gql(key, 'mutation { reactionDelete(id: "r-1") { success } }').expect(403);
     await gql(key, 'query { teams { nodes { key } } }').expect(200);
   });
 

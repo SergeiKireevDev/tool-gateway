@@ -29,6 +29,7 @@ const PERM = {
   ISSUES_READ: 'issues:read',
   ISSUES_WRITE: 'issues:write',
   COMMENTS_WRITE: 'comments:write',
+  REACTIONS_WRITE: 'reactions:write',
   PROJECTS_READ: 'projects:read',
   PROJECTS_WRITE: 'projects:write',
   WORKSPACE_READ: 'workspace:read',
@@ -49,7 +50,13 @@ const PERMISSIONS: readonly PermissionDef[] = [
   {
     id: PERM.COMMENTS_WRITE,
     label: 'Comments (write)',
-    description: 'Comment on issues, edit and delete comments, react to comments and issues.',
+    description: 'Comment on issues, edit and delete comments.',
+  },
+  {
+    id: PERM.REACTIONS_WRITE,
+    label: 'Reactions (write)',
+    description:
+      'React to issues and comments (e.g. 👀 to acknowledge them). Removing a reaction needs an unrestricted template.',
   },
   {
     id: PERM.PROJECTS_READ,
@@ -146,12 +153,12 @@ const MUTATION_RULES = new Map<string, FieldRule>([
     ['commentUpdate', 'commentDelete'],
   ),
   ...rules(
-    PERM.COMMENTS_WRITE,
-    {
-      oneOf: [{ arg: 'input.commentId', target: 'comment' }, INPUT_ISSUE_ID],
-    },
+    PERM.REACTIONS_WRITE,
+    { oneOf: [{ arg: 'input.commentId', target: 'comment' }, INPUT_ISSUE_ID] },
     ['reactionCreate'],
   ),
+  // A reaction id can't be traced back to its team.
+  ...rules(PERM.REACTIONS_WRITE, ALL_TEAMS, ['reactionDelete']),
   ...rules(PERM.PROJECTS_WRITE, ALL_TEAMS, ['projectCreate', 'projectUpdate']),
 ]);
 
