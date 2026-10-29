@@ -423,14 +423,14 @@ Use `https://<gateway>/proxy/linear/graphql` as the GraphQL endpoint.
 Like monday.com, every root field of the document maps to a permission, and anything unknown is
 denied (webhooks, API keys, admin mutations…):
 
-| Permission       | Covers                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------- |
-| `issues:read`    | `issue`, `issues`, `comment`; `searchIssues`, `comments`, `attachments` (unrestricted only) |
-| `issues:write`   | `issueCreate`, `issueUpdate`, archive/unarchive/delete, add/remove labels, attachments      |
-| `comments:write` | `commentCreate`, `commentUpdate`, `commentDelete`                                           |
-| `projects:read`  | `project`, `projects`, `projectUpdates` (unrestricted only)                                 |
-| `projects:write` | `projectCreate`, `projectUpdate` (unrestricted only)                                        |
-| `workspace:read` | `viewer`, `users`, `teams`, `team`, `organization`, workflow states, labels                 |
+| Permission       | Covers                                                                                         |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `issues:read`    | `issue`, `issues`, `comment`; `searchIssues`, `comments`, `attachments` (unrestricted only)    |
+| `issues:write`   | `issueCreate`, `issueUpdate`, archive/unarchive/delete, add/remove labels, attachments         |
+| `comments:write` | `commentCreate`, `commentUpdate`, `commentDelete`, `reactionCreate` (on a comment or an issue) |
+| `projects:read`  | `project`, `projects`, `projectUpdates` (unrestricted only)                                    |
+| `projects:write` | `projectCreate`, `projectUpdate` (unrestricted only)                                           |
+| `workspace:read` | `viewer`, `users`, `teams`, `team`, `organization`, workflow states, labels                    |
 
 The resource allowlist is a list of **team keys** (`ENG`). On team-restricted templates:
 

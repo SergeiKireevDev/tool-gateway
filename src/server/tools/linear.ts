@@ -49,7 +49,7 @@ const PERMISSIONS: readonly PermissionDef[] = [
   {
     id: PERM.COMMENTS_WRITE,
     label: 'Comments (write)',
-    description: 'Comment on issues, edit and delete comments.',
+    description: 'Comment on issues, edit and delete comments, react to comments and issues.',
   },
   {
     id: PERM.PROJECTS_READ,
@@ -79,11 +79,17 @@ interface Scope {
   optional?: boolean;
 }
 
+/** Scopes of which a request must give exactly one (e.g. a reaction's comment or issue). */
+interface OneOf {
+  oneOf: readonly Scope[];
+}
+
 /**
  * `'workspace'`: directory data, fine on restricted grants. `'all-teams'`: can reach teams it
  * doesn't name, only on unrestricted grants. `'issue-list'`: a list that must filter on teams.
  */
-type FieldScope = readonly Scope[] | typeof WORKSPACE | typeof ALL_TEAMS | typeof ISSUE_LIST;
+type FieldScope =
+  readonly Scope[] | OneOf | typeof WORKSPACE | typeof ALL_TEAMS | typeof ISSUE_LIST;
 const WORKSPACE = 'workspace';
 const ALL_TEAMS = 'all-teams';
 const ISSUE_LIST = 'issue-list';
@@ -97,6 +103,7 @@ const rules = (permission: string, scope: FieldScope, names: readonly string[]) 
   names.map((name) => [name, { permission, scope }] as const);
 
 const ISSUE_ID: Scope = { arg: 'id', target: 'issue' };
+const INPUT_ISSUE_ID: Scope = { arg: 'input.issueId', target: 'issue' };
 
 const QUERY_RULES = new Map<string, FieldRule>([
   ...rules(PERM.WORKSPACE_READ, WORKSPACE, [
@@ -131,12 +138,19 @@ const MUTATION_RULES = new Map<string, FieldRule>([
     ['issueArchive', 'issueUnarchive', 'issueDelete', 'issueAddLabel', 'issueRemoveLabel'],
   ),
   ...rules(PERM.ISSUES_WRITE, [{ arg: 'issueId', target: 'issue' }], ['attachmentLinkURL']),
-  ...rules(PERM.ISSUES_WRITE, [{ arg: 'input.issueId', target: 'issue' }], ['attachmentCreate']),
-  ...rules(PERM.COMMENTS_WRITE, [{ arg: 'input.issueId', target: 'issue' }], ['commentCreate']),
+  ...rules(PERM.ISSUES_WRITE, [INPUT_ISSUE_ID], ['attachmentCreate']),
+  ...rules(PERM.COMMENTS_WRITE, [INPUT_ISSUE_ID], ['commentCreate']),
   ...rules(
     PERM.COMMENTS_WRITE,
     [{ arg: 'id', target: 'comment' }],
     ['commentUpdate', 'commentDelete'],
+  ),
+  ...rules(
+    PERM.COMMENTS_WRITE,
+    {
+      oneOf: [{ arg: 'input.commentId', target: 'comment' }, INPUT_ISSUE_ID],
+    },
+    ['reactionCreate'],
   ),
   ...rules(PERM.PROJECTS_WRITE, ALL_TEAMS, ['projectCreate', 'projectUpdate']),
 ]);
@@ -206,6 +220,8 @@ function filteredTeams(args: Record<string, unknown>): string[] {
   );
 }
 
+const isAbsent = (value: unknown): boolean => value === undefined || value === null;
+
 interface Targets {
   teamKeys: Set<string>;
   lookups: { target: Target; id: string }[];
@@ -231,9 +247,18 @@ function addTargets(field: RootField, scope: FieldScope, targets: Targets): void
     for (const key of filteredTeams(field.args)) targets.teamKeys.add(key.toUpperCase());
     return;
   }
+  if ('oneOf' in scope) {
+    const given = scope.oneOf.filter(({ arg }) => !isAbsent(argAt(field.args, arg)));
+    if (given.length !== 1) {
+      const args = scope.oneOf.map(({ arg }) => `"${arg}"`).join(' or ');
+      throw new Denied(`"${field.name}" must name one of ${args} on team-restricted templates`);
+    }
+    addTargets(field, given, targets);
+    return;
+  }
   for (const { arg, target, optional } of scope) {
     const value = argAt(field.args, arg);
-    if (optional && (value === undefined || value === null)) continue;
+    if (optional && isAbsent(value)) continue;
     if (typeof value !== 'string' || value === '') {
       throw new Denied(
         `"${field.name}" must name its ${target} in "${arg}" on team-restricted templates`,
