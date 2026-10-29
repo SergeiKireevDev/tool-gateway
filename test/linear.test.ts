@@ -126,6 +126,23 @@ describe('team-restricted templates', () => {
       'mutation { commentCreate(input: { issueId: "ENG-1", body: "hi" }) { success } }',
     ).expect(200);
     await gql(key, 'mutation { commentDelete(id: "c-ops") { success } }').expect(403);
+    await gql(
+      key,
+      'mutation { reactionCreate(input: { issueId: "ENG-1", emoji: "eyes" }) { success } }',
+    ).expect(200);
+    await gql(
+      key,
+      'mutation { reactionCreate(input: { commentId: "c-ops", emoji: "eyes" }) { success } }',
+    ).expect(403);
+    // A reaction must name exactly one comment or issue: a project update can't be checked.
+    await gql(
+      key,
+      'mutation { reactionCreate(input: { projectUpdateId: "pu-1", emoji: "eyes" }) { success } }',
+    ).expect(403);
+    await gql(
+      key,
+      'mutation { reactionCreate(input: { issueId: "ENG-1", commentId: "c-ops", emoji: "eyes" }) { success } }',
+    ).expect(403);
     await gql(key, 'query { teams { nodes { key } } }').expect(200);
   });
 

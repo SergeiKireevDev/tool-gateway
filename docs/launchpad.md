@@ -239,8 +239,10 @@ its history and memory.
   - `gateway_conversation_reply` (`text`) records an `out` message of the agent's
     (`POST …/reply`). It doesn't reach the third party: the agent answers there with its tools.
 
-  Its system prompt explains the conversation and its tools, and asks it to wait for more events
-  while the exchange goes on, then to finish: it needn't stay until its deadline.
+  Its system prompt explains the conversation and its tools, asks it to first react (👀) to the
+  message that started its run, and to each one it receives, with the third party's tool, so
+  their writer sees it was picked up; then to wait for more events while the exchange goes on,
+  and to finish: it needn't stay until its deadline.
 
 - **Revival.** When a conversation's run ends, its final message is recorded as an `out` message
   and the `MEMORY.md` it left (if any) is kept for the conversation. Messages that arrived and the

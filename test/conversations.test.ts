@@ -346,6 +346,7 @@ describe('conversation triggers', () => {
     expect(first.systemPrompt).toContain('## Conversation');
     expect(first.systemPrompt).toContain('conversation key `ISS-1`');
     expect(first.systemPrompt).toContain('gateway_conversation_receive');
+    expect(first.systemPrompt).toContain('Your first action, before anything else');
     expect(first.systemPrompt).not.toContain('earlier run');
 
     // Another conversation gets its own agent; the same one doesn't.
